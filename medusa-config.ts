@@ -58,6 +58,13 @@ module.exports = defineConfig({
         ],
       },
     },
+    {
+      resolve: "./src/modules/strapi",
+      options: {
+        strapiUrl: process.env.STRAPI_URL,
+        strapiToken: process.env.STRAPI_TOKEN,
+      },
+    },
   ],
   admin: {
     disable: process.env.DISABLE_MEDUSA_ADMIN === "true",
