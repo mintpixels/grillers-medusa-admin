@@ -4,11 +4,15 @@ import {
   createWorkflow,
   WorkflowResponse,
 } from "@medusajs/framework/workflows-sdk";
+import { QueryContext } from "@medusajs/framework/utils";
 import { useQueryGraphStep } from "@medusajs/medusa/core-flows";
 import StrapiModuleService from "../modules/strapi/service";
 import { STRAPI_MODULE } from "../modules/strapi";
 
 type SyncStepInput = { product: any };
+
+const REGION_ID = "reg_01JRTEDVK7H9A61M335K35JSVJ"; // get from /app/settings/regions
+const CURRENCY_CODE = "usd";
 
 export const syncProductStep = createStep(
   {
@@ -52,9 +56,17 @@ export const syncProductWorkflow = createWorkflow(
     // @ts-ignore
     const { data: products } = useQueryGraphStep({
       entity: "product",
-      fields: ["*", "variants.*"],
+      fields: ["*", "variants.*", "variants.calculated_price.*"],
       filters: { id: input.id },
       options: { throwIfKeyNotFound: true },
+      context: {
+        variants: {
+          calculated_price: QueryContext({
+            region_id: REGION_ID,
+            currency_code: CURRENCY_CODE,
+          }),
+        },
+      },
     });
 
     // @ts-ignore
