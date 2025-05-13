@@ -1,21 +1,30 @@
-import axios, { AxiosInstance } from "axios";
+import axios, { AxiosInstance, AxiosResponse } from "axios";
 import { Logger, ConfigModule } from "@medusajs/framework/types";
 import { getPricesForVariant } from "./utils/get-product-price";
 import { StoreProduct, StoreProductVariant } from "@medusajs/types";
+
 export type StrapiModuleOptions = {
   strapiUrl: string;
   strapiToken: string;
 };
 
+/**
+ * The shape of a Strapi product entry's `data` field
+ */
+interface StrapiProductData {
+  id: string;
+  attributes: Record<string, any>;
+}
+
 export default class StrapiModuleService {
   private client: AxiosInstance;
-  private logger_: Logger;
+  private logger: Logger;
 
   constructor(
-    { logger }: { logger: Logger; configModule: ConfigModule },
+    { logger }: { logger: Logger; configModule?: ConfigModule },
     options: StrapiModuleOptions
   ) {
-    this.logger_ = logger;
+    this.logger = logger;
     this.client = axios.create({
       baseURL: options.strapiUrl,
       headers: {
@@ -25,55 +34,90 @@ export default class StrapiModuleService {
     });
   }
 
-  /** Find the Strapi entry whose medusa_product_id equals the given Medusa ID */
-  async findProductByMedusaId(medusaId: string) {
-    const res = await this.client.get("/api/products", {
-      params: {
-        "filters[medusa_product_id][$eq]": medusaId,
-        "pagination[limit]": 1,
-      },
-    });
-    const data = res.data?.data;
-    return Array.isArray(data) && data.length > 0 ? data[0] : null;
-  }
-
-  async createProduct(product: any) {
-    this.logger_.info(`Strapi: creating product for Medusa ID ${product.id}`);
-
+  /**
+   * Query Strapi for a product by its Medusa ID
+   */
+  public async findProductByMedusaId(medusaId: string): Promise<StrapiProductData | null> {
     try {
-      const payload = this.transform(product);
-      return await this.client.post(`/api/products`, {
-        data: payload,
-      });
+      const response: AxiosResponse<{ data: StrapiProductData[] }> = await this.client.get(
+        "/api/products",
+        {
+          params: {
+            "filters[medusa_product_id][$eq]": medusaId,
+            "pagination[limit]": 1,
+          },
+        }
+      );
+
+      const data = response.data?.data;
+      return Array.isArray(data) && data.length > 0 ? data[0] : null;
     } catch (error) {
-      this.logger_.error(`Strapi: creating product for (Medusa ID ${product.id})`, error);
+      this.logger.error(`Strapi: failed to find product (Medusa ID: ${medusaId})`, error);
+      throw error;
     }
   }
 
-  async updateProduct(strapiId: string, product: any) {
-    this.logger_.info(`Strapi: updating product ${strapiId} (Medusa ID ${product.id})`);
+  /**
+   * Create a new Strapi product entry
+   */
+  public async createProduct(product: StoreProduct): Promise<StrapiProductData> {
+    this.logger.info(`Strapi: creating product for Medusa ID ${product.id}`);
 
     try {
-      const payload = this.transform(product);
-      return await this.client.put(`/api/products/${strapiId}`, {
-        data: payload,
-      });
+      const payload = this.mapToStrapiPayload(product);
+      const response: AxiosResponse<{ data: StrapiProductData }> = await this.client.post(
+        `/api/products`,
+        { data: payload }
+      );
+
+      return response.data.data;
     } catch (error) {
-      this.logger_.error(`Strapi: updating product ${strapiId} (Medusa ID ${product.id})`, error);
+      this.logger.error(`Strapi: error creating product (Medusa ID: ${product.id})`, error);
+      throw error;
     }
   }
 
-  async deleteProduct(strapiId: string) {
-    this.logger_.info(`Strapi: deleting product ${strapiId}`);
+  /**
+   * Update an existing Strapi product entry
+   */
+  public async updateProduct(strapiId: string, product: StoreProduct): Promise<StrapiProductData> {
+    this.logger.info(`Strapi: updating product ${strapiId} (Medusa ID ${product.id})`);
+
+    try {
+      const payload = this.mapToStrapiPayload(product);
+      const response: AxiosResponse<{ data: StrapiProductData }> = await this.client.put(
+        `/api/products/${strapiId}`,
+        { data: payload }
+      );
+
+      return response.data.data;
+    } catch (error) {
+      this.logger.error(
+        `Strapi: error updating product ${strapiId} (Medusa ID: ${product.id})`,
+        error
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a Strapi product entry by ID
+   */
+  public async deleteProduct(strapiId: string): Promise<AxiosResponse<null>> {
+    this.logger.info(`Strapi: deleting product ${strapiId}`);
+
     try {
       return await this.client.delete(`/api/products/${strapiId}`);
     } catch (error) {
-      this.logger_.error(`Strapi: deleting product ${strapiId}`, error);
+      this.logger.error(`Strapi: error deleting product ${strapiId}`, error);
+      throw error;
     }
   }
 
-  /** Map Medusa product fields → Strapi fields */
-  private transform(product: StoreProduct) {
+  /**
+   * Convert a Medusa product into the shape expected by Strapi
+   */
+  private mapToStrapiPayload(product: StoreProduct) {
     try {
       return {
         medusa_product_id: product.id,
@@ -98,7 +142,7 @@ export default class StrapiModuleService {
         },
       };
     } catch (error) {
-      this.logger_.error(`Strapi: transform`, error);
+      this.logger.error(`Strapi: transform`, error);
     }
   }
 }
