@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from "axios";
 import { Logger, ConfigModule } from "@medusajs/framework/types";
-
+import { getPricesForVariant } from "./utils/get-product-price";
+import { StoreProduct, StoreProductVariant } from "@medusajs/types";
 export type StrapiModuleOptions = {
   strapiUrl: string;
   strapiToken: string;
@@ -72,10 +73,28 @@ export default class StrapiModuleService {
   }
 
   /** Map Medusa product fields → Strapi fields */
-  private transform(product: any) {
+  private transform(product: StoreProduct) {
     return {
       medusa_product_id: product.id,
       Title: product.title,
+      MedusaProduct: {
+        ProductId: product.id,
+        Title: product.title,
+        Description: product.description,
+        Handle: product.handle,
+        Variants:
+          product.variants?.map((v: StoreProductVariant) => {
+            const price = getPricesForVariant(v);
+            return {
+              VariantId: v.id,
+              Title: v.title,
+              Price: {
+                CalculatedPriceNumber: price?.calculated_price_number ?? 0,
+                OriginalPriceNumber: price?.original_price_number ?? 0,
+              },
+            };
+          }) ?? [],
+      },
     };
   }
 }
