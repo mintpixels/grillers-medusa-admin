@@ -74,27 +74,31 @@ export default class StrapiModuleService {
 
   /** Map Medusa product fields → Strapi fields */
   private transform(product: StoreProduct) {
-    return {
-      medusa_product_id: product.id,
-      Title: product.title,
-      MedusaProduct: {
-        ProductId: product.id,
+    try {
+      return {
+        medusa_product_id: product.id,
         Title: product.title,
-        Description: product.description,
-        Handle: product.handle,
-        Variants:
-          product.variants?.map((v: StoreProductVariant) => {
-            const price = getPricesForVariant(v);
-            return {
-              VariantId: v.id,
-              Title: v.title,
-              Price: {
-                CalculatedPriceNumber: price?.calculated_price_number ?? 0,
-                OriginalPriceNumber: price?.original_price_number ?? 0,
-              },
-            };
-          }) ?? [],
-      },
-    };
+        MedusaProduct: {
+          ProductId: product.id,
+          Title: product.title,
+          Description: product.description,
+          Handle: product.handle,
+          Variants:
+            product.variants?.map((v: StoreProductVariant) => {
+              const price = getPricesForVariant(v);
+              return {
+                VariantId: v.id,
+                Title: v.title,
+                Price: {
+                  CalculatedPriceNumber: price?.calculated_price_number ?? 0,
+                  OriginalPriceNumber: price?.original_price_number ?? 0,
+                },
+              };
+            }) ?? [],
+        },
+      };
+    } catch (error) {
+      this.logger_.error(`Strapi: transform`, error);
+    }
   }
 }
