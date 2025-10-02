@@ -300,7 +300,6 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
   /**
    * Return artifacts (labels, invoices, etc.) for a fulfillment.
    */
-  // ...
   async getFulfillmentDocuments(data: any): Promise<never[]> {
     // assuming the client retrieves documents
     // from a third-party service
