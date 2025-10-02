@@ -70,12 +70,16 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         return true;
       },
       calculate: async (optionData) => {
+        // @ts-ignore
         const city: string = optionData?.shipping_address?.city;
+        // @ts-ignore
         const state: string = optionData?.shipping_address?.province;
+        // @ts-ignore
         const zip: string = optionData?.shipping_address?.postal_code;
-        const serviceCode: string = optionData?.service_code;
+        const serviceCode: string | any = optionData?.service_code;
 
         let total = 0;
+        // @ts-ignore
         optionData?.items?.forEach((item) => {
           total += item.unit_price * item.quantity;
         });
@@ -129,10 +133,12 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         let price = -10;
         if (tierSet.length > 0) {
           tierSet.sort((a, b) => {
+            // @ts-ignore
             return a.BreakpointPrice < b.BreakpointPrice ? -1 : 1;
           });
 
           tierSet.forEach((tier) => {
+            // @ts-ignore
             if (tier.BreakpointPrice < total) price = tier.ShippingRate;
           });
         }
@@ -253,7 +259,9 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
 
     // You can also return labels here as part of the result if available.
     return {
+      labels: [],
       data: {
+        // @ts-ignore
         ...(fulfillment.data as object | undefined),
         ...externalData,
       },
@@ -269,6 +277,7 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
   ): Promise<CreateFulfillmentResult> {
     const externalData = await this.client.createReturn(fulfillment);
     return {
+      labels: [],
       data: { ...externalData },
       // labels: [{ label_url: externalData.rma_label_url }]
     };
@@ -295,6 +304,7 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
   async getFulfillmentDocuments(data: any): Promise<never[]> {
     // assuming the client retrieves documents
     // from a third-party service
+    // @ts-ignore
     return await this.client.getDocuments(data);
   }
 }
