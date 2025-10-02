@@ -16,7 +16,7 @@ module.exports = defineConfig({
       | "shared"
       | "worker"
       | "server",
-    // redisUrl: process.env.REDIS_URL,
+    redisUrl: process.env.REDIS_URL,
   },
   modules: [
     {
@@ -31,9 +31,7 @@ module.exports = defineConfig({
           {
             resolve: "./src/modules/fulfillment",
             id: "grillers-fulfillment",
-            options: {
-              // provider options...
-            },
+            options: {},
           },
         ],
       },

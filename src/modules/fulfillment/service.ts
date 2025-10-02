@@ -67,12 +67,78 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
     // For demo purposes, we mock the needed methods:
     this.client = {
       hasRates: async (optionId) => {
-        this.logger_.info(`hasRates called for option ${optionId}`);
-        return false;
-        // if (optionId == "ground") return true;
-        return false;
+        return true;
       },
-      calculate: async () => 999, // cents
+      calculate: async (optionData) => {
+        const city: string = optionData?.shipping_address?.city;
+        const state: string = optionData?.shipping_address?.province;
+        const zip: string = optionData?.shipping_address?.postal_code;
+        const serviceCode: string = optionData?.service_code;
+
+        let total = 0;
+        optionData?.items?.forEach((item) => {
+          total += item.unit_price * item.quantity;
+        });
+
+        const response = await fetch(
+          `${process.env.STRAPI_URL}/api/shipping-zones?populate=*`,
+          {
+            method: "GET",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${process.env.STRAPI_TOKEN}`,
+            },
+          }
+        );
+
+        let tierSet = [];
+        const zones = (await response.json())?.data;
+        for (let i = 0; i < zones.length; i++) {
+          const z = zones[i];
+          let validZone = false;
+
+          if (serviceCode == "PICKUP" && z.ZoneCode == "Pick Up From Plant") {
+            validZone = true;
+          } else if (serviceCode == "ATLANTA_DELIVERY" && z.ZIPCode == zip) {
+            validZone = true;
+          } else if (
+            serviceCode == "SCHEDULED_DELIVERY" &&
+            !z.Zip &&
+            z.City == city &&
+            z.State == state
+          ) {
+            validZone = true;
+          } else if (serviceCode == "GROUND" && z.ZoneCode == "FedexGround") {
+            validZone = true;
+          } else if (
+            serviceCode == "OVERNIGHT" &&
+            z.ZoneCode == "FedexOvernight"
+          ) {
+            validZone = true;
+          }
+
+          if (validZone) {
+            tierSet = z.ShippingZoneBreakpoints;
+            break;
+          }
+        }
+
+        // We've setup the front-end to skip anything with a price of
+        // -10 or below as a workaround to the inability to dynamically
+        // hide options in this service.
+        let price = -10;
+        if (tierSet.length > 0) {
+          tierSet.sort((a, b) => {
+            return a.BreakpointPrice < b.BreakpointPrice ? -1 : 1;
+          });
+
+          tierSet.forEach((tier) => {
+            if (tier.BreakpointPrice < total) price = tier.ShippingRate;
+          });
+        }
+
+        return price;
+      },
       create: async () => ({
         external_id: "SHIP-123",
         tracking_url: "https://track.example/SHIP-123",
@@ -162,10 +228,6 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
     data: CalculateShippingOptionPriceDTO["data"],
     context: CalculateShippingOptionPriceDTO["context"]
   ): Promise<CalculatedShippingOptionPrice> {
-    // Use "optionData" (from getFulfillmentOptions) + "data" (from validateFulfillmentData/front-end)
-    // and any context (cart, from_location) to fetch a live rate.
-    console.log("optionData1", optionData);
-    console.log("data2", data);
     const amount = await this.client.calculate({
       ...optionData,
       ...data,
