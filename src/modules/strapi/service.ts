@@ -31,17 +31,23 @@ export default class StrapiModuleService {
    */
   public async findProductByMedusaId(medusaId: string) {
     try {
-      const response: AxiosResponse<any> = await this.client.get("/api/products", {
-        params: {
-          "filters[medusa_product_id][$eq]": medusaId,
-          "pagination[limit]": 1,
-        },
-      });
+      const response: AxiosResponse<any> = await this.client.get(
+        "/api/products",
+        {
+          params: {
+            "filters[medusa_product_id][$eq]": medusaId,
+            "pagination[limit]": 1,
+          },
+        }
+      );
 
       const data = response.data?.data;
       return Array.isArray(data) && data.length > 0 ? data[0] : null;
     } catch (error) {
-      this.logger.error(`Strapi: failed to find product (Medusa ID: ${medusaId})`, error);
+      this.logger.error(
+        `Strapi: failed to find product (Medusa ID: ${medusaId})`,
+        error
+      );
       throw error;
     }
   }
@@ -54,13 +60,19 @@ export default class StrapiModuleService {
 
     try {
       const payload = this.mapToStrapiPayload(product);
-      const response: AxiosResponse<any> = await this.client.post(`/api/products`, {
-        data: payload,
-      });
+      const response: AxiosResponse<any> = await this.client.post(
+        `/api/products`,
+        {
+          data: payload,
+        }
+      );
 
       return response.data.data;
     } catch (error) {
-      this.logger.error(`Strapi: error creating product (Medusa ID: ${product.id})`, error);
+      this.logger.error(
+        `Strapi: error creating product (Medusa ID: ${product.id})`,
+        error
+      );
       throw error;
     }
   }
@@ -69,13 +81,18 @@ export default class StrapiModuleService {
    * Update an existing Strapi product entry
    */
   public async updateProduct(strapiId: string, product: StoreProduct) {
-    this.logger.info(`Strapi: updating product ${strapiId} (Medusa ID ${product.id})`);
+    this.logger.info(
+      `Strapi: updating product ${strapiId} (Medusa ID ${product.id})`
+    );
 
     try {
       const payload = this.mapToStrapiPayload(product);
-      const response: AxiosResponse<any> = await this.client.put(`/api/products/${strapiId}`, {
-        data: payload,
-      });
+      const response: AxiosResponse<any> = await this.client.put(
+        `/api/products/${strapiId}`,
+        {
+          data: payload,
+        }
+      );
 
       return response.data.data;
     } catch (error) {
@@ -97,6 +114,27 @@ export default class StrapiModuleService {
       return await this.client.delete(`/api/products/${strapiId}`);
     } catch (error) {
       this.logger.error(`Strapi: error deleting product ${strapiId}`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Query Strapi for available shipping zones
+   */
+  public async getShippingZones(medusaId: string) {
+    try {
+      const response: AxiosResponse<any> = await this.client.get(
+        "/api/shipping-zones",
+        {}
+      );
+
+      const data = response.data?.data;
+      return Array.isArray(data) && data.length > 0 ? data[0] : null;
+    } catch (error) {
+      this.logger.error(
+        `Strapi: failed to find product (Medusa ID: ${medusaId})`,
+        error
+      );
       throw error;
     }
   }
@@ -130,9 +168,14 @@ export default class StrapiModuleService {
         },
       };
     } catch (error) {
-      this.logger.error(`Strapi: error mapping payload for Medusa ID ${product.id}`, error);
+      this.logger.error(
+        `Strapi: error mapping payload for Medusa ID ${product.id}`,
+        error
+      );
       throw new Error(
-        `Failed to map Medusa product ${product.id} to Strapi payload: ${(error as Error).message}`
+        `Failed to map Medusa product ${product.id} to Strapi payload: ${
+          (error as Error).message
+        }`
       );
     }
   }
