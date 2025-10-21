@@ -124,6 +124,7 @@ export default class StrapiModuleService {
                   CalculatedPriceNumber: price?.calculated_price_number ?? 0,
                   OriginalPriceNumber: price?.original_price_number ?? 0,
                 },
+                Sku: variant.sku,
               };
             }) ?? [],
         },
