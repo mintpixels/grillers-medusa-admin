@@ -95,6 +95,17 @@ module.exports = defineConfig({
       },
     },
     {
+      resolve: "@medusajs/medusa/tax",
+      options: {
+        providers: [
+          {
+            resolve: "./src/modules/ga-tax",
+            id: "ga-tax",
+          },
+        ],
+      },
+    },
+    {
       resolve: "./src/modules/strapi",
       options: {
         strapiUrl: process.env.STRAPI_URL,
