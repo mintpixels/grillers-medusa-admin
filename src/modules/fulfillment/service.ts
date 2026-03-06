@@ -95,7 +95,8 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
           }
         );
 
-        let tierSet = [];
+        let tierSet: any[] = [];
+        let zoneIsPercent = false;
         const zones = (await response.json())?.data;
         for (let i = 0; i < zones.length; i++) {
           const z = zones[i];
@@ -123,11 +124,13 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
 
           if (validZone) {
             tierSet = z.ShippingZoneBreakpoints;
+            zoneIsPercent =
+              z.Description &&
+              z.Description.toUpperCase().includes("PERCENT");
             break;
           }
         }
 
-        // -10 sentinel tells the frontend to hide this option
         let price = -10;
         if (tierSet.length > 0) {
           tierSet.sort(
@@ -136,16 +139,17 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
 
           let matchedTier: any = tierSet[0];
           for (const tier of tierSet) {
-            // @ts-ignore
             if (tier.BreakpointPrice <= total) {
               matchedTier = tier;
             }
           }
 
-          const usesPercentageTiers =
+          const isUPSTier =
             serviceCode === "GROUND" || serviceCode === "OVERNIGHT";
 
-          if (usesPercentageTiers && matchedTier.BreakpointPrice > 0) {
+          if (zoneIsPercent) {
+            price = (matchedTier.ShippingRate / 100) * total;
+          } else if (isUPSTier && matchedTier.BreakpointPrice > 0) {
             price = (matchedTier.ShippingRate / 100) * total;
           } else {
             price = matchedTier.ShippingRate;
