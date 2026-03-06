@@ -127,20 +127,29 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
           }
         }
 
-        // We've setup the front-end to skip anything with a price of
-        // -10 or below as a workaround to the inability to dynamically
-        // hide options in this service.
+        // -10 sentinel tells the frontend to hide this option
         let price = -10;
         if (tierSet.length > 0) {
-          tierSet.sort((a, b) => {
-            // @ts-ignore
-            return a.BreakpointPrice < b.BreakpointPrice ? -1 : 1;
-          });
+          tierSet.sort(
+            (a: any, b: any) => a.BreakpointPrice - b.BreakpointPrice
+          );
 
-          tierSet.forEach((tier) => {
+          let matchedTier: any = tierSet[0];
+          for (const tier of tierSet) {
             // @ts-ignore
-            if (tier.BreakpointPrice < total) price = tier.ShippingRate;
-          });
+            if (tier.BreakpointPrice <= total) {
+              matchedTier = tier;
+            }
+          }
+
+          const usesPercentageTiers =
+            serviceCode === "GROUND" || serviceCode === "OVERNIGHT";
+
+          if (usesPercentageTiers && matchedTier.BreakpointPrice > 0) {
+            price = (matchedTier.ShippingRate / 100) * total;
+          } else {
+            price = matchedTier.ShippingRate;
+          }
         }
 
         return price;
