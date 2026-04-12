@@ -1,4 +1,4 @@
-import { loadEnv, defineConfig } from "@medusajs/framework/utils";
+import { loadEnv, defineConfig, Modules } from "@medusajs/framework/utils";
 
 loadEnv(process.env.NODE_ENV || "development", process.cwd());
 
@@ -110,6 +110,21 @@ module.exports = defineConfig({
       options: {
         strapiUrl: process.env.STRAPI_URL,
         strapiToken: process.env.STRAPI_TOKEN,
+      },
+    },
+    {
+      resolve: "@medusajs/medusa/analytics",
+      options: {
+        providers: [
+          {
+            resolve: "./src/modules/gp-analytics",
+            id: "gp-analytics",
+            options: {
+              jitsuHost: process.env.JITSU_HOST,
+              jitsuServerSecret: process.env.JITSU_SERVER_SECRET,
+            },
+          },
+        ],
       },
     },
   ],
