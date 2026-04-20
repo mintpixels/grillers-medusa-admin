@@ -152,6 +152,7 @@ export default class StrapiModuleService {
           Title: product.title,
           Description: product.description,
           Handle: product.handle,
+          Status: product.status,
           Variants:
             product.variants?.map((variant: StoreProductVariant) => {
               const price = getPricesForVariant(variant) || null;
