@@ -8,6 +8,8 @@ import {
   ProviderSendNotificationResultsDTO,
 } from "@medusajs/framework/types"
 
+console.log("[PM-LOAD] postmark notification service module loaded at boot")
+
 type PostmarkOptions = {
   api_token: string
   from: string

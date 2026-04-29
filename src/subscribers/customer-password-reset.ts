@@ -1,6 +1,8 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework";
 import { Modules } from "@medusajs/framework/utils";
 
+console.log("[CPR-LOAD] customer-password-reset subscriber module loaded at boot");
+
 type PasswordResetEvent = {
   entity_id: string;
   actor_type: string;
