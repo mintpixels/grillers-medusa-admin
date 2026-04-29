@@ -80,6 +80,22 @@ module.exports = defineConfig({
       },
     },
     {
+      resolve: "@medusajs/medusa/notification",
+      options: {
+        providers: [
+          {
+            resolve: "./src/modules/notification-postmark",
+            id: "postmark",
+            options: {
+              channels: ["email"],
+              api_token: process.env.POSTMARK_API_TOKEN,
+              from: process.env.POSTMARK_FROM,
+            },
+          },
+        ],
+      },
+    },
+    {
       resolve: "@medusajs/medusa/payment",
       options: {
         providers: [
