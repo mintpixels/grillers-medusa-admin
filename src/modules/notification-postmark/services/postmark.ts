@@ -31,6 +31,10 @@ export class PostmarkNotificationService extends AbstractNotificationProviderSer
   async send(
     notification: ProviderSendNotificationDTO
   ): Promise<ProviderSendNotificationResultsDTO> {
+    this.logger_.info(
+      `[notification-postmark] send() called to=${notification?.to} channel=${notification?.channel} hasContent=${!!notification?.content}`
+    )
+
     if (!notification) {
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
@@ -39,6 +43,10 @@ export class PostmarkNotificationService extends AbstractNotificationProviderSer
     }
 
     const from = notification.from?.trim() || this.config_.from
+
+    this.logger_.info(
+      `[notification-postmark] POST api.postmarkapp.com from=${from} to=${notification.to} subject="${notification.content?.subject}"`
+    )
 
     const res = await fetch("https://api.postmarkapp.com/email", {
       method: "POST",
@@ -59,6 +67,9 @@ export class PostmarkNotificationService extends AbstractNotificationProviderSer
 
     if (!res.ok) {
       const errBody = await res.text()
+      this.logger_.error(
+        `[notification-postmark] Postmark rejected: status=${res.status} body=${errBody}`
+      )
       throw new MedusaError(
         MedusaError.Types.UNEXPECTED_STATE,
         `Postmark send failed (${res.status}): ${errBody}`
@@ -66,6 +77,9 @@ export class PostmarkNotificationService extends AbstractNotificationProviderSer
     }
 
     const body = (await res.json()) as { MessageID?: string }
+    this.logger_.info(
+      `[notification-postmark] Postmark accepted MessageID=${body.MessageID}`
+    )
     return { id: body.MessageID }
   }
 }

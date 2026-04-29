@@ -12,12 +12,19 @@ export default async function customerPasswordResetHandler({
   container,
 }: SubscriberArgs<PasswordResetEvent>) {
   const { entity_id, actor_type, token } = data;
+  const logger = container.resolve("logger");
+
+  logger.info(
+    `[customer-password-reset] subscriber fired entity_id=${entity_id} actor_type=${actor_type} token_len=${token?.length || 0}`
+  );
 
   if (actor_type !== "customer") {
+    logger.info(
+      `[customer-password-reset] skipping non-customer actor_type=${actor_type}`
+    );
     return;
   }
 
-  const logger = container.resolve("logger");
   const notificationModule = container.resolve(Modules.NOTIFICATION);
 
   const storefrontUrl =
@@ -28,8 +35,12 @@ export default async function customerPasswordResetHandler({
     `?token=${encodeURIComponent(token)}` +
     `&email=${encodeURIComponent(entity_id)}`;
 
+  logger.info(
+    `[customer-password-reset] calling notificationModule.createNotifications to=${entity_id} resetUrl=${resetUrl}`
+  );
+
   try {
-    await notificationModule.createNotifications({
+    const result = await notificationModule.createNotifications({
       to: entity_id,
       channel: "email",
       template: "customer-password-reset",
@@ -46,11 +57,16 @@ export default async function customerPasswordResetHandler({
       },
       data: { resetUrl, email: entity_id },
     });
+    logger.info(
+      `[customer-password-reset] createNotifications returned: ${JSON.stringify(result)}`
+    );
   } catch (err) {
     logger.error(
-      `auth.password_reset → failed to send email to ${entity_id}:`,
-      err
+      `[customer-password-reset] failed to send email to ${entity_id}: ${err instanceof Error ? err.message : String(err)}`
     );
+    if (err instanceof Error && err.stack) {
+      logger.error(`[customer-password-reset] stack: ${err.stack}`);
+    }
   }
 }
 
