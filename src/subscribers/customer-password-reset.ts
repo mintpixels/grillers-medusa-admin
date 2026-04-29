@@ -10,11 +10,17 @@ type PasswordResetEvent = {
 };
 
 export default async function customerPasswordResetHandler({
-  event: { data },
+  event,
   container,
 }: SubscriberArgs<PasswordResetEvent>) {
-  const { entity_id, actor_type, token } = data;
   const logger = container.resolve("logger");
+
+  logger.info(
+    `[customer-password-reset] HANDLER ENTRY full event=${JSON.stringify(event)}`
+  );
+
+  const { data } = event;
+  const { entity_id, actor_type, token } = data || ({} as PasswordResetEvent);
 
   logger.info(
     `[customer-password-reset] subscriber fired entity_id=${entity_id} actor_type=${actor_type} token_len=${token?.length || 0}`
