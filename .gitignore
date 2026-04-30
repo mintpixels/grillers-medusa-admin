@@ -25,3 +25,4 @@ build
 
 .medusa
 .env.copy
+.email-previews
