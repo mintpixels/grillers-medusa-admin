@@ -1,5 +1,4 @@
-import { defineMiddlewares } from "@medusajs/framework/http"
-import { authenticate } from "@medusajs/medusa/utils"
+import { authenticate, defineMiddlewares } from "@medusajs/framework/http"
 
 export default defineMiddlewares({
   routes: [
@@ -11,6 +10,10 @@ export default defineMiddlewares({
     {
       matcher: "/store/customers/me/password",
       method: ["POST"],
+      middlewares: [authenticate("customer", ["session", "bearer"])],
+    },
+    {
+      matcher: "/store/payment-methods*",
       middlewares: [authenticate("customer", ["session", "bearer"])],
     },
     {
