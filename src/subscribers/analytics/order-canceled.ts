@@ -15,17 +15,18 @@ export default async function orderCanceledHandler({
       filters: { id: data.id },
     })
 
-    const order = orders?.[0]
+    const order = orders?.[0] as any
     if (!order) return
+    const customerId = order.customer_id || undefined
 
     await analyticsService.track({
       event: "order_canceled",
-      actor_id: order.customer_id,
+      actor_id: customerId,
       properties: {
         order_id: order.id,
-        value: order.total,
+        value: order.total ?? 0,
         currency: order.currency_code,
-        customer_id: order.customer_id,
+        customer_id: customerId,
       },
     })
   } catch (err) {
