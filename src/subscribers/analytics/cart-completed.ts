@@ -21,17 +21,18 @@ export default async function cartCompletedHandler({
       filters: { id: data.id },
     })
 
-    const cart = carts?.[0]
+    const cart = carts?.[0] as any
     if (!cart) return
+    const customerId = cart.customer_id || undefined
 
     await analyticsService.track({
       event: "checkout_completed",
-      actor_id: cart.customer_id,
+      actor_id: customerId,
       properties: {
         cart_id: cart.id,
-        value: cart.total,
+        value: cart.total ?? 0,
         currency: cart.currency_code,
-        customer_id: cart.customer_id,
+        customer_id: customerId,
         items: cart.items?.map((item: any) => ({
           item_id: item.product_id || item.id,
           item_name: item.title,

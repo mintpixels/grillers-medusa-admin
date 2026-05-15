@@ -31,14 +31,15 @@ export default async function orderPlacedHandler({
       filters: { id: data.id },
     })
 
-    const order = orders?.[0]
+    const order = orders?.[0] as any
     if (!order) return
+    const customerId = order.customer_id || undefined
 
     const coupon = (order as any).promotions?.[0]?.code
 
     await analyticsService.track({
       event: "order_completed",
-      actor_id: order.customer_id,
+      actor_id: customerId,
       properties: {
         transaction_id: order.id,
         display_id: order.display_id,
@@ -50,7 +51,7 @@ export default async function orderPlacedHandler({
         discount: order.discount_total,
         coupon,
         email: order.email,
-        customer_id: order.customer_id,
+        customer_id: customerId,
         shipping_tier: order.shipping_methods?.[0]?.name,
         payment_method:
           order.payment_collections?.[0]?.payments?.[0]?.provider_id,
