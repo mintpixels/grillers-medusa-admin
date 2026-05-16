@@ -28,10 +28,10 @@ export default async function cartUpdatedHandler({
 
     await analyticsService.track({
       event: "cart_updated",
-      actor_id: cart.customer_id,
+      actor_id: cart.customer_id || undefined,
       properties: {
         cart_id: cart.id,
-        value: cart.total,
+        value: (cart as any).total,
         currency: cart.currency_code,
         customer_id: cart.customer_id,
         item_count: cart.items?.length || 0,

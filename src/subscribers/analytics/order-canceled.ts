@@ -20,7 +20,7 @@ export default async function orderCanceledHandler({
 
     await analyticsService.track({
       event: "order_canceled",
-      actor_id: order.customer_id,
+      actor_id: order.customer_id || undefined,
       properties: {
         order_id: order.id,
         value: order.total,

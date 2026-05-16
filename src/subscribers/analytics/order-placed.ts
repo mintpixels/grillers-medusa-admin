@@ -38,10 +38,10 @@ export default async function orderPlacedHandler({
 
     await analyticsService.track({
       event: "order_completed",
-      actor_id: order.customer_id,
+      actor_id: order.customer_id || undefined,
       properties: {
         transaction_id: order.id,
-        display_id: order.display_id,
+        display_id: (order as any).display_id,
         value: order.total,
         subtotal: order.subtotal,
         currency: order.currency_code,

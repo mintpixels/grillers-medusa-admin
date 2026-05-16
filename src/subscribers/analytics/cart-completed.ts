@@ -26,10 +26,10 @@ export default async function cartCompletedHandler({
 
     await analyticsService.track({
       event: "checkout_completed",
-      actor_id: cart.customer_id,
+      actor_id: cart.customer_id || undefined,
       properties: {
         cart_id: cart.id,
-        value: cart.total,
+        value: (cart as any).total,
         currency: cart.currency_code,
         customer_id: cart.customer_id,
         items: cart.items?.map((item: any) => ({
