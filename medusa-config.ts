@@ -129,6 +129,9 @@ module.exports = defineConfig({
       },
     },
     {
+      resolve: "./src/modules/back-in-stock",
+    },
+    {
       resolve: "@medusajs/medusa/analytics",
       options: {
         providers: [

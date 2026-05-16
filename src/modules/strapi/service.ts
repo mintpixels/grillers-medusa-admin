@@ -8,6 +8,20 @@ export type StrapiModuleOptions = {
   strapiToken: string;
 };
 
+export type BackInStockRequest = {
+  id?: number;
+  documentId: string;
+  Email: string;
+  MedusaProductId: string;
+  MedusaVariantId?: string | null;
+  Sku?: string | null;
+  ProductHandle: string;
+  ProductTitle: string;
+  UnsubscribeToken: string;
+  NotifiedAt?: string | null;
+  UnsubscribedAt?: string | null;
+};
+
 export default class StrapiModuleService {
   private client: AxiosInstance;
   private logger: Logger;
@@ -116,6 +130,125 @@ export default class StrapiModuleService {
       this.logger.error(`Strapi: error deleting product ${strapiId}`, error);
       throw error;
     }
+  }
+
+  public async findActiveBackInStockRequests(input: {
+    medusaProductId?: string | null;
+    medusaVariantId?: string | null;
+    sku?: string | null;
+  }): Promise<BackInStockRequest[]> {
+    const rows = new Map<string, BackInStockRequest>();
+
+    const queries: Record<string, string>[] = [];
+    if (input.medusaVariantId) {
+      queries.push({
+        "filters[MedusaVariantId][$eq]": input.medusaVariantId,
+      });
+    }
+    if (input.sku) {
+      queries.push({
+        "filters[Sku][$eq]": input.sku,
+      });
+    }
+    if (input.medusaProductId) {
+      queries.push({
+        "filters[MedusaProductId][$eq]": input.medusaProductId,
+      });
+    }
+
+    for (const filters of queries) {
+      const page = await this.fetchBackInStockRequests(filters);
+      for (const row of page) {
+        rows.set(row.documentId, row);
+      }
+    }
+
+    return [...rows.values()];
+  }
+
+  public async markBackInStockRequestNotified(
+    documentId: string,
+    input: {
+      notifiedAt: Date;
+      messageId?: string;
+      restockEventKey?: string;
+    }
+  ): Promise<void> {
+    const payload: Record<string, unknown> = {
+      NotifiedAt: input.notifiedAt.toISOString(),
+    };
+    if (input.messageId) {
+      payload.NotificationEmailId = input.messageId;
+    }
+    if (input.restockEventKey) {
+      payload.RestockEventKey = input.restockEventKey;
+    }
+
+    try {
+      await this.client.put(`/api/back-in-stock-requests/${documentId}`, {
+        data: payload,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Strapi: failed to mark back-in-stock request ${documentId} notified`,
+        error
+      );
+      throw error;
+    }
+  }
+
+  private async fetchBackInStockRequests(
+    filters: Record<string, string>
+  ): Promise<BackInStockRequest[]> {
+    const out: BackInStockRequest[] = [];
+    let page = 1;
+
+    while (true) {
+      try {
+        const response: AxiosResponse<any> = await this.client.get(
+          "/api/back-in-stock-requests",
+          {
+            params: {
+              ...filters,
+              "filters[NotifiedAt][$null]": true,
+              "filters[UnsubscribedAt][$null]": true,
+              "pagination[page]": page,
+              "pagination[pageSize]": 100,
+              sort: "createdAt:asc",
+            },
+          }
+        );
+
+        const data = Array.isArray(response.data?.data)
+          ? response.data.data
+          : [];
+        for (const row of data) {
+          const attrs = row.attributes ?? row;
+          if (!attrs?.documentId && !row.documentId) {
+            continue;
+          }
+          out.push({
+            ...attrs,
+            documentId: row.documentId ?? attrs.documentId,
+            id: row.id ?? attrs.id,
+          });
+        }
+
+        const pagination = response.data?.meta?.pagination;
+        if (!pagination || page >= (pagination.pageCount ?? 1)) {
+          break;
+        }
+        page += 1;
+      } catch (error) {
+        this.logger.error(
+          `Strapi: failed to fetch back-in-stock requests ${JSON.stringify(filters)}`,
+          error
+        );
+        throw error;
+      }
+    }
+
+    return out;
   }
 
   /**
