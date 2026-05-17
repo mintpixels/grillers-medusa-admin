@@ -129,6 +129,9 @@ module.exports = defineConfig({
       },
     },
     {
+      resolve: "./src/modules/legacy-order-history",
+    },
+    {
       resolve: "@medusajs/medusa/analytics",
       options: {
         providers: [
