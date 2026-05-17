@@ -298,8 +298,8 @@ function buildLineBackfillQuery(
     })
     .modify((builder: any) => {
       if (input.descriptionContains) {
-        builder.andWhereRaw("description ilike ? escape '\\\\'", [
-          `%${escapeLike(input.descriptionContains)}%`,
+        builder.andWhereRaw("position(lower(?) in lower(coalesce(description, ''))) > 0", [
+          input.descriptionContains,
         ])
       }
       if (input.descriptionFingerprint) {
@@ -316,10 +316,6 @@ function buildLineBackfillQuery(
     })
 
   return query
-}
-
-function escapeLike(value: string) {
-  return value.replace(/[\\%_]/g, (match) => `\\${match}`)
 }
 
 function whereNullableText(query: any, column: string, value: string | null) {
