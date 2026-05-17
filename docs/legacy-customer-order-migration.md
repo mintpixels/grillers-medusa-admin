@@ -57,10 +57,16 @@ For full-table dry-runs or applies, the script pages through the legacy customer
 ./node_modules/.bin/medusa exec ./src/scripts/import-legacy-customers.ts -- --batch-size=500 --offset=0
 ```
 
+For Railway one-off import jobs, disable Redis-backed cache/event/workflow modules to avoid public Redis proxy instability during long imports:
+
+```bash
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/import-legacy-customers.ts -- --batch-size=500 --offset=0
+```
+
 Apply customers:
 
 ```bash
-./node_modules/.bin/medusa exec ./src/scripts/import-legacy-customers.ts -- --batch-size=500 --apply
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/import-legacy-customers.ts -- --batch-size=500 --apply
 ```
 
 By default, existing Medusa provider passwords are not overwritten. To deliberately refresh existing imported hashes from the legacy password source:
