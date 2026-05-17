@@ -8,6 +8,8 @@ describe("legacy order history line visibility", () => {
     [{ sku: "Subtotal", title: "Subtotal", description: "Subtotal" }, "subtotal"],
     [{ sku: "CCC", title: "CCC", description: "2% credit/debit card processing recovery fee" }, "fee"],
     [{ sku: "Pick Up", title: "Pick Up", description: "Customer Pick Up" }, "fulfillment"],
+    [{ sku: "UPS Ground 1", title: "UPS Ground 1", description: "UPS Ground" }, "fulfillment"],
+    [{ sku: "Del - Memphis", title: "Del - Memphis", description: "Delivery Memphis" }, "fulfillment"],
     [{ sku: "Pick- Up Discount", title: "Pick- Up Discount", description: "Pick Up Discount" }, "discount"],
     [{ mapping_status: "non_product", metadata: { line_kind: "note" } }, "note"],
   ])("classifies non-product QuickBooks line %#", (row, expected) => {

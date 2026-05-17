@@ -263,6 +263,21 @@ function extractSkuLikeValues(value: unknown) {
   return text.match(/\b[A-Z0-9]{1,6}(?:-[A-Z0-9]{1,8}){1,5}\b/gi) ?? []
 }
 
+function legacySkuAliases(value: unknown) {
+  const text = toText(value)
+  if (!text) {
+    return []
+  }
+
+  const aliases = new Set([text])
+  const trailingPassoverSuffix = text.match(/^(.+-[A-Z0-9]+)P$/i)
+  if (trailingPassoverSuffix?.[1]) {
+    aliases.add(trailingPassoverSuffix[1])
+  }
+
+  return Array.from(aliases)
+}
+
 function classifyLegacyLine(input: {
   qbdItemListId?: string | null
   sku?: string | null
@@ -313,6 +328,14 @@ function classifyLegacyLine(input: {
     sku === "pickup" ||
     title === "pick up" ||
     title === "pickup" ||
+    sku?.startsWith("del ") ||
+    title?.startsWith("del ") ||
+    blob.includes(" ups ") ||
+    blob.startsWith("ups ") ||
+    blob.includes(" fedex ") ||
+    blob.startsWith("fedex ") ||
+    blob.includes("ground shipping") ||
+    blob.includes("ups ground") ||
     blob.includes("customer pick up") ||
     blob.includes("local pickup") ||
     blob.includes("shipping") ||
@@ -334,10 +357,11 @@ function classifyLegacyLine(input: {
 
 function lineSkuCandidates(line: NormalizedLine) {
   return uniqueStrings([
-    line.sku,
-    lastNameSegment(line.qbdItemFullName),
-    line.title,
+    ...legacySkuAliases(line.sku),
+    ...legacySkuAliases(lastNameSegment(line.qbdItemFullName)),
+    ...legacySkuAliases(line.title),
     ...extractSkuLikeValues(line.description),
+    ...extractSkuLikeValues(line.description).flatMap(legacySkuAliases),
   ])
 }
 

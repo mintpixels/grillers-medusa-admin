@@ -73,6 +73,14 @@ export function legacyLineKind(row: any): string | null {
     sku === "pickup" ||
     title === "pick up" ||
     title === "pickup" ||
+    sku.startsWith("del ") ||
+    title.startsWith("del ") ||
+    text.includes(" ups ") ||
+    text.startsWith("ups ") ||
+    text.includes(" fedex ") ||
+    text.startsWith("fedex ") ||
+    text.includes("ground shipping") ||
+    text.includes("ups ground") ||
     text.includes("customer pick up") ||
     text.includes("local pickup") ||
     text.includes("shipping") ||
