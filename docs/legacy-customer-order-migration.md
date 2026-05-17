@@ -122,14 +122,15 @@ You can also review and approve the largest unmapped product buckets directly in
 - Go to Legacy Item Mapping.
 - Search by legacy item, description, SKU, customer, or invoice, or leave the search blank to start with the highest-volume unmapped groups.
 - Open matching historical orders before approving if the grouping is ambiguous.
-- Search the current catalog and select the exact current Medusa variant.
+- Review any suggested catalog matches, or search the current catalog and select the exact current Medusa variant.
+- Suggested matches are review aids only. Low-score suggestions and all token-similarity matches still require human confirmation against the historical descriptions and order context.
 - Preview every mapping before approval. The preview confirms the target variant, whether the approval creates a direct QuickBooks item map or scoped description rule, and how many historical lines will be backfilled.
 - Generic QuickBooks buckets such as `Misc. Item` require a description matcher and create scoped `legacy_item_match_rule` rows rather than broad item maps.
 
 For a redacted CLI view of the same admin queue:
 
 ```bash
-DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/audit-legacy-item-mapping-candidates.ts -- --limit=20 --min-lines=10
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/audit-legacy-item-mapping-candidates.ts -- --limit=20 --min-lines=10 --include-suggestions
 ```
 
 For tougher review passes, include the most common historical descriptions and live QuickBooks item facts from Conductor:

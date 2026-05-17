@@ -72,6 +72,17 @@ type VariantSearchResponse = {
   variants: VariantSearchResult[]
 }
 
+type VariantSuggestion = VariantSearchResult & {
+  score: number
+  reasons: string[]
+  identity_warnings: string[]
+  review_status: "high_confidence" | "review_required" | string
+}
+
+type VariantSuggestionResponse = {
+  suggestions: VariantSuggestion[]
+}
+
 function formatDate(value: string | null) {
   if (!value) {
     return "Unknown"
@@ -123,6 +134,8 @@ const LegacyItemMappingPage = () => {
   const [variantQuery, setVariantQuery] = useState("")
   const [variantResults, setVariantResults] = useState<VariantSearchResult[]>([])
   const [isSearchingVariants, setIsSearchingVariants] = useState(false)
+  const [variantSuggestions, setVariantSuggestions] = useState<VariantSuggestion[]>([])
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false)
   const [descriptionContains, setDescriptionContains] = useState("")
   const [staffNote, setStaffNote] = useState("")
   const [preview, setPreview] = useState<MappingResult | null>(null)
@@ -188,6 +201,7 @@ const LegacyItemMappingPage = () => {
       setTargetVariantId("")
       setDescriptionContains("")
       setStaffNote("")
+      setVariantSuggestions([])
       return
     }
 
@@ -195,11 +209,13 @@ const LegacyItemMappingPage = () => {
     setTargetVariantId("")
     setVariantQuery("")
     setVariantResults([])
+    setVariantSuggestions([])
     setDescriptionContains(selected.suggested_description_contains || "")
     setStaffNote("")
     setPreview(null)
     setPreviewKey("")
     setResult(null)
+    void fetchVariantSuggestions(selected)
   }, [selectedKey, selected])
 
   useEffect(() => {
@@ -228,6 +244,46 @@ const LegacyItemMappingPage = () => {
 
   function currentPreviewKey() {
     return JSON.stringify(mappingPayload(false))
+  }
+
+  async function fetchVariantSuggestions(candidate: LegacyItemMappingCandidate) {
+    setIsLoadingSuggestions(true)
+
+    try {
+      const response = await fetch(
+        `/admin/legacy-item-mapping-candidates/suggestions`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            qbd_item_list_id: candidate.qbd_item_list_id,
+            sku: candidate.sku,
+            title: candidate.title,
+            description_group: candidate.description_group,
+            limit: 6,
+            min_score: 0.45,
+          }),
+        }
+      )
+      const body = (await response.json().catch(() => ({}))) as
+        | Partial<VariantSuggestionResponse>
+        | { message?: string }
+      if (!response.ok || !("suggestions" in body)) {
+        throw new Error(
+          "message" in body && body.message
+            ? body.message
+            : `Request failed with ${response.status}`
+        )
+      }
+
+      setVariantSuggestions(body.suggestions || [])
+    } catch (err) {
+      setVariantSuggestions([])
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setIsLoadingSuggestions(false)
+    }
   }
 
   async function searchVariants(event?: FormEvent<HTMLFormElement>) {
@@ -550,6 +606,65 @@ const LegacyItemMappingPage = () => {
                     </Text>
                   </div>
                 )}
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Text size="small" weight="plus">
+                      Suggested catalog matches
+                    </Text>
+                    {isLoadingSuggestions && (
+                      <Text className="text-ui-fg-subtle" size="small">
+                        Scoring...
+                      </Text>
+                    )}
+                  </div>
+                  <div className="max-h-64 overflow-auto rounded-md border border-ui-border-base">
+                    {variantSuggestions.length > 0 ? (
+                      variantSuggestions.map((variant) => (
+                        <button
+                          className="flex w-full flex-col gap-1 border-b border-ui-border-base px-3 py-2 text-left last:border-b-0 hover:bg-ui-bg-subtle"
+                          key={variant.variant_id}
+                          onClick={() => selectVariant(variant)}
+                          type="button"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <Text weight="plus">
+                              {variant.product_title || "Untitled product"}
+                            </Text>
+                            <Badge
+                              color={
+                                variant.review_status === "high_confidence"
+                                  ? "green"
+                                  : "orange"
+                              }
+                            >
+                              {Math.round(variant.score * 100)}%
+                            </Badge>
+                          </div>
+                          <Text className="text-ui-fg-subtle" size="small">
+                            {[variant.variant_title, variant.sku, variant.variant_id]
+                              .filter(Boolean)
+                              .join(" / ")}
+                          </Text>
+                          <Text className="text-ui-fg-subtle" size="small">
+                            {variant.reasons.join(", ")}
+                          </Text>
+                          {variant.identity_warnings.length > 0 && (
+                            <Text className="text-ui-fg-error" size="small">
+                              Check identity: {variant.identity_warnings.join(", ")}
+                            </Text>
+                          )}
+                        </button>
+                      ))
+                    ) : (
+                      <div className="px-3 py-3">
+                        <Text className="text-ui-fg-subtle" size="small">
+                          No safe scored suggestions. Search manually below.
+                        </Text>
+                      </div>
+                    )}
+                  </div>
+                </div>
 
                 <div className="space-y-2">
                   <Text className="text-ui-fg-subtle" size="small">
