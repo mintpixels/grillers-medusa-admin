@@ -152,7 +152,29 @@ Fallback to the legacy MySQL invoice XML mirror:
 
 ## Verification
 
-After import, verify projection counts:
+After import, run the redacted projection audit. This checks Medusa customers,
+`has_account`, emailpass password identities, legacy username aliases, address
+presence when the legacy source is available, QuickBooks order links, and
+historical line mapping coverage:
+
+```bash
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/audit-legacy-customer-projection.ts
+```
+
+For a mechanical gate, fail if imported accounts/orders are broken:
+
+```bash
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/audit-legacy-customer-projection.ts -- --fail-on-gaps
+```
+
+For launch-readiness, also fail on known user-experience compromises such as
+legacy username alias conflicts and unmapped historical product lines:
+
+```bash
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/audit-legacy-customer-projection.ts -- --strict-launch
+```
+
+You can still verify raw table counts when debugging:
 
 ```sql
 select count(*) from legacy_customer_map;
