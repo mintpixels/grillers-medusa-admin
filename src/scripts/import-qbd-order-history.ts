@@ -607,33 +607,14 @@ async function upsertLegacyItemMap(
   }
 
   const now = new Date()
-  const row = {
-    qbd_name: line.qbdItemFullName,
-    sku: line.sku,
-    medusa_product_id: match.medusaProductId,
-    medusa_variant_id: match.medusaVariantId,
-    medusa_product_title: match.medusaProductTitle,
-    medusa_variant_title: match.medusaVariantTitle,
-    confidence: match.confidence,
-    mapping_source: match.mappingSource,
-    last_seen_at: now,
-    metadata: {
-      line_kind: line.lineKind,
-      last_line_title: line.title,
-      last_line_description: line.description,
-    },
-    updated_at: now,
-    deleted_at: null,
+  const row = buildLegacyItemMapUpsertRow(line, match, now)
+  if (!row) {
+    return
   }
 
-  await db("legacy_item_map").insert({
-    id: generateEntityId(undefined, "lgimap"),
-    qbd_item_list_id: line.qbdItemListId,
-    ...row,
-    created_at: now,
-  })
+  await db("legacy_item_map").insert(row)
     .onConflict(db.raw('("qbd_item_list_id") where "deleted_at" is null'))
-    .merge(row)
+    .merge(LEGACY_ITEM_MAP_MERGE_COLUMNS)
   touchedItemMapKeys.add(line.qbdItemListId)
 }
 
@@ -672,6 +653,112 @@ function summarizeUnmappedProduct(line: NormalizedLine): UnmappedProductSummary 
     qbdItemListId: line.qbdItemListId,
     sku: line.sku,
     title: line.title || line.description,
+  }
+}
+
+const LEGACY_ORDER_MERGE_COLUMNS = [
+  "qbd_txn_id",
+  "ref_number",
+  "legacy_order_id",
+  "legacy_customer_id",
+  "qbd_customer_list_id",
+  "medusa_customer_id",
+  "email_lower",
+  "customer_name",
+  "placed_at",
+  "ship_date",
+  "status",
+  "subtotal",
+  "tax_total",
+  "shipping_total",
+  "discount_total",
+  "total",
+  "currency_code",
+  "line_count",
+  "searchable_text",
+  "source_updated_at",
+  "imported_at",
+  "source_snapshot",
+  "metadata",
+  "updated_at",
+  "deleted_at",
+]
+
+const LEGACY_ORDER_LINE_MERGE_COLUMNS = [
+  "legacy_order_id",
+  "qbd_txn_line_id",
+  "qbd_item_list_id",
+  "sku",
+  "title",
+  "description",
+  "quantity",
+  "unit_price",
+  "line_total",
+  "currency_code",
+  "medusa_product_id",
+  "medusa_variant_id",
+  "medusa_product_title",
+  "medusa_variant_title",
+  "mapping_status",
+  "imported_at",
+  "source_snapshot",
+  "metadata",
+  "updated_at",
+  "deleted_at",
+]
+
+const LEGACY_ITEM_MAP_MERGE_COLUMNS = [
+  "qbd_name",
+  "sku",
+  "medusa_product_id",
+  "medusa_variant_id",
+  "medusa_product_title",
+  "medusa_variant_title",
+  "confidence",
+  "mapping_source",
+  "last_seen_at",
+  "metadata",
+  "updated_at",
+  "deleted_at",
+]
+
+function chunkArray<T>(rows: T[], chunkSize: number) {
+  const chunks: T[][] = []
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    chunks.push(rows.slice(index, index + chunkSize))
+  }
+  return chunks
+}
+
+function buildLegacyItemMapUpsertRow(
+  line: NormalizedLine,
+  match: VariantMatch,
+  now: Date
+): Record<string, unknown> | null {
+  if (!line.qbdItemListId) {
+    return null
+  }
+
+  return {
+    id: generateEntityId(undefined, "lgimap"),
+    qbd_item_list_id: line.qbdItemListId,
+    qbd_name: line.qbdItemFullName,
+    sku: line.sku,
+    medusa_product_id: match.medusaProductId,
+    medusa_variant_id: match.medusaVariantId,
+    medusa_product_title: match.medusaProductTitle,
+    medusa_variant_title: match.medusaVariantTitle,
+    confidence: match.confidence,
+    mapping_source: match.mappingSource,
+    last_seen_at: now,
+    metadata: {
+      line_kind: line.lineKind,
+      last_line_title: line.title,
+      last_line_description: line.description,
+    },
+    created_at: now,
+    updated_at: now,
+    deleted_at: null,
   }
 }
 
@@ -841,28 +928,7 @@ async function upsertInvoiceProjection({
     await db("legacy_order_line")
       .insert(lineRows)
       .onConflict(db.raw('("source", "source_line_id") where "deleted_at" is null'))
-      .merge([
-        "legacy_order_id",
-        "qbd_txn_line_id",
-        "qbd_item_list_id",
-        "sku",
-        "title",
-        "description",
-        "quantity",
-        "unit_price",
-        "line_total",
-        "currency_code",
-        "medusa_product_id",
-        "medusa_variant_id",
-        "medusa_product_title",
-        "medusa_variant_title",
-        "mapping_status",
-        "imported_at",
-        "source_snapshot",
-        "metadata",
-        "updated_at",
-        "deleted_at",
-      ])
+      .merge(LEGACY_ORDER_LINE_MERGE_COLUMNS)
   }
 
   if (activeSourceLineIds.length) {
@@ -882,6 +948,272 @@ async function upsertInvoiceProjection({
     mappedLines,
     unmappedProductItems,
   }
+}
+
+type InvoiceProjectionResult = {
+  orderId: string
+  lines: number
+  productLines: number
+  nonProductLines: number
+  mappedLines: number
+  unmappedProductItems: UnmappedProductSummary[]
+}
+
+type PreparedInvoiceProjection = {
+  invoice: NormalizedInvoice
+  orderId: string
+  orderInsertRow: Record<string, unknown>
+  lineRows: Record<string, unknown>[]
+  activeSourceLineIds: string[]
+  itemMapRows: Record<string, unknown>[]
+  result: InvoiceProjectionResult
+}
+
+function prepareInvoiceProjectionDraft({
+  invoice,
+  variantIndexes,
+  existingItemMap,
+  customerProjectionIndex,
+  touchedItemMapKeys,
+}: {
+  invoice: NormalizedInvoice
+  variantIndexes: Awaited<ReturnType<typeof loadVariantIndexes>>
+  existingItemMap: Map<string, any>
+  customerProjectionIndex: Map<string, any>
+  touchedItemMapKeys: Set<string>
+}): PreparedInvoiceProjection {
+  const now = new Date()
+  const customerProjection = invoice.qbdCustomerListId
+    ? customerProjectionIndex.get(invoice.qbdCustomerListId)
+    : null
+  const orderId = generateEntityId(undefined, "lgord")
+  const orderInsertRow = {
+    id: orderId,
+    source: invoice.source,
+    source_order_id: invoice.sourceOrderId,
+    qbd_txn_id: invoice.qbdTxnId,
+    ref_number: invoice.refNumber,
+    legacy_order_id: null,
+    legacy_customer_id: customerProjection?.legacy_customer_id ?? null,
+    qbd_customer_list_id: invoice.qbdCustomerListId,
+    medusa_customer_id: customerProjection?.medusa_customer_id ?? null,
+    email_lower: normalizeEmail(customerProjection?.email_lower),
+    customer_name: invoice.customerName,
+    placed_at: invoice.placedAt,
+    ship_date: invoice.shipDate,
+    status: invoice.status,
+    subtotal: invoice.subtotal,
+    tax_total: invoice.taxTotal,
+    shipping_total: 0,
+    discount_total: 0,
+    total: invoice.total,
+    currency_code: "usd",
+    line_count: invoice.lines.length,
+    searchable_text: buildSearchableText(invoice, customerProjection, invoice.lines),
+    source_updated_at: invoice.sourceUpdatedAt,
+    imported_at: now,
+    source_snapshot: invoice.snapshot,
+    metadata: {
+      projection_version: 1,
+    },
+    created_at: now,
+    updated_at: now,
+    deleted_at: null,
+  }
+
+  const activeSourceLineIds: string[] = []
+  const itemMapRows: Record<string, unknown>[] = []
+  const lineRows: Record<string, unknown>[] = []
+  const unmappedProductItems: UnmappedProductSummary[] = []
+  let mappedLines = 0
+  let productLines = 0
+  let nonProductLines = 0
+
+  for (const line of invoice.lines) {
+    const match = resolveVariantMatch(line, variantIndexes, existingItemMap)
+    if (line.lineKind === "product") {
+      productLines += 1
+    } else {
+      nonProductLines += 1
+    }
+
+    if (line.lineKind === "product" && match.medusaVariantId) {
+      mappedLines += 1
+    } else if (line.lineKind === "product") {
+      unmappedProductItems.push(summarizeUnmappedProduct(line))
+    }
+
+    if (line.qbdItemListId) {
+      if (!touchedItemMapKeys.has(line.qbdItemListId)) {
+        const itemMapRow = buildLegacyItemMapUpsertRow(line, match, now)
+        if (itemMapRow) {
+          itemMapRows.push(itemMapRow)
+          touchedItemMapKeys.add(line.qbdItemListId)
+        }
+      }
+
+      existingItemMap.set(line.qbdItemListId, {
+        qbd_item_list_id: line.qbdItemListId,
+        qbd_name: line.qbdItemFullName,
+        medusa_product_id: match.medusaProductId,
+        medusa_variant_id: match.medusaVariantId,
+        medusa_product_title: match.medusaProductTitle,
+        medusa_variant_title: match.medusaVariantTitle,
+        confidence: match.confidence,
+      })
+    }
+
+    activeSourceLineIds.push(line.sourceLineId)
+    lineRows.push({
+      id: generateEntityId(undefined, "lgline"),
+      legacy_order_id: orderId,
+      source: invoice.source,
+      source_line_id: line.sourceLineId,
+      qbd_txn_line_id: line.qbdTxnLineId,
+      qbd_item_list_id: line.qbdItemListId,
+      sku: line.sku,
+      title: line.title,
+      description: line.description,
+      quantity: line.quantity,
+      unit_price: line.unitPrice,
+      line_total: line.lineTotal,
+      currency_code: "usd",
+      medusa_product_id: match.medusaProductId,
+      medusa_variant_id: match.medusaVariantId,
+      medusa_product_title: match.medusaProductTitle,
+      medusa_variant_title: match.medusaVariantTitle,
+      mapping_status:
+        line.lineKind === "product"
+          ? match.medusaVariantId ? "mapped" : "unmapped"
+          : "non_product",
+      imported_at: now,
+      source_snapshot: line.snapshot,
+      metadata: {
+        line_kind: line.lineKind,
+        mapping_confidence: match.confidence,
+        mapping_source: match.mappingSource,
+      },
+      created_at: now,
+      updated_at: now,
+      deleted_at: null,
+    })
+  }
+
+  return {
+    invoice,
+    orderId,
+    orderInsertRow,
+    lineRows,
+    activeSourceLineIds,
+    itemMapRows,
+    result: {
+      orderId,
+      lines: invoice.lines.length,
+      productLines,
+      nonProductLines,
+      mappedLines,
+      unmappedProductItems,
+    },
+  }
+}
+
+async function upsertInvoiceProjectionBatch({
+  db,
+  invoices,
+  variantIndexes,
+  existingItemMap,
+  customerProjectionIndex,
+  touchedItemMapKeys,
+  lineChunkSize,
+}: {
+  db: any
+  invoices: NormalizedInvoice[]
+  variantIndexes: Awaited<ReturnType<typeof loadVariantIndexes>>
+  existingItemMap: Map<string, any>
+  customerProjectionIndex: Map<string, any>
+  touchedItemMapKeys: Set<string>
+  lineChunkSize: number
+}): Promise<InvoiceProjectionResult[]> {
+  const drafts = invoices.map((invoice) =>
+    prepareInvoiceProjectionDraft({
+      invoice,
+      variantIndexes,
+      existingItemMap,
+      customerProjectionIndex,
+      touchedItemMapKeys,
+    })
+  )
+  if (!drafts.length) {
+    return []
+  }
+
+  await db.transaction(async (trx: any) => {
+    const itemMapRows = drafts.flatMap((draft) => draft.itemMapRows)
+    for (const chunk of chunkArray(itemMapRows, lineChunkSize)) {
+      if (!chunk.length) {
+        continue
+      }
+      await trx("legacy_item_map")
+        .insert(chunk)
+        .onConflict(trx.raw('("qbd_item_list_id") where "deleted_at" is null'))
+        .merge(LEGACY_ITEM_MAP_MERGE_COLUMNS)
+    }
+
+    const persistedOrders = await trx("legacy_order")
+      .insert(drafts.map((draft) => draft.orderInsertRow))
+      .onConflict(trx.raw('("source", "source_order_id") where "deleted_at" is null'))
+      .merge(LEGACY_ORDER_MERGE_COLUMNS)
+      .returning(["id", "source_order_id"])
+
+    const orderIdsBySourceOrderId = new Map<string, string>(
+      persistedOrders.map((row: any) => [
+        String(row.source_order_id),
+        String(row.id),
+      ])
+    )
+
+    const lineRows = drafts.flatMap((draft) => {
+      const persistedOrderId =
+        orderIdsBySourceOrderId.get(draft.invoice.sourceOrderId) ?? draft.orderId
+      draft.result.orderId = persistedOrderId
+      return draft.lineRows.map((row) => ({
+        ...row,
+        legacy_order_id: persistedOrderId,
+      }))
+    })
+
+    for (const chunk of chunkArray(lineRows, lineChunkSize)) {
+      if (!chunk.length) {
+        continue
+      }
+      await trx("legacy_order_line")
+        .insert(chunk)
+        .onConflict(trx.raw('("source", "source_line_id") where "deleted_at" is null'))
+        .merge(LEGACY_ORDER_LINE_MERGE_COLUMNS)
+    }
+
+    const orderIds = Array.from(
+      new Set(drafts.map((draft) => draft.result.orderId))
+    )
+    const activeSourceLineIds = drafts.flatMap((draft) => draft.activeSourceLineIds)
+    if (orderIds.length) {
+      const staleLineQuery = trx("legacy_order_line")
+        .whereIn("legacy_order_id", orderIds)
+        .where("source", drafts[0].invoice.source)
+        .whereNull("deleted_at")
+
+      if (activeSourceLineIds.length) {
+        staleLineQuery.whereNotIn("source_line_id", activeSourceLineIds)
+      }
+
+      await staleLineQuery.update({
+        deleted_at: new Date(),
+        updated_at: new Date(),
+      })
+    }
+  })
+
+  return drafts.map((draft) => draft.result)
 }
 
 function normalizeConductorLine(
@@ -1215,9 +1547,14 @@ export default async function importQbdOrderHistory({ container }: ExecArgs) {
   const offset = getNumberArg(args, ["offset"], 0)
   const pageLimit = Math.min(getNumberArg(args, ["page-limit"], 150), 150)
   const maxPages = getNumberArg(args, ["max-pages-per-request"], 1000)
+  const batchSize = Math.max(1, getNumberArg(args, ["batch-size"], apply ? 250 : 1))
+  const lineChunkSize = Math.max(
+    1,
+    getNumberArg(args, ["line-chunk-size", "line-batch-size"], 2000)
+  )
 
   const variantIndexes = await loadVariantIndexes(db)
-  const existingItemMap = await loadExistingItemMap(db)
+  let existingItemMap = await loadExistingItemMap(db)
   const customerProjectionIndex = await loadCustomerProjectionIndex(db)
   const touchedItemMapKeys = new Set<string>()
   const rawInvoices =
@@ -1267,54 +1604,119 @@ export default async function importQbdOrderHistory({ container }: ExecArgs) {
     }
   >()
 
-  for (const [index, invoice] of rawInvoices.entries()) {
-    try {
-      const result = await upsertInvoiceProjection({
-        db,
-        invoice,
-        variantIndexes,
-        existingItemMap,
-        customerProjectionIndex,
-        touchedItemMapKeys,
-        apply,
-      })
-      stats.imported += 1
-      stats.lines += result.lines
-      stats.productLines += result.productLines
-      stats.nonProductLines += result.nonProductLines
-      stats.mappedLines += result.mappedLines
-      for (const item of result.unmappedProductItems) {
-        const existing = unmappedProducts.get(item.key)
-        if (existing) {
-          existing.count += 1
-        } else {
-          unmappedProducts.set(item.key, {
-            sku: item.sku,
-            title: item.title,
-            qbdItemListId: item.qbdItemListId,
-            count: 1,
-          })
+  const recordResult = (result: InvoiceProjectionResult) => {
+    stats.imported += 1
+    stats.lines += result.lines
+    stats.productLines += result.productLines
+    stats.nonProductLines += result.nonProductLines
+    stats.mappedLines += result.mappedLines
+    for (const item of result.unmappedProductItems) {
+      const existing = unmappedProducts.get(item.key)
+      if (existing) {
+        existing.count += 1
+      } else {
+        unmappedProducts.set(item.key, {
+          sku: item.sku,
+          title: item.title,
+          qbdItemListId: item.qbdItemListId,
+          count: 1,
+        })
+      }
+    }
+  }
+
+  const logProgress = (processed: number) => {
+    logger.info(
+      `[qbd-order-history] upsert progress ${JSON.stringify({
+        processed,
+        total: rawInvoices.length,
+        imported: stats.imported,
+        failed: stats.failed,
+        lines: stats.lines,
+        mappedLines: stats.mappedLines,
+      })}`
+    )
+  }
+
+  if (apply) {
+    let processed = 0
+    for (const batch of chunkArray(rawInvoices, batchSize)) {
+      try {
+        const results = await upsertInvoiceProjectionBatch({
+          db,
+          invoices: batch,
+          variantIndexes,
+          existingItemMap,
+          customerProjectionIndex,
+          touchedItemMapKeys,
+          lineChunkSize,
+        })
+        for (const result of results) {
+          recordResult(result)
+        }
+        processed += batch.length
+        logProgress(processed)
+      } catch (error) {
+        logger.error(
+          `[qbd-order-history] batch failed processed=${processed} size=${batch.length}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        )
+        existingItemMap = await loadExistingItemMap(db)
+        touchedItemMapKeys.clear()
+
+        for (const invoice of batch) {
+          try {
+            const result = await upsertInvoiceProjection({
+              db,
+              invoice,
+              variantIndexes,
+              existingItemMap,
+              customerProjectionIndex,
+              touchedItemMapKeys,
+              apply,
+            })
+            recordResult(result)
+          } catch (invoiceError) {
+            stats.failed += 1
+            logger.error(
+              `[qbd-order-history] failed source_order_id=${invoice.sourceOrderId}: ${
+                invoiceError instanceof Error ? invoiceError.message : String(invoiceError)
+              }`
+            )
+          } finally {
+            processed += 1
+            if (processed % 500 === 0 || processed === rawInvoices.length) {
+              logProgress(processed)
+            }
+          }
         }
       }
-      if ((index + 1) % 500 === 0 || index + 1 === rawInvoices.length) {
-        logger.info(
-          `[qbd-order-history] upsert progress ${JSON.stringify({
-            processed: index + 1,
-            total: rawInvoices.length,
-            imported: stats.imported,
-            failed: stats.failed,
-            lines: stats.lines,
-            mappedLines: stats.mappedLines,
-          })}`
+    }
+  } else {
+    for (const [index, invoice] of rawInvoices.entries()) {
+      try {
+        const result = await upsertInvoiceProjection({
+          db,
+          invoice,
+          variantIndexes,
+          existingItemMap,
+          customerProjectionIndex,
+          touchedItemMapKeys,
+          apply,
+        })
+        recordResult(result)
+        if ((index + 1) % 500 === 0 || index + 1 === rawInvoices.length) {
+          logProgress(index + 1)
+        }
+      } catch (error) {
+        stats.failed += 1
+        logger.error(
+          `[qbd-order-history] failed source_order_id=${invoice.sourceOrderId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
         )
       }
-    } catch (error) {
-      stats.failed += 1
-      logger.error(
-        `[qbd-order-history] failed source_order_id=${invoice.sourceOrderId}: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      )
     }
   }
 
