@@ -8,9 +8,11 @@ import {
 } from "@medusajs/framework/utils"
 import {
   compact,
+  envVarsAreSet,
   getNumberArg,
   getStringArg,
   isoDate,
+  loadEnvFilesUntil,
   loadFirstExistingEnvFile,
   normalizeEmail,
   parseArgs,
@@ -91,6 +93,15 @@ type UnmappedProductSummary = {
 const AMBIGUOUS = Symbol("ambiguous_variant_match")
 
 type UniqueVariantIndex = Map<string, any | typeof AMBIGUOUS>
+
+function legacyDbEnvIsAvailable() {
+  return envVarsAreSet([
+    "LEGACY_DB_HOST",
+    "LEGACY_DB_NAME",
+    "LEGACY_DB_USER",
+    "LEGACY_DB_PASSWORD",
+  ])
+}
 
 function dateOnly(date: Date) {
   return date.toISOString().slice(0, 10)
@@ -1512,13 +1523,16 @@ async function fetchLegacyMysqlInvoices({
   offset: number
   envFile?: string
 }) {
-  loadFirstExistingEnvFile([
+  loadEnvFilesUntil([
     envFile,
     process.env.LEGACY_ENV_FILE,
     process.env.ENV_FILE,
     ".env.legacy",
+    ".env.local",
+    ".env",
     "../grillerspride/.env.legacy",
-  ])
+    "../grillerspride/.env",
+  ], legacyDbEnvIsAvailable)
 
   const connection = await mysql.createConnection({
     host: requiredEnv("LEGACY_DB_HOST"),

@@ -2,10 +2,11 @@ import mysql from "mysql2/promise"
 import { ExecArgs } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import {
+  envVarsAreSet,
   getBooleanArg,
   getNumberArg,
   getStringArg,
-  loadFirstExistingEnvFile,
+  loadEnvFilesUntil,
   parseArgs,
 } from "./lib/legacy-import-utils"
 
@@ -72,12 +73,12 @@ function usernameLoginKeys(row: CustomerProjectionRow) {
 }
 
 function legacyEnvIsAvailable() {
-  return [
+  return envVarsAreSet([
     "LEGACY_DB_HOST",
     "LEGACY_DB_NAME",
     "LEGACY_DB_USER",
     "LEGACY_DB_PASSWORD",
-  ].every((name) => Boolean(process.env[name]))
+  ])
 }
 
 function rawAddressExpression() {
@@ -114,7 +115,7 @@ async function loadLegacySourceFacts({
     }
   }
 
-  const loadedEnvFile = loadFirstExistingEnvFile([
+  const loadedEnvFiles = loadEnvFilesUntil([
     envFile,
     process.env.LEGACY_ENV_FILE,
     process.env.ENV_FILE,
@@ -123,13 +124,14 @@ async function loadLegacySourceFacts({
     ".env",
     "../grillerspride/.env.legacy",
     "../grillerspride/.env",
-  ])
+  ], legacyEnvIsAvailable)
 
   if (!legacyEnvIsAvailable()) {
     return {
       available: false,
       reason: "missing_legacy_db_env",
-      loadedEnvFile,
+      loadedEnvFile: loadedEnvFiles[0] ?? null,
+      loadedEnvFiles,
       idsWithPassword: new Set<string>(),
       idsWithRawAddress: new Set<string>(),
       totals: null,
@@ -175,7 +177,8 @@ async function loadLegacySourceFacts({
     return {
       available: true,
       reason: null,
-      loadedEnvFile,
+      loadedEnvFile: loadedEnvFiles[0] ?? null,
+      loadedEnvFiles,
       idsWithPassword,
       idsWithRawAddress,
       totals: {

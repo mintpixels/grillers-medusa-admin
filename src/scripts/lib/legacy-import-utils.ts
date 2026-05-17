@@ -128,6 +128,41 @@ export function loadFirstExistingEnvFile(candidates: Array<string | undefined>) 
   return null
 }
 
+export function loadEnvFilesUntil(
+  candidates: Array<string | undefined>,
+  isReady: () => boolean
+) {
+  const loaded: string[] = []
+
+  if (isReady()) {
+    return loaded
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue
+    }
+
+    const resolved = path.resolve(candidate)
+    if (!fs.existsSync(resolved)) {
+      continue
+    }
+
+    parseEnvFile(resolved)
+    loaded.push(resolved)
+
+    if (isReady()) {
+      return loaded
+    }
+  }
+
+  return loaded
+}
+
+export function envVarsAreSet(names: string[]) {
+  return names.every((name) => Boolean(process.env[name]))
+}
+
 export function requiredEnv(name: string): string {
   const value = process.env[name]
   if (!value) {

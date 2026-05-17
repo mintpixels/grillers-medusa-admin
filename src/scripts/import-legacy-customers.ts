@@ -7,11 +7,12 @@ import {
 } from "@medusajs/framework/utils"
 import {
   compact,
+  envVarsAreSet,
   getBooleanArg,
   getNumberArg,
   getStringArg,
   isTruthyLegacyFlag,
-  loadFirstExistingEnvFile,
+  loadEnvFilesUntil,
   normalizeEmail,
   normalizePhone,
   parseArgs,
@@ -41,6 +42,15 @@ type ImportableAddress = {
 
 const AUTH_PROVIDER = "emailpass"
 const PASSWORD_HASH_CONFIG = { logN: 15, r: 8, p: 1 }
+
+function legacyDbEnvIsAvailable() {
+  return envVarsAreSet([
+    "LEGACY_DB_HOST",
+    "LEGACY_DB_NAME",
+    "LEGACY_DB_USER",
+    "LEGACY_DB_PASSWORD",
+  ])
+}
 
 function countryCode(value: unknown): string {
   const text = String(value ?? "").trim().toLowerCase()
@@ -641,15 +651,18 @@ export default async function importLegacyCustomers({ container }: ExecArgs) {
   const batchSize = Math.max(requestedBatchSize || 500, 1)
   const envFile = getStringArg(args, ["env-file", "legacy-env-file"])
 
-  const loadedEnv = loadFirstExistingEnvFile([
+  const loadedEnv = loadEnvFilesUntil([
     envFile,
     process.env.LEGACY_ENV_FILE,
     process.env.ENV_FILE,
     ".env.legacy",
+    ".env.local",
+    ".env",
     "../grillerspride/.env.legacy",
-  ])
+    "../grillerspride/.env",
+  ], legacyDbEnvIsAvailable)
 
-  if (!loadedEnv) {
+  if (!loadedEnv.length) {
     logger.warn(
       "[legacy-customers] no env file loaded; expecting legacy DB env vars in process environment"
     )
