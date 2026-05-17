@@ -190,6 +190,16 @@ Spot-check admin lookup:
 - Search by customer name, invoice/ref number, SKU, or item title.
 - Open an order and confirm line-level contents are visible.
 
+Resolve staff-assisted reorder requests:
+
+- Open Medusa Admin.
+- Go to Legacy Reorder Requests.
+- Search or filter submitted requests.
+- Open the matching historical orders before mapping.
+- Enter the exact current Medusa SKU or variant ID only when the legacy item and the current catalog item are the same sellable product.
+- For generic QuickBooks buckets such as `Misc. Item`, keep the description matcher in place so the approval creates a scoped `legacy_item_match_rule` instead of mapping the whole bucket.
+- Approving a mapping backfills matching historical product lines, creates/updates the durable mapping rule, and marks the customer request as `mapped`.
+
 Spot-check storefront reorder:
 
 - Sign in as a migrated customer.

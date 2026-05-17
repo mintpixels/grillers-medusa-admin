@@ -13,5 +13,10 @@ export default defineMiddlewares({
       method: ["GET"],
       middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
     },
+    {
+      matcher: "/admin/legacy-reorder-requests*",
+      method: ["GET", "POST"],
+      middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
+    },
   ],
 })
