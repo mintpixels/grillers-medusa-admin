@@ -576,35 +576,37 @@ function resolveVariantMatch(
   }
 }
 
-async function resolveCustomerProjection(db: any, qbdCustomerListId: string | null) {
-  if (!qbdCustomerListId) {
-    return null
-  }
-
-  return db("legacy_customer_map")
-    .select(["medusa_customer_id", "email_lower", "legacy_customer_id"])
-    .where("qbd_customer_list_id", qbdCustomerListId)
+async function loadCustomerProjectionIndex(db: any): Promise<Map<string, any>> {
+  const rows = await db("legacy_customer_map")
+    .select([
+      "qbd_customer_list_id",
+      "medusa_customer_id",
+      "email_lower",
+      "legacy_customer_id",
+    ])
+    .whereNotNull("qbd_customer_list_id")
     .whereNull("deleted_at")
-    .first()
+
+  return new Map(
+    rows.map((row: any) => [String(row.qbd_customer_list_id), row] as [string, any])
+  )
 }
 
 async function upsertLegacyItemMap(
   db: any,
   line: NormalizedLine,
   match: VariantMatch,
-  apply: boolean
+  apply: boolean,
+  touchedItemMapKeys: Set<string>
 ) {
   if (!apply || !line.qbdItemListId) {
     return
   }
+  if (touchedItemMapKeys.has(line.qbdItemListId)) {
+    return
+  }
 
   const now = new Date()
-  const existing = await db("legacy_item_map")
-    .select("id")
-    .where("qbd_item_list_id", line.qbdItemListId)
-    .whereNull("deleted_at")
-    .first()
-
   const row = {
     qbd_name: line.qbdItemFullName,
     sku: line.sku,
@@ -621,11 +623,7 @@ async function upsertLegacyItemMap(
       last_line_description: line.description,
     },
     updated_at: now,
-  }
-
-  if (existing) {
-    await db("legacy_item_map").where({ id: existing.id }).update(row)
-    return
+    deleted_at: null,
   }
 
   await db("legacy_item_map").insert({
@@ -634,6 +632,9 @@ async function upsertLegacyItemMap(
     ...row,
     created_at: now,
   })
+    .onConflict(db.raw('("qbd_item_list_id") where "deleted_at" is null'))
+    .merge(row)
+  touchedItemMapKeys.add(line.qbdItemListId)
 }
 
 function buildSearchableText(
@@ -679,27 +680,23 @@ async function upsertInvoiceProjection({
   invoice,
   variantIndexes,
   existingItemMap,
+  customerProjectionIndex,
+  touchedItemMapKeys,
   apply,
 }: {
   db: any
   invoice: NormalizedInvoice
   variantIndexes: Awaited<ReturnType<typeof loadVariantIndexes>>
   existingItemMap: Map<string, any>
+  customerProjectionIndex: Map<string, any>
+  touchedItemMapKeys: Set<string>
   apply: boolean
 }) {
   const now = new Date()
-  const customerProjection = await resolveCustomerProjection(
-    db,
-    invoice.qbdCustomerListId
-  )
-  const existing = await db("legacy_order")
-    .select("id")
-    .where("source", invoice.source)
-    .where("source_order_id", invoice.sourceOrderId)
-    .whereNull("deleted_at")
-    .first()
-
-  const orderId = existing?.id ?? generateEntityId(undefined, "lgord")
+  const customerProjection = invoice.qbdCustomerListId
+    ? customerProjectionIndex.get(invoice.qbdCustomerListId)
+    : null
+  let orderId = generateEntityId(undefined, "lgord")
   const orderRow = {
     source: invoice.source,
     source_order_id: invoice.sourceOrderId,
@@ -729,6 +726,7 @@ async function upsertInvoiceProjection({
       projection_version: 1,
     },
     updated_at: now,
+    deleted_at: null,
   }
 
   if (!apply) {
@@ -760,21 +758,23 @@ async function upsertInvoiceProjection({
     }
   }
 
-  if (existing) {
-    await db("legacy_order").where({ id: orderId }).update(orderRow)
-  } else {
-    await db("legacy_order").insert({
+  const [persistedOrder] = await db("legacy_order")
+    .insert({
       id: orderId,
       ...orderRow,
       created_at: now,
     })
-  }
+    .onConflict(db.raw('("source", "source_order_id") where "deleted_at" is null'))
+    .merge(orderRow)
+    .returning("id")
+  orderId = persistedOrder?.id ?? orderId
 
   const activeSourceLineIds: string[] = []
   let mappedLines = 0
   let productLines = 0
   let nonProductLines = 0
   const unmappedProductItems: UnmappedProductSummary[] = []
+  const lineRows: Record<string, unknown>[] = []
 
   for (const line of invoice.lines) {
     const match = resolveVariantMatch(line, variantIndexes, existingItemMap)
@@ -788,7 +788,7 @@ async function upsertInvoiceProjection({
     } else if (line.lineKind === "product") {
       unmappedProductItems.push(summarizeUnmappedProduct(line))
     }
-    await upsertLegacyItemMap(db, line, match, apply)
+    await upsertLegacyItemMap(db, line, match, apply, touchedItemMapKeys)
     if (line.qbdItemListId) {
       existingItemMap.set(line.qbdItemListId, {
         qbd_item_list_id: line.qbdItemListId,
@@ -802,14 +802,8 @@ async function upsertInvoiceProjection({
     }
 
     activeSourceLineIds.push(line.sourceLineId)
-    const existingLine = await db("legacy_order_line")
-      .select("id")
-      .where("source", invoice.source)
-      .where("source_line_id", line.sourceLineId)
-      .whereNull("deleted_at")
-      .first()
-
-    const lineRow = {
+    lineRows.push({
+      id: generateEntityId(undefined, "lgline"),
       legacy_order_id: orderId,
       source: invoice.source,
       source_line_id: line.sourceLineId,
@@ -838,17 +832,37 @@ async function upsertInvoiceProjection({
         mapping_source: match.mappingSource,
       },
       updated_at: now,
-    }
+      deleted_at: null,
+      created_at: now,
+    })
+  }
 
-    if (existingLine) {
-      await db("legacy_order_line").where({ id: existingLine.id }).update(lineRow)
-    } else {
-      await db("legacy_order_line").insert({
-        id: generateEntityId(undefined, "lgline"),
-        ...lineRow,
-        created_at: now,
-      })
-    }
+  if (lineRows.length) {
+    await db("legacy_order_line")
+      .insert(lineRows)
+      .onConflict(db.raw('("source", "source_line_id") where "deleted_at" is null'))
+      .merge([
+        "legacy_order_id",
+        "qbd_txn_line_id",
+        "qbd_item_list_id",
+        "sku",
+        "title",
+        "description",
+        "quantity",
+        "unit_price",
+        "line_total",
+        "currency_code",
+        "medusa_product_id",
+        "medusa_variant_id",
+        "medusa_product_title",
+        "medusa_variant_title",
+        "mapping_status",
+        "imported_at",
+        "source_snapshot",
+        "metadata",
+        "updated_at",
+        "deleted_at",
+      ])
   }
 
   if (activeSourceLineIds.length) {
@@ -957,12 +971,14 @@ async function fetchConductorInvoices({
   maxRecords,
   pageLimit,
   maxPages,
+  logger,
 }: {
   startDate: string
   endDate: string
   maxRecords: number
   pageLimit: number
   maxPages: number
+  logger?: { info: (message: string) => void }
 }) {
   loadFirstExistingEnvFile([
     process.env.CONDUCTOR_ENV_FILE,
@@ -986,6 +1002,9 @@ async function fetchConductorInvoices({
   const byId = new Map<string, any>()
 
   for (const range of ranges) {
+    logger?.info(
+      `[qbd-order-history] fetching conductor invoices ${range.startDate}..${range.endDate}`
+    )
     const rows = await fetchRangeWithSplit(
       (rangeStart, rangeEnd) =>
         conductor.qbd.invoices.list({
@@ -999,6 +1018,9 @@ async function fetchConductorInvoices({
       range.endDate,
       maxPages
     )
+    logger?.info(
+      `[qbd-order-history] fetched conductor invoices ${range.startDate}..${range.endDate} rows=${rows.length}`
+    )
 
     for (const row of rows) {
       if (row?.id) {
@@ -1008,6 +1030,9 @@ async function fetchConductorInvoices({
         return Array.from(byId.values())
       }
     }
+    logger?.info(
+      `[qbd-order-history] accumulated conductor invoices cumulative=${byId.size}`
+    )
   }
 
   return Array.from(byId.values())
@@ -1193,6 +1218,8 @@ export default async function importQbdOrderHistory({ container }: ExecArgs) {
 
   const variantIndexes = await loadVariantIndexes(db)
   const existingItemMap = await loadExistingItemMap(db)
+  const customerProjectionIndex = await loadCustomerProjectionIndex(db)
+  const touchedItemMapKeys = new Set<string>()
   const rawInvoices =
     source === "legacy-mysql"
       ? await fetchLegacyMysqlInvoices({
@@ -1208,6 +1235,7 @@ export default async function importQbdOrderHistory({ container }: ExecArgs) {
           maxRecords,
           pageLimit,
           maxPages,
+          logger,
         }))
           .map(normalizeConductorInvoice)
           .filter((invoice): invoice is NormalizedInvoice => !!invoice)
@@ -1239,13 +1267,15 @@ export default async function importQbdOrderHistory({ container }: ExecArgs) {
     }
   >()
 
-  for (const invoice of rawInvoices) {
+  for (const [index, invoice] of rawInvoices.entries()) {
     try {
       const result = await upsertInvoiceProjection({
         db,
         invoice,
         variantIndexes,
         existingItemMap,
+        customerProjectionIndex,
+        touchedItemMapKeys,
         apply,
       })
       stats.imported += 1
@@ -1265,6 +1295,18 @@ export default async function importQbdOrderHistory({ container }: ExecArgs) {
             count: 1,
           })
         }
+      }
+      if ((index + 1) % 500 === 0 || index + 1 === rawInvoices.length) {
+        logger.info(
+          `[qbd-order-history] upsert progress ${JSON.stringify({
+            processed: index + 1,
+            total: rawInvoices.length,
+            imported: stats.imported,
+            failed: stats.failed,
+            lines: stats.lines,
+            mappedLines: stats.mappedLines,
+          })}`
+        )
       }
     } catch (error) {
       stats.failed += 1
