@@ -5,7 +5,7 @@ export default defineMiddlewares({
   routes: [
     {
       matcher: "/store/legacy-order-history/*",
-      method: ["GET"],
+      method: ["GET", "POST"],
       middlewares: [authenticate("customer", ["session", "bearer"])],
     },
     {
