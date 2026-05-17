@@ -655,7 +655,7 @@ export default async function importLegacyCustomers({ container }: ExecArgs) {
     )
   }
 
-  const connection = await mysql.createConnection({
+  const legacyConnectionConfig = {
     host: requiredEnv("LEGACY_DB_HOST"),
     port: Number(process.env.LEGACY_DB_PORT || 3306),
     database: requiredEnv("LEGACY_DB_NAME"),
@@ -663,7 +663,19 @@ export default async function importLegacyCustomers({ container }: ExecArgs) {
     password: requiredEnv("LEGACY_DB_PASSWORD"),
     connectTimeout: 20000,
     ssl: process.env.LEGACY_DB_SSL === "1" ? {} : undefined,
-  })
+  }
+
+  async function fetchLegacyCustomerBatch(pageLimit: number, currentOffset: number) {
+    const connection = await mysql.createConnection(legacyConnectionConfig)
+    try {
+      const [rows] = await connection.query(
+        buildLegacyCustomerQuery(pageLimit, currentOffset)
+      )
+      return rows as LegacyCustomerRow[]
+    } finally {
+      await connection.end().catch(() => undefined)
+    }
+  }
 
   const stats = {
     seen: 0,
@@ -749,41 +761,34 @@ export default async function importLegacyCustomers({ container }: ExecArgs) {
     }
   }
 
-  try {
-    let currentOffset = offset
-    let remaining = limit > 0 ? limit : Number.POSITIVE_INFINITY
+  let currentOffset = offset
+  let remaining = limit > 0 ? limit : Number.POSITIVE_INFINITY
 
-    while (remaining > 0) {
-      const pageLimit = Math.min(batchSize, remaining)
-      const [rows] = await connection.query(
-        buildLegacyCustomerQuery(pageLimit, currentOffset)
-      )
-      const batch = rows as LegacyCustomerRow[]
-      if (!batch.length) {
-        break
-      }
-
-      for (const row of batch) {
-        await processLegacyCustomerRow(row)
-      }
-
-      currentOffset += batch.length
-      remaining -= batch.length
-
-      logger.info(
-        `[legacy-customers] progress ${JSON.stringify({
-          seen: stats.seen,
-          failed: stats.failed,
-          nextOffset: currentOffset,
-        })}`
-      )
-
-      if (batch.length < pageLimit) {
-        break
-      }
+  while (remaining > 0) {
+    const pageLimit = Math.min(batchSize, remaining)
+    const batch = await fetchLegacyCustomerBatch(pageLimit, currentOffset)
+    if (!batch.length) {
+      break
     }
-  } finally {
-    await connection.end()
+
+    for (const row of batch) {
+      await processLegacyCustomerRow(row)
+    }
+
+    currentOffset += batch.length
+    remaining -= batch.length
+
+    logger.info(
+      `[legacy-customers] progress ${JSON.stringify({
+        seen: stats.seen,
+        failed: stats.failed,
+        nextOffset: currentOffset,
+      })}`
+    )
+
+    if (batch.length < pageLimit) {
+      break
+    }
   }
 
   logger.info(
