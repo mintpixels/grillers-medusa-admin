@@ -116,6 +116,11 @@ Generate a review CSV for the most common unmapped items:
 
 Every generated row is review-oriented. Apply only rows where the legacy description and target Medusa product are the same sellable item, not merely a similar category. Dry-run the mapping file:
 The candidate CSV intentionally prefixes target columns with `candidate_`; copy reviewed rows into an import CSV with `medusa_variant_id` or `medusa_sku` before applying.
+For tougher review passes, include the most common historical descriptions and live QuickBooks item facts from Conductor:
+
+```bash
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/export-legacy-item-map-candidates.ts -- --limit=300 --min-lines=20 --description-samples=5 --include-qbd-items --qbd-item-limit=300 --output=./legacy-item-map-candidates.csv
+```
 
 If classifier rules improve after an import, first reconcile legacy line kinds so accounting/service artifacts do not stay in the customer-visible unmapped product pool:
 
