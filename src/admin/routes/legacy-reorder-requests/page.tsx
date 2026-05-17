@@ -53,6 +53,7 @@ type ReorderRequestListResponse = {
 }
 
 type MappingResult = {
+  dry_run?: boolean
   result: {
     lineRowsBackfilled: number
     itemMapUpserted: boolean
@@ -64,6 +65,18 @@ type MappingResult = {
       variant_title: string | null
     }
   }
+}
+
+type VariantSearchResult = {
+  variant_id: string
+  sku: string | null
+  variant_title: string | null
+  product_id: string | null
+  product_title: string | null
+}
+
+type VariantSearchResponse = {
+  variants: VariantSearchResult[]
 }
 
 const statusOptions = [
@@ -132,8 +145,13 @@ const LegacyReorderRequestsPage = () => {
   const [result, setResult] = useState<string | null>(null)
   const [targetSku, setTargetSku] = useState("")
   const [targetVariantId, setTargetVariantId] = useState("")
+  const [variantQuery, setVariantQuery] = useState("")
+  const [variantResults, setVariantResults] = useState<VariantSearchResult[]>([])
+  const [isSearchingVariants, setIsSearchingVariants] = useState(false)
   const [descriptionContains, setDescriptionContains] = useState("")
   const [staffNote, setStaffNote] = useState("")
+  const [preview, setPreview] = useState<MappingResult | null>(null)
+  const [previewKey, setPreviewKey] = useState("")
 
   const selected = useMemo(
     () => requests.find((request) => request.id === selectedId) ?? null,
@@ -193,10 +211,19 @@ const LegacyReorderRequestsPage = () => {
 
     setTargetSku(selected.metadata?.mapping_result?.medusa_sku || "")
     setTargetVariantId(selected.metadata?.mapping_result?.medusa_variant_id || "")
+    setVariantQuery("")
+    setVariantResults([])
     setDescriptionContains(isGenericRequest(selected) ? selected.title : "")
     setStaffNote(selected.metadata?.staff_note || "")
+    setPreview(null)
+    setPreviewKey("")
     setResult(null)
   }, [selectedId, selected])
+
+  useEffect(() => {
+    setPreview(null)
+    setPreviewKey("")
+  }, [targetSku, targetVariantId, descriptionContains, staffNote])
 
   function onSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -234,9 +261,112 @@ const LegacyReorderRequestsPage = () => {
     }
   }
 
+  function mappingPayload(dryRun: boolean) {
+    return {
+      medusa_sku: targetSku,
+      medusa_variant_id: targetVariantId,
+      description_contains: descriptionContains,
+      staff_note: staffNote,
+      dry_run: dryRun,
+    }
+  }
+
+  function currentPreviewKey() {
+    return JSON.stringify(mappingPayload(false))
+  }
+
+  async function searchVariants(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault()
+    if (!variantQuery.trim()) {
+      setVariantResults([])
+      return
+    }
+
+    setIsSearchingVariants(true)
+    setError(null)
+
+    try {
+      const params = new URLSearchParams({
+        q: variantQuery.trim(),
+        limit: "12",
+      })
+      const response = await fetch(
+        `/admin/legacy-reorder-requests/variants?${params}`,
+        { credentials: "include" }
+      )
+      const body = (await response.json().catch(() => ({}))) as Partial<VariantSearchResponse> & {
+        message?: string
+      }
+      if (!response.ok) {
+        throw new Error(body.message || `Request failed with ${response.status}`)
+      }
+
+      setVariantResults(body.variants || [])
+      if (!body.variants?.length) {
+        setResult("No current catalog variants matched that search.")
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setIsSearchingVariants(false)
+    }
+  }
+
+  function selectVariant(variant: VariantSearchResult) {
+    setTargetSku(variant.sku || "")
+    setTargetVariantId(variant.variant_id)
+    setVariantQuery(
+      [variant.product_title, variant.variant_title, variant.sku]
+        .filter(Boolean)
+        .join(" / ")
+    )
+    setVariantResults([])
+  }
+
+  async function previewMapping() {
+    if (!selected) return
+
+    setIsSubmitting(true)
+    setError(null)
+    setResult(null)
+    setPreview(null)
+    setPreviewKey("")
+
+    try {
+      const response = await fetch(
+        `/admin/legacy-reorder-requests/${selected.id}/map`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(mappingPayload(true)),
+        }
+      )
+      const body = (await response.json().catch(() => ({}))) as Partial<MappingResult> & {
+        message?: string
+      }
+      if (!response.ok || !body.result) {
+        throw new Error(body.message || `Request failed with ${response.status}`)
+      }
+
+      setPreview(body as MappingResult)
+      setPreviewKey(currentPreviewKey())
+      setResult("Preview ready. Confirm the target before approving.")
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   async function approveMapping(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!selected) return
+
+    if (!preview || previewKey !== currentPreviewKey()) {
+      setError("Preview this exact mapping before approving it.")
+      return
+    }
 
     setIsSubmitting(true)
     setError(null)
@@ -249,12 +379,7 @@ const LegacyReorderRequestsPage = () => {
           method: "POST",
           credentials: "include",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            medusa_sku: targetSku,
-            medusa_variant_id: targetVariantId,
-            description_contains: descriptionContains,
-            staff_note: staffNote,
-          }),
+          body: JSON.stringify(mappingPayload(false)),
         }
       )
       const body = (await response.json().catch(() => ({}))) as Partial<MappingResult> & {
@@ -266,6 +391,8 @@ const LegacyReorderRequestsPage = () => {
 
       const rows = body.result?.lineRowsBackfilled ?? 0
       setResult(`Mapped ${rows} historical line${rows === 1 ? "" : "s"}.`)
+      setPreview(null)
+      setPreviewKey("")
       await fetchRequests()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -464,6 +591,49 @@ const LegacyReorderRequestsPage = () => {
                   </div>
                 )}
 
+                <div className="space-y-2">
+                  <Text className="text-ui-fg-subtle" size="small">
+                    Find current catalog variant
+                  </Text>
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                    <Input
+                      value={variantQuery}
+                      onChange={(event) => setVariantQuery(event.target.value)}
+                      placeholder="Search product title, variant title, SKU, or variant ID"
+                    />
+                    <Button
+                      disabled={isSearchingVariants}
+                      isLoading={isSearchingVariants}
+                      onClick={() => void searchVariants()}
+                      type="button"
+                      variant="secondary"
+                    >
+                      Find
+                    </Button>
+                  </div>
+                  {variantResults.length > 0 && (
+                    <div className="max-h-56 overflow-auto rounded-md border border-ui-border-base">
+                      {variantResults.map((variant) => (
+                        <button
+                          className="flex w-full flex-col border-b border-ui-border-base px-3 py-2 text-left last:border-b-0 hover:bg-ui-bg-subtle"
+                          key={variant.variant_id}
+                          onClick={() => selectVariant(variant)}
+                          type="button"
+                        >
+                          <Text weight="plus">
+                            {variant.product_title || "Untitled product"}
+                          </Text>
+                          <Text className="text-ui-fg-subtle" size="small">
+                            {[variant.variant_title, variant.sku, variant.variant_id]
+                              .filter(Boolean)
+                              .join(" / ")}
+                          </Text>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <div>
                   <Text className="mb-1 text-ui-fg-subtle" size="small">
                     Medusa SKU
@@ -508,8 +678,46 @@ const LegacyReorderRequestsPage = () => {
                   />
                 </div>
 
+                {preview && previewKey === currentPreviewKey() && (
+                  <div className="rounded-md border border-ui-border-base bg-ui-bg-subtle p-3">
+                    <Text size="small" weight="plus">
+                      Mapping preview
+                    </Text>
+                    <Text className="mt-1 text-ui-fg-subtle" size="small">
+                      Target: {preview.result.variant.product_title || "Untitled product"}
+                      {preview.result.variant.variant_title
+                        ? ` / ${preview.result.variant.variant_title}`
+                        : ""}
+                      {preview.result.variant.sku ? ` / ${preview.result.variant.sku}` : ""}
+                    </Text>
+                    <Text className="mt-1 text-ui-fg-subtle" size="small">
+                      This will backfill {preview.result.lineRowsBackfilled} historical line
+                      {preview.result.lineRowsBackfilled === 1 ? "" : "s"} and create{" "}
+                      {preview.result.matchRuleUpserted
+                        ? "a scoped description match rule"
+                        : "a direct QuickBooks item map"}.
+                    </Text>
+                  </div>
+                )}
+
                 <div className="flex flex-wrap gap-2">
-                  <Button isLoading={isSubmitting} type="submit">
+                  <Button
+                    disabled={isSubmitting}
+                    onClick={() => void previewMapping()}
+                    type="button"
+                    variant="secondary"
+                  >
+                    Preview mapping
+                  </Button>
+                  <Button
+                    disabled={
+                      isSubmitting ||
+                      !preview ||
+                      previewKey !== currentPreviewKey()
+                    }
+                    isLoading={isSubmitting}
+                    type="submit"
+                  >
                     Approve mapping
                   </Button>
                   <Button

@@ -196,8 +196,9 @@ Resolve staff-assisted reorder requests:
 - Go to Legacy Reorder Requests.
 - Search or filter submitted requests.
 - Open the matching historical orders before mapping.
-- Enter the exact current Medusa SKU or variant ID only when the legacy item and the current catalog item are the same sellable product.
+- Search the current catalog by product title, variant title, SKU, or variant ID, then select the exact current Medusa variant only when the legacy item and the current catalog item are the same sellable product.
 - For generic QuickBooks buckets such as `Misc. Item`, keep the description matcher in place so the approval creates a scoped `legacy_item_match_rule` instead of mapping the whole bucket.
+- Preview the mapping before approval. The preview confirms the target variant, whether the approval will create a direct item map or scoped match rule, and how many historical lines will be backfilled.
 - Approving a mapping backfills matching historical product lines, creates/updates the durable mapping rule, and marks the customer request as `mapped`.
 
 Spot-check storefront reorder:
