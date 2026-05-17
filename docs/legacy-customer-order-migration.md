@@ -131,6 +131,9 @@ You can also review and approve the largest unmapped product buckets directly in
   when credentials are available.
 - Review any suggested catalog matches, or search the current catalog and select the exact current Medusa variant.
 - Suggested matches are review aids only. Low-score suggestions and all token-similarity matches still require human confirmation against the historical descriptions and order context.
+- The suggestion scorer intentionally suppresses candidates with conflicting
+  identity markers such as protein species, cut, bone/skin state, prepared-dish
+  type, filling, deli preparation, Passover status, or brand/program labels.
 - Preview every mapping before approval. The preview confirms the target variant, whether the approval creates a direct QuickBooks item map or scoped description rule, and how many historical lines will be backfilled.
 - Generic QuickBooks buckets such as `Misc. Item` require a description matcher and create scoped `legacy_item_match_rule` rows rather than broad item maps.
 

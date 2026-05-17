@@ -76,6 +76,30 @@ const STOP_WORDS = new Set([
 
 const IDENTITY_GROUPS: IdentityGroup[] = [
   {
+    name: "protein_species",
+    terms: [
+      { key: "chicken", patterns: [/\bchicken\b/i, /\bchk\b/i] },
+      {
+        key: "beef",
+        patterns: [
+          /\bbeef\b/i,
+          /\bsteak\b/i,
+          /\blondon\s+broil\b/i,
+          /\bbrisket\b/i,
+          /\bflanken\b/i,
+          /\bshort\s+ribs?\b/i,
+          /\bfrench\s+roast\b/i,
+        ],
+      },
+      { key: "turkey", patterns: [/\bturkey\b/i] },
+      { key: "lamb", patterns: [/\blamb\b/i] },
+      { key: "duck", patterns: [/\bduck\b/i] },
+      { key: "salmon", patterns: [/\bsalmon\b/i] },
+      { key: "bison", patterns: [/\bbison\b/i] },
+      { key: "veal", patterns: [/\bveal\b/i] },
+    ],
+  },
+  {
     name: "poultry_part",
     terms: [
       {
@@ -112,7 +136,10 @@ const IDENTITY_GROUPS: IdentityGroup[] = [
       { key: "deckel", patterns: [/\bdeckel\b/i] },
       { key: "short_rib", patterns: [/\bshort ribs?\b/i] },
       { key: "flanken", patterns: [/\bflanken\b/i] },
+      { key: "top_of_rib", patterns: [/\btop of (?:the )?rib\b/i] },
       { key: "ribeye", patterns: [/\bribeye\b/i] },
+      { key: "flat_iron", patterns: [/\bflat iron\b/i] },
+      { key: "skirt_steak", patterns: [/\bskirt steak\b/i] },
       { key: "oyster", patterns: [/\boyster steak\b/i] },
       {
         key: "strip_denver",
@@ -166,6 +193,11 @@ const IDENTITY_GROUPS: IdentityGroup[] = [
       { key: "corn_souffle", patterns: [/\bcorn souffle\b/i] },
       { key: "kugel", patterns: [/\bkugel\b/i] },
       { key: "gravy", patterns: [/\bgravy\b/i] },
+      { key: "chili", patterns: [/\bchili\b/i] },
+      { key: "soup", patterns: [/\bsoup\b/i] },
+      { key: "hotdog", patterns: [/\bhot ?dogs?\b/i] },
+      { key: "sausage", patterns: [/\bsausages?\b/i] },
+      { key: "enchilada", patterns: [/\benchiladas?\b/i] },
       {
         key: "stuffing_dressing",
         patterns: [/\bstuffing\b/i, /\bdressing\b/i],
@@ -179,15 +211,52 @@ const IDENTITY_GROUPS: IdentityGroup[] = [
     ],
   },
   {
+    name: "prepared_filling",
+    terms: [
+      { key: "vegetable", patterns: [/\bvegetables?\b/i, /\bvegg?ies?\b/i] },
+      { key: "mushroom", patterns: [/\bmushrooms?\b/i] },
+      { key: "apple_cinnamon", patterns: [/\bapple\s+cinnamon\b/i] },
+      { key: "apricot", patterns: [/\bapricot\b/i] },
+      { key: "lemon_herb", patterns: [/\blemon\s+(?:and\s+)?herb\b/i] },
+      { key: "hot_spicy", patterns: [/\bhot\s+(?:and\s+)?spicy\b/i] },
+      { key: "barbecue", patterns: [/\bbarbecue\b/i, /\bbbq\b/i] },
+      { key: "honey_citrus", patterns: [/\bhoney\s+citrus\b/i] },
+    ],
+  },
+  {
+    name: "prepared_meat_form",
+    terms: [
+      { key: "steak", patterns: [/\bsteak\b/i] },
+      { key: "pulled_beef", patterns: [/\bpulled\s+beef\b/i] },
+      { key: "pulled_chicken", patterns: [/\bpulled\s+chicken\b/i] },
+    ],
+  },
+  {
+    name: "deli_preparation",
+    terms: [
+      { key: "pastrami", patterns: [/\bpastrami\b/i] },
+      {
+        key: "roasted_breast",
+        patterns: [/\broasted\s+turkey\s+breast\b/i],
+      },
+      { key: "smoked_breast", patterns: [/\bsmoked\s+turkey\s+breast\b/i] },
+      { key: "salami", patterns: [/\bsalami\b/i] },
+      { key: "bacon", patterns: [/\bbacon\b/i] },
+      { key: "bologna", patterns: [/\bbologna\b/i] },
+    ],
+  },
+  {
     name: "brand_or_program",
     terms: [
-      { key: "david_elliot", patterns: [/\bdavid elliot\b/i] },
+      { key: "david_elliot", patterns: [/\bdavid\s+elliot\b/i] },
       { key: "empire", patterns: [/\bempire\b/i] },
       { key: "aarons", patterns: [/\baarons?\b/i] },
       { key: "organic", patterns: [/\borganic\b/i] },
       { key: "antibiotic_free", patterns: [/\bantibiotic[-\s]?free\b/i] },
       { key: "grass_fed", patterns: [/\bgrass[-\s]?fed\b/i] },
-      { key: "american_angus", patterns: [/\bamerican angus\b/i] },
+      { key: "american_angus", patterns: [/\bamerican\s+angus\b/i] },
+      { key: "black_angus", patterns: [/\bblack\s+angus\b/i] },
+      { key: "south_american", patterns: [/\bsouth\s+american\b/i] },
       { key: "haolam", patterns: [/\bhaolam\b/i] },
       { key: "bgan", patterns: [/\bb'?gan\b/i] },
     ],
