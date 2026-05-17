@@ -61,6 +61,20 @@ type VariantMatch = {
   medusaVariantTitle: string | null
   confidence: number
   mappingSource: string
+  matchedByRule?: boolean
+}
+
+type LegacyItemMatchRule = {
+  qbd_item_list_id: string | null
+  sku: string | null
+  description_contains: string | null
+  description_fingerprint: string | null
+  medusa_product_id: string | null
+  medusa_variant_id: string | null
+  medusa_product_title: string | null
+  medusa_variant_title: string | null
+  confidence: number
+  mapping_source: string | null
 }
 
 type UnmappedProductSummary = {
@@ -488,6 +502,26 @@ async function loadExistingItemMap(db: any) {
   )
 }
 
+async function loadItemMatchRules(db: any): Promise<LegacyItemMatchRule[]> {
+  return db("legacy_item_match_rule")
+    .select([
+      "qbd_item_list_id",
+      "sku",
+      "description_contains",
+      "description_fingerprint",
+      "medusa_product_id",
+      "medusa_variant_id",
+      "medusa_product_title",
+      "medusa_variant_title",
+      "confidence",
+      "mapping_source",
+    ])
+    .whereNotNull("medusa_variant_id")
+    .whereNull("deleted_at")
+    .orderBy("priority", "asc")
+    .orderBy("confidence", "desc")
+}
+
 function variantMatchFromRow(row: any, confidence: number, mappingSource: string): VariantMatch {
   return {
     medusaProductId: row.product_id ?? row.medusa_product_id ?? null,
@@ -499,10 +533,53 @@ function variantMatchFromRow(row: any, confidence: number, mappingSource: string
   }
 }
 
+function descriptionFingerprint(value: unknown) {
+  return (normalizeSearchText(value) ?? "")
+    .replace(/\b\d+(?:\.\d+)?\b/g, "#")
+    .replace(/\b(?:lb|lbs|oz|pack|packs|pc|pcs|piece|pieces)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function itemMatchRuleMatches(line: NormalizedLine, rule: LegacyItemMatchRule) {
+  if (rule.qbd_item_list_id && rule.qbd_item_list_id !== line.qbdItemListId) {
+    return false
+  }
+
+  if (rule.sku && normalizeSkuValue(rule.sku) !== normalizeSkuValue(line.sku)) {
+    return false
+  }
+
+  if (
+    rule.description_contains &&
+    !(normalizeSearchText(line.description) ?? "").includes(
+      normalizeSearchText(rule.description_contains) ?? ""
+    )
+  ) {
+    return false
+  }
+
+  if (
+    rule.description_fingerprint &&
+    descriptionFingerprint(rule.description_fingerprint) !==
+      descriptionFingerprint(line.description)
+  ) {
+    return false
+  }
+
+  return Boolean(
+    rule.qbd_item_list_id ||
+    rule.sku ||
+    rule.description_contains ||
+    rule.description_fingerprint
+  )
+}
+
 function resolveVariantMatch(
   line: NormalizedLine,
   variantIndexes: Awaited<ReturnType<typeof loadVariantIndexes>>,
-  existingItemMap: Map<string, any>
+  existingItemMap: Map<string, any>,
+  itemMatchRules: LegacyItemMatchRule[]
 ): VariantMatch {
   if (line.lineKind !== "product") {
     return {
@@ -512,6 +589,20 @@ function resolveVariantMatch(
       medusaVariantTitle: null,
       confidence: 0,
       mappingSource: `non_product:${line.lineKind}`,
+    }
+  }
+
+  const rule = itemMatchRules.find((candidate) =>
+    itemMatchRuleMatches(line, candidate)
+  )
+  if (rule) {
+    return {
+      ...variantMatchFromRow(
+        rule,
+        toNumber(rule.confidence) || 1,
+        rule.mapping_source || "legacy_item_match_rule"
+      ),
+      matchedByRule: true,
     }
   }
 
@@ -600,6 +691,9 @@ async function upsertLegacyItemMap(
   touchedItemMapKeys: Set<string>
 ) {
   if (!apply || !line.qbdItemListId) {
+    return
+  }
+  if (match.matchedByRule) {
     return
   }
   if (touchedItemMapKeys.has(line.qbdItemListId)) {
@@ -767,6 +861,7 @@ async function upsertInvoiceProjection({
   invoice,
   variantIndexes,
   existingItemMap,
+  itemMatchRules,
   customerProjectionIndex,
   touchedItemMapKeys,
   apply,
@@ -775,6 +870,7 @@ async function upsertInvoiceProjection({
   invoice: NormalizedInvoice
   variantIndexes: Awaited<ReturnType<typeof loadVariantIndexes>>
   existingItemMap: Map<string, any>
+  itemMatchRules: LegacyItemMatchRule[]
   customerProjectionIndex: Map<string, any>
   touchedItemMapKeys: Set<string>
   apply: boolean
@@ -827,7 +923,7 @@ async function upsertInvoiceProjection({
       }
 
       productLines += 1
-      const match = resolveVariantMatch(line, variantIndexes, existingItemMap)
+      const match = resolveVariantMatch(line, variantIndexes, existingItemMap, itemMatchRules)
       if (match.medusaVariantId) {
         mappedLines += 1
       } else {
@@ -864,7 +960,7 @@ async function upsertInvoiceProjection({
   const lineRows: Record<string, unknown>[] = []
 
   for (const line of invoice.lines) {
-    const match = resolveVariantMatch(line, variantIndexes, existingItemMap)
+    const match = resolveVariantMatch(line, variantIndexes, existingItemMap, itemMatchRules)
     if (line.lineKind === "product") {
       productLines += 1
     } else {
@@ -876,7 +972,7 @@ async function upsertInvoiceProjection({
       unmappedProductItems.push(summarizeUnmappedProduct(line))
     }
     await upsertLegacyItemMap(db, line, match, apply, touchedItemMapKeys)
-    if (line.qbdItemListId) {
+    if (line.qbdItemListId && !match.matchedByRule) {
       existingItemMap.set(line.qbdItemListId, {
         qbd_item_list_id: line.qbdItemListId,
         qbd_name: line.qbdItemFullName,
@@ -973,12 +1069,14 @@ function prepareInvoiceProjectionDraft({
   invoice,
   variantIndexes,
   existingItemMap,
+  itemMatchRules,
   customerProjectionIndex,
   touchedItemMapKeys,
 }: {
   invoice: NormalizedInvoice
   variantIndexes: Awaited<ReturnType<typeof loadVariantIndexes>>
   existingItemMap: Map<string, any>
+  itemMatchRules: LegacyItemMatchRule[]
   customerProjectionIndex: Map<string, any>
   touchedItemMapKeys: Set<string>
 }): PreparedInvoiceProjection {
@@ -1030,7 +1128,7 @@ function prepareInvoiceProjectionDraft({
   let nonProductLines = 0
 
   for (const line of invoice.lines) {
-    const match = resolveVariantMatch(line, variantIndexes, existingItemMap)
+    const match = resolveVariantMatch(line, variantIndexes, existingItemMap, itemMatchRules)
     if (line.lineKind === "product") {
       productLines += 1
     } else {
@@ -1043,7 +1141,7 @@ function prepareInvoiceProjectionDraft({
       unmappedProductItems.push(summarizeUnmappedProduct(line))
     }
 
-    if (line.qbdItemListId) {
+    if (line.qbdItemListId && !match.matchedByRule) {
       if (!touchedItemMapKeys.has(line.qbdItemListId)) {
         const itemMapRow = buildLegacyItemMapUpsertRow(line, match, now)
         if (itemMapRow) {
@@ -1122,6 +1220,7 @@ async function upsertInvoiceProjectionBatch({
   invoices,
   variantIndexes,
   existingItemMap,
+  itemMatchRules,
   customerProjectionIndex,
   touchedItemMapKeys,
   lineChunkSize,
@@ -1130,6 +1229,7 @@ async function upsertInvoiceProjectionBatch({
   invoices: NormalizedInvoice[]
   variantIndexes: Awaited<ReturnType<typeof loadVariantIndexes>>
   existingItemMap: Map<string, any>
+  itemMatchRules: LegacyItemMatchRule[]
   customerProjectionIndex: Map<string, any>
   touchedItemMapKeys: Set<string>
   lineChunkSize: number
@@ -1139,6 +1239,7 @@ async function upsertInvoiceProjectionBatch({
       invoice,
       variantIndexes,
       existingItemMap,
+      itemMatchRules,
       customerProjectionIndex,
       touchedItemMapKeys,
     })
@@ -1555,6 +1656,7 @@ export default async function importQbdOrderHistory({ container }: ExecArgs) {
 
   const variantIndexes = await loadVariantIndexes(db)
   let existingItemMap = await loadExistingItemMap(db)
+  const itemMatchRules = await loadItemMatchRules(db)
   const customerProjectionIndex = await loadCustomerProjectionIndex(db)
   const touchedItemMapKeys = new Set<string>()
   const rawInvoices =
@@ -1647,6 +1749,7 @@ export default async function importQbdOrderHistory({ container }: ExecArgs) {
           invoices: batch,
           variantIndexes,
           existingItemMap,
+          itemMatchRules,
           customerProjectionIndex,
           touchedItemMapKeys,
           lineChunkSize,
@@ -1672,6 +1775,7 @@ export default async function importQbdOrderHistory({ container }: ExecArgs) {
               invoice,
               variantIndexes,
               existingItemMap,
+              itemMatchRules,
               customerProjectionIndex,
               touchedItemMapKeys,
               apply,
@@ -1701,6 +1805,7 @@ export default async function importQbdOrderHistory({ container }: ExecArgs) {
           invoice,
           variantIndexes,
           existingItemMap,
+          itemMatchRules,
           customerProjectionIndex,
           touchedItemMapKeys,
           apply,

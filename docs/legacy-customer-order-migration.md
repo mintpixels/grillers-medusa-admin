@@ -101,7 +101,21 @@ qbd_item_list_id,sku,medusa_variant_id,medusa_sku,confidence,mapping_source
 8000071A-1337017833,1-76-25-1,,1-76-25-1,1,manual_csv
 ```
 
-Either `medusa_variant_id` or `medusa_sku` can identify the target variant. `qbd_item_list_id` is preferred because it is stable across QuickBooks item renames. Dry-run the mapping file:
+Either `medusa_variant_id` or `medusa_sku` can identify the target variant. `qbd_item_list_id` is preferred because it is stable across QuickBooks item renames. When a QuickBooks item is a generic bucket such as `Misc. Item`, do not map the whole QBD item id. Add `description_contains` or `description_fingerprint` so the mapping only applies to lines with that description evidence:
+
+```csv
+qbd_item_list_id,sku,description_contains,medusa_variant_id,medusa_sku,confidence,priority,mapping_source
+750000-1102879083,Misc. Item,Cocktail Franks in a Blanket,,RM-08-FKS9,0.95,50,manual_rule
+```
+
+Generate a review CSV for the most common unmapped items:
+
+```bash
+./node_modules/.bin/medusa exec ./src/scripts/export-legacy-item-map-candidates.ts -- --limit=300 --min-lines=20 --output=./legacy-item-map-candidates.csv
+```
+
+Every generated row is review-oriented. Apply only rows where the legacy description and target Medusa product are the same sellable item, not merely a similar category. Dry-run the mapping file:
+The candidate CSV intentionally prefixes target columns with `candidate_`; copy reviewed rows into an import CSV with `medusa_variant_id` or `medusa_sku` before applying.
 
 ```bash
 ./node_modules/.bin/medusa exec ./src/scripts/import-legacy-item-maps.ts -- --file=./legacy-item-maps.csv

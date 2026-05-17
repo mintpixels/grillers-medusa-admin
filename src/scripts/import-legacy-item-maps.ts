@@ -116,12 +116,14 @@ async function upsertItemMap({
   variant,
   apply,
   sourceFile,
+  matchSkuWithQbdItemListId,
 }: {
   db: any
   row: CsvRow
   variant: any
   apply: boolean
   sourceFile: string
+  matchSkuWithQbdItemListId: boolean
 }) {
   const qbdItemListId = rowValue(row, [
     "qbd_item_list_id",
@@ -131,25 +133,87 @@ async function upsertItemMap({
   ])
   const qbdName = rowValue(row, ["qbd_name", "quickbooks_name", "name"])
   const sku = rowValue(row, ["sku", "qbd_sku", "legacy_sku"]) || variant.sku
+  const descriptionContains = rowValue(row, [
+    "description_contains",
+    "line_description_contains",
+    "description_pattern",
+  ])
+  const descriptionFingerprint = rowValue(row, [
+    "description_fingerprint",
+    "line_description_fingerprint",
+  ])
   const confidence = toNumber(rowValue(row, ["confidence"])) || 1
   const mappingSource =
     rowValue(row, ["mapping_source", "source"]) || "manual_csv"
+  const priority = toNumber(rowValue(row, ["priority"])) || 100
   const now = new Date()
+  const usesMatchRule = Boolean(descriptionContains || descriptionFingerprint)
 
-  if (!qbdItemListId && !sku) {
-    throw new Error("row requires qbd_item_list_id or sku")
+  if (!qbdItemListId && !sku && !descriptionContains && !descriptionFingerprint) {
+    throw new Error("row requires qbd_item_list_id, sku, or a description matcher")
   }
 
+  if (usesMatchRule && !qbdItemListId && !sku) {
+    throw new Error("description match rules require qbd_item_list_id or sku scope")
+  }
+
+  const lineQuery = buildLineBackfillQuery(db, {
+    qbdItemListId,
+    sku,
+    descriptionContains,
+    descriptionFingerprint,
+    matchSkuWithQbdItemListId,
+  })
+
   if (!apply) {
+    const [{ count }] = await lineQuery.clone().count({ count: "*" })
     return {
       qbdItemListId,
       sku,
-      lineRowsBackfilled: 0,
-      itemMapUpserted: Boolean(qbdItemListId),
+      lineRowsBackfilled: Number(count) || 0,
+      itemMapUpserted: !usesMatchRule && Boolean(qbdItemListId),
+      matchRuleUpserted: usesMatchRule,
     }
   }
 
-  if (qbdItemListId) {
+  if (usesMatchRule) {
+    const existingRule = await findExistingMatchRule(db, {
+      qbdItemListId,
+      sku,
+      descriptionContains,
+      descriptionFingerprint,
+    })
+    const ruleRow = {
+      source: "quickbooks_desktop",
+      priority,
+      qbd_item_list_id: qbdItemListId,
+      sku,
+      description_contains: descriptionContains,
+      description_fingerprint: descriptionFingerprint,
+      medusa_product_id: variant.product_id,
+      medusa_variant_id: variant.variant_id,
+      medusa_product_title: variant.product_title,
+      medusa_variant_title: variant.variant_title,
+      confidence,
+      mapping_source: mappingSource,
+      last_seen_at: now,
+      metadata: {
+        imported_from: path.basename(sourceFile),
+        imported_by: "import-legacy-item-maps",
+      },
+      updated_at: now,
+    }
+
+    if (existingRule) {
+      await db("legacy_item_match_rule").where({ id: existingRule.id }).update(ruleRow)
+    } else {
+      await db("legacy_item_match_rule").insert({
+        id: generateEntityId(undefined, "lgimrule"),
+        ...ruleRow,
+        created_at: now,
+      })
+    }
+  } else if (qbdItemListId) {
     const existing = await db("legacy_item_map")
       .select("id")
       .where("qbd_item_list_id", qbdItemListId)
@@ -185,16 +249,6 @@ async function upsertItemMap({
     }
   }
 
-  const lineQuery = db("legacy_order_line").whereNull("deleted_at")
-  lineQuery.andWhere((builder: any) => {
-    if (qbdItemListId) {
-      builder.orWhere("qbd_item_list_id", qbdItemListId)
-    }
-    if (sku) {
-      builder.orWhereRaw("lower(sku) = lower(?)", [sku])
-    }
-  })
-
   const lineRowsBackfilled = await lineQuery.update({
     medusa_product_id: variant.product_id,
     medusa_variant_id: variant.variant_id,
@@ -216,8 +270,85 @@ async function upsertItemMap({
     qbdItemListId,
     sku,
     lineRowsBackfilled: Number(lineRowsBackfilled) || 0,
-    itemMapUpserted: Boolean(qbdItemListId),
+    itemMapUpserted: !usesMatchRule && Boolean(qbdItemListId),
+    matchRuleUpserted: usesMatchRule,
   }
+}
+
+function buildLineBackfillQuery(
+  db: any,
+  input: {
+    qbdItemListId: string | null
+    sku: string | null
+    descriptionContains: string | null
+    descriptionFingerprint: string | null
+    matchSkuWithQbdItemListId: boolean
+  }
+) {
+  const query = db("legacy_order_line")
+    .whereNull("deleted_at")
+    .andWhere((builder: any) => {
+      if (input.qbdItemListId) {
+        builder.where("qbd_item_list_id", input.qbdItemListId)
+      }
+
+      if (input.sku && (!input.qbdItemListId || input.matchSkuWithQbdItemListId)) {
+        builder.orWhereRaw("lower(sku) = lower(?)", [input.sku])
+      }
+    })
+    .modify((builder: any) => {
+      if (input.descriptionContains) {
+        builder.andWhereRaw("description ilike ? escape '\\\\'", [
+          `%${escapeLike(input.descriptionContains)}%`,
+        ])
+      }
+      if (input.descriptionFingerprint) {
+        builder.andWhereRaw(
+          "regexp_replace(lower(coalesce(description, '')), '[^a-z0-9]+', ' ', 'g') = regexp_replace(lower(?), '[^a-z0-9]+', ' ', 'g')",
+          [input.descriptionFingerprint]
+        )
+      }
+    })
+    .andWhere((builder: any) => {
+      builder
+        .whereIn("mapping_status", ["mapped", "unmapped"])
+        .orWhereRaw("metadata->>? = ?", ["line_kind", "product"])
+    })
+
+  return query
+}
+
+function escapeLike(value: string) {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`)
+}
+
+function whereNullableText(query: any, column: string, value: string | null) {
+  if (value) {
+    query.where(column, value)
+  } else {
+    query.whereNull(column)
+  }
+}
+
+async function findExistingMatchRule(
+  db: any,
+  input: {
+    qbdItemListId: string | null
+    sku: string | null
+    descriptionContains: string | null
+    descriptionFingerprint: string | null
+  }
+) {
+  const query = db("legacy_item_match_rule")
+    .select("id")
+    .whereNull("deleted_at")
+
+  whereNullableText(query, "qbd_item_list_id", input.qbdItemListId)
+  whereNullableText(query, "sku", input.sku)
+  whereNullableText(query, "description_contains", input.descriptionContains)
+  whereNullableText(query, "description_fingerprint", input.descriptionFingerprint)
+
+  return query.first()
 }
 
 export default async function importLegacyItemMaps({ container }: ExecArgs) {
@@ -226,6 +357,11 @@ export default async function importLegacyItemMaps({ container }: ExecArgs) {
   const args = parseArgs()
   const apply = getBooleanArg(args, ["apply"], false)
   const file = getStringArg(args, ["file", "csv"])
+  const matchSkuWithQbdItemListId = getBooleanArg(
+    args,
+    ["match-sku-with-qbd-item-list-id", "match-sku-with-qbd-id"],
+    false
+  )
 
   if (!file) {
     throw new Error("Missing --file path to legacy item mapping CSV")
@@ -238,6 +374,7 @@ export default async function importLegacyItemMaps({ container }: ExecArgs) {
     valid: 0,
     failed: 0,
     itemMapsUpserted: 0,
+    matchRulesUpserted: 0,
     lineRowsBackfilled: 0,
   }
 
@@ -269,9 +406,11 @@ export default async function importLegacyItemMaps({ container }: ExecArgs) {
         variant,
         apply,
         sourceFile,
+        matchSkuWithQbdItemListId,
       })
       stats.valid += 1
       stats.itemMapsUpserted += result.itemMapUpserted ? 1 : 0
+      stats.matchRulesUpserted += result.matchRuleUpserted ? 1 : 0
       stats.lineRowsBackfilled += result.lineRowsBackfilled
     } catch (error) {
       stats.failed += 1
