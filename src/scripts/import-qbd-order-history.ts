@@ -269,10 +269,25 @@ function legacySkuAliases(value: unknown) {
     return []
   }
 
-  const aliases = new Set([text])
-  const trailingPassoverSuffix = text.match(/^(.+-[A-Z0-9]+)P$/i)
-  if (trailingPassoverSuffix?.[1]) {
-    aliases.add(trailingPassoverSuffix[1])
+  const aliases = new Set<string>()
+  const addAlias = (candidate: string | null | undefined) => {
+    const normalized = toText(candidate)
+    if (!normalized) {
+      return
+    }
+
+    aliases.add(normalized)
+    const trailingPassoverSuffix = normalized.match(/^(.+-[A-Z0-9]+)P$/i)
+    if (trailingPassoverSuffix?.[1]) {
+      aliases.add(trailingPassoverSuffix[1])
+    }
+  }
+
+  addAlias(text)
+
+  const legacyLifecyclePrefix = text.match(/^[YZ]-(.+)$/i)
+  if (legacyLifecyclePrefix?.[1]) {
+    addAlias(legacyLifecyclePrefix[1])
   }
 
   return Array.from(aliases)
