@@ -53,6 +53,16 @@ function isSkuLikeTitle(value: unknown, sku?: unknown) {
   return /^[a-z0-9]{1,6}(?:-[a-z0-9]{1,8}){1,5}p?$/i.test(text)
 }
 
+function isGenericLegacyItemTitle(value: unknown) {
+  const normalized = normalizeSearchText(value)
+  return [
+    "misc item",
+    "miscellaneous item",
+    "misc services",
+    "misc service",
+  ].includes(normalized)
+}
+
 export function legacyPurchaseDisplayTitle(row: any): string {
   const mappedTitle = normalizeText(row.medusa_variant_title || row.medusa_product_title)
   if (mappedTitle) {
@@ -61,18 +71,46 @@ export function legacyPurchaseDisplayTitle(row: any): string {
 
   const title = normalizeText(row.title)
   const description = normalizeText(row.description)
-  if (title && !isSkuLikeTitle(title, row.sku)) {
+  if (
+    title &&
+    !isSkuLikeTitle(title, row.sku) &&
+    !isGenericLegacyItemTitle(title)
+  ) {
     return title
   }
 
   return description || title || normalizeText(row.sku) || "Legacy item"
 }
 
+export function legacyPurchaseHistoryKey(row: any): string {
+  if (row.medusa_variant_id) {
+    return `variant:${row.medusa_variant_id}`
+  }
+
+  const qbdItemListId = normalizeText(row.qbd_item_list_id)
+  const sku = normalizeText(row.sku)
+  const title = normalizeText(row.title)
+
+  if (isGenericLegacyItemTitle(title) || isGenericLegacyItemTitle(sku)) {
+    const displayTitle = legacyPurchaseDisplayTitle(row)
+    return `legacy-description:${qbdItemListId || sku || "unknown"}:${normalizeSearchText(displayTitle)}`
+  }
+
+  if (qbdItemListId) {
+    return `legacy-item:${qbdItemListId}`
+  }
+  if (sku) {
+    return `legacy-sku:${sku.toLowerCase()}`
+  }
+
+  return `legacy-line:${row.id}`
+}
+
 export function legacyLineKind(row: any): string | null {
   const metadata = row.metadata
   if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
     const kind = normalizeText(metadata.line_kind)
-    if (kind) {
+    if (kind && kind !== "product") {
       return kind
     }
   }
@@ -84,20 +122,38 @@ export function legacyLineKind(row: any): string | null {
   const sku = normalizeSearchText(row.sku)
   const title = normalizeSearchText(row.title)
   const description = normalizeSearchText(row.description)
+  const rawDescription = String(row.description ?? "").trim().toLowerCase()
   const text = [sku, title, description].filter(Boolean).join(" ")
+  const isGenericLegacyItem =
+    isGenericLegacyItemTitle(row.sku) || isGenericLegacyItemTitle(row.title)
 
   if (!text) return "note"
+  if (
+    isGenericLegacyItem &&
+    (!description || isGenericLegacyItemTitle(row.description))
+  ) {
+    return "note"
+  }
   if (sku === "subtotal" || title === "subtotal" || text.includes(" subtotal ")) return "subtotal"
   if (
     sku === "ccc" ||
     title === "ccc" ||
     text.includes("credit debit") ||
     text.includes("credit card") ||
-    text.includes("processing recovery fee")
+    text.includes("processing recovery fee") ||
+    (isGenericLegacyItem &&
+      (/\b(pay|paid|paying|payment|cash|check|card)\b/.test(description) ||
+        /\bcommission\b/.test(description) ||
+        /^\s*(miscellaneous item[-,\s]*)?\d+(?:\.\d+)?\s*%?\s*$/.test(rawDescription)))
   ) {
     return "fee"
   }
-  if (text.includes("discount") || text.includes("coupon")) return "discount"
+  if (
+    text.includes("discount") ||
+    text.includes("coupon") ||
+    text.includes("refund") ||
+    /\bcredit\b/.test(text)
+  ) return "discount"
   if (
     sku === "pick up" ||
     sku === "pickup" ||
@@ -113,10 +169,37 @@ export function legacyLineKind(row: any): string | null {
     text.includes("ups ground") ||
     text.includes("customer pick up") ||
     text.includes("local pickup") ||
+    text.includes("freight") ||
     text.includes("shipping") ||
-    text.includes("delivery charge")
+    text.includes("delivery charge") ||
+    description === "delivery" ||
+    description.startsWith("delivery ")
   ) {
     return "fulfillment"
+  }
+  if (
+    isGenericLegacyItem &&
+    (description.includes("repack charge") ||
+      description.includes("repacking charge") ||
+      description.includes("repack surcharge") ||
+      description.includes("custom slicing") ||
+      description.includes("trimming of fat") ||
+      description.includes("additional labor"))
+  ) {
+    return "service"
+  }
+  if (
+    isGenericLegacyItem &&
+    (description.includes("invoice") ||
+      description.includes("recharge") ||
+      description.includes("gratuity") ||
+      description.includes("surcharge") ||
+      /\btip\b/.test(description) ||
+      description.startsWith("actual weight") ||
+      /\bshopping bags?\b/.test(description) ||
+      /^miscellaneous item \d+ items?$/.test(description))
+  ) {
+    return "note"
   }
 
   return "product"
@@ -373,17 +456,12 @@ export async function listLegacyPurchaseHistoryForCustomer(
       continue
     }
 
-    const key =
-      row.medusa_variant_id ||
-      row.qbd_item_list_id ||
-      row.sku ||
-      `legacy-line:${row.id}`
-
     const placedAt = row.placed_at
       ? new Date(row.placed_at).toISOString()
       : new Date(0).toISOString()
     const quantity = asNumber(row.quantity)
     const displayTitle = legacyPurchaseDisplayTitle(row)
+    const key = legacyPurchaseHistoryKey(row)
     const existing = grouped.get(key)
 
     if (existing) {
