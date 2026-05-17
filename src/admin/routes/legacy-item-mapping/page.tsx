@@ -79,8 +79,25 @@ type VariantSuggestion = VariantSearchResult & {
   review_status: "high_confidence" | "review_required" | string
 }
 
+type QbdItemFact = {
+  type: string
+  id: string
+  name: string | null
+  full_name: string | null
+  is_active: boolean | null
+  sales_description: string | null
+  sales_price: string | null
+}
+
+type QbdItemLookupStatus = {
+  available: boolean
+  reason: string | null
+}
+
 type VariantSuggestionResponse = {
   suggestions: VariantSuggestion[]
+  qbd_item?: QbdItemFact | null
+  qbd_item_lookup?: QbdItemLookupStatus
 }
 
 function formatDate(value: string | null) {
@@ -136,6 +153,8 @@ const LegacyItemMappingPage = () => {
   const [isSearchingVariants, setIsSearchingVariants] = useState(false)
   const [variantSuggestions, setVariantSuggestions] = useState<VariantSuggestion[]>([])
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false)
+  const [qbdItemFact, setQbdItemFact] = useState<QbdItemFact | null>(null)
+  const [qbdItemLookup, setQbdItemLookup] = useState<QbdItemLookupStatus | null>(null)
   const [descriptionContains, setDescriptionContains] = useState("")
   const [staffNote, setStaffNote] = useState("")
   const [preview, setPreview] = useState<MappingResult | null>(null)
@@ -202,6 +221,8 @@ const LegacyItemMappingPage = () => {
       setDescriptionContains("")
       setStaffNote("")
       setVariantSuggestions([])
+      setQbdItemFact(null)
+      setQbdItemLookup(null)
       return
     }
 
@@ -210,6 +231,8 @@ const LegacyItemMappingPage = () => {
     setVariantQuery("")
     setVariantResults([])
     setVariantSuggestions([])
+    setQbdItemFact(null)
+    setQbdItemLookup(null)
     setDescriptionContains(selected.suggested_description_contains || "")
     setStaffNote("")
     setPreview(null)
@@ -278,8 +301,12 @@ const LegacyItemMappingPage = () => {
       }
 
       setVariantSuggestions(body.suggestions || [])
+      setQbdItemFact(body.qbd_item || null)
+      setQbdItemLookup(body.qbd_item_lookup || null)
     } catch (err) {
       setVariantSuggestions([])
+      setQbdItemFact(null)
+      setQbdItemLookup(null)
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setIsLoadingSuggestions(false)
@@ -606,6 +633,69 @@ const LegacyItemMappingPage = () => {
                     </Text>
                   </div>
                 )}
+
+                <div className="space-y-2 rounded-md border border-ui-border-base p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <Text size="small" weight="plus">
+                      QuickBooks source item
+                    </Text>
+                    {qbdItemFact?.is_active !== null && qbdItemFact?.is_active !== undefined && (
+                      <Badge color={qbdItemFact.is_active ? "green" : "orange"}>
+                        {qbdItemFact.is_active ? "Active" : "Inactive"}
+                      </Badge>
+                    )}
+                  </div>
+                  {qbdItemFact ? (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Text className="text-ui-fg-subtle" size="small">
+                          Type
+                        </Text>
+                        <Text className="break-words">{qbdItemFact.type}</Text>
+                      </div>
+                      <div>
+                        <Text className="text-ui-fg-subtle" size="small">
+                          List ID
+                        </Text>
+                        <Text className="break-words">{qbdItemFact.id}</Text>
+                      </div>
+                      <div>
+                        <Text className="text-ui-fg-subtle" size="small">
+                          Name
+                        </Text>
+                        <Text className="break-words">{qbdItemFact.name || "None"}</Text>
+                      </div>
+                      <div>
+                        <Text className="text-ui-fg-subtle" size="small">
+                          Full name
+                        </Text>
+                        <Text className="break-words">{qbdItemFact.full_name || "None"}</Text>
+                      </div>
+                      <div className="col-span-2">
+                        <Text className="text-ui-fg-subtle" size="small">
+                          Sales description
+                        </Text>
+                        <Text className="break-words">
+                          {qbdItemFact.sales_description || "None"}
+                        </Text>
+                      </div>
+                      <div>
+                        <Text className="text-ui-fg-subtle" size="small">
+                          Sales price
+                        </Text>
+                        <Text>{qbdItemFact.sales_price || "None"}</Text>
+                      </div>
+                    </div>
+                  ) : (
+                    <Text className="text-ui-fg-subtle" size="small">
+                      {isLoadingSuggestions
+                        ? "Loading QuickBooks item..."
+                        : qbdItemLookup?.available === false
+                          ? `Unavailable: ${qbdItemLookup.reason || "unknown"}`
+                          : "No live QuickBooks item found for this List ID."}
+                    </Text>
+                  )}
+                </div>
 
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-3">

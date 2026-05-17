@@ -2,6 +2,7 @@ import { ExecArgs } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { suggestLegacyItemMappings } from "../lib/legacy-item-candidate-suggestions"
 import { listLegacyItemMappingCandidates } from "../lib/legacy-item-mapping-review"
+import { retrieveQbdItemFact } from "../lib/legacy-qbd-item-facts"
 import {
   getBooleanArg,
   getNumberArg,
@@ -20,6 +21,11 @@ export default async function auditLegacyItemMappingCandidates({
   const suggestionLimit = getNumberArg(args, ["suggestion-limit"], 3)
   const minScore = getNumberArg(args, ["min-score", "min_score"], 0.45)
   const includeSuggestions = getBooleanArg(args, ["include-suggestions"], false)
+  const includeQbdItems = getBooleanArg(
+    args,
+    ["include-qbd-items", "include-qbd-item"],
+    false
+  )
   const q = getStringArg(args, ["q", "query"])
 
   const result = await listLegacyItemMappingCandidates(db, {
@@ -36,6 +42,9 @@ export default async function auditLegacyItemMappingCandidates({
           minScore,
         })
       : []
+    const qbdItemLookup = includeQbdItems
+      ? await retrieveQbdItemFact(candidate.qbd_item_list_id, { logger })
+      : null
 
     candidates.push({
       key: candidate.key,
@@ -49,6 +58,13 @@ export default async function auditLegacyItemMappingCandidates({
       descriptionCount: candidate.description_count,
       requiresDescriptionMatcher: candidate.requires_description_matcher,
       lastOrderedAt: candidate.last_ordered_at,
+      qbdItem: qbdItemLookup?.item ?? null,
+      qbdItemLookup: qbdItemLookup
+        ? {
+            available: qbdItemLookup.available,
+            reason: qbdItemLookup.reason,
+          }
+        : null,
       suggestions: suggestions.map((suggestion) => ({
         score: suggestion.score,
         reviewStatus: suggestion.review_status,
@@ -67,6 +83,7 @@ export default async function auditLegacyItemMappingCandidates({
       returned: result.candidates.length,
       minLines: result.min_lines,
       includeSuggestions,
+      includeQbdItems,
       candidates,
     })}`
   )

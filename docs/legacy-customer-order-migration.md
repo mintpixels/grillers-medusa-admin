@@ -122,6 +122,9 @@ You can also review and approve the largest unmapped product buckets directly in
 - Go to Legacy Item Mapping.
 - Search by legacy item, description, SKU, customer, or invoice, or leave the search blank to start with the highest-volume unmapped groups.
 - Open matching historical orders before approving if the grouping is ambiguous.
+- Review the live QuickBooks source item panel. It pulls the QBD item type,
+  active status, full name, sales description, and sales price through Conductor
+  when credentials are available.
 - Review any suggested catalog matches, or search the current catalog and select the exact current Medusa variant.
 - Suggested matches are review aids only. Low-score suggestions and all token-similarity matches still require human confirmation against the historical descriptions and order context.
 - Preview every mapping before approval. The preview confirms the target variant, whether the approval creates a direct QuickBooks item map or scoped description rule, and how many historical lines will be backfilled.
@@ -137,6 +140,12 @@ For tougher review passes, include the most common historical descriptions and l
 
 ```bash
 DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/export-legacy-item-map-candidates.ts -- --limit=300 --min-lines=20 --description-samples=5 --include-qbd-items --qbd-item-limit=300 --output=./legacy-item-map-candidates.csv
+```
+
+The redacted audit can also include live QBD facts without writing a CSV:
+
+```bash
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/audit-legacy-item-mapping-candidates.ts -- --limit=20 --min-lines=10 --include-suggestions --include-qbd-items
 ```
 
 If classifier rules improve after an import, first reconcile legacy line kinds so accounting/service artifacts do not stay in the customer-visible unmapped product pool:
