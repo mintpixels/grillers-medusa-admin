@@ -12,6 +12,10 @@ This migration keeps the customer experience frictionless while keeping QuickBoo
 
 The customer-facing reorder page reads both native Medusa orders and the QuickBooks-backed projection. Mapped historical products render as reorderable product cards. Unmapped or no-longer-online product lines still render as historical items instead of being hidden. Non-product QuickBooks lines such as subtotals, pickup rows, card fees, discounts, shipping rows, and notes remain available in admin historical order lookup but are filtered out of the customer reorder list.
 
+Staff impersonation uses admin-backed legacy purchase-history and reorder-request
+endpoints so front-office sessions see the target customer's QuickBooks-backed
+history, not the staff actor's history.
+
 ## Required Environment
 
 Backend:
@@ -215,6 +219,9 @@ Spot-check admin lookup:
 - Go to Historical Orders.
 - Search by customer name, invoice/ref number, SKU, or item title.
 - Open an order and confirm line-level contents are visible.
+- For staff-assisted storefront sessions, confirm `/account/reorder` renders the
+  impersonated customer's legacy items and that staff reorder requests are saved
+  against the target customer.
 
 Resolve staff-assisted reorder requests:
 

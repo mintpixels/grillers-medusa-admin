@@ -6,8 +6,13 @@ import {
   submitLegacyReorderRequest,
 } from "../../../../lib/legacy-reorder-request"
 
-type ReorderRequestBody = {
+type AdminReorderRequestBody = {
+  customer_id?: string
   key?: string
+  staff_actor_customer_id?: string
+  staff_actor_email?: string
+  staff_actor_name?: string
+  staff_note?: string
 }
 
 const normalizeText = (value: unknown): string | null => {
@@ -21,14 +26,14 @@ function sendResult(res: MedusaResponse, result: any) {
 }
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
-  const customerId = (req as any).auth_context?.actor_id
+  const body = (req.body ?? {}) as AdminReorderRequestBody
+  const customerId = normalizeText(body.customer_id)
+  const key = normalizeText(body.key)
+
   if (!customerId) {
-    res.status(401).json({ message: "Unauthorized" })
+    res.status(400).json({ message: "Missing customer_id" })
     return
   }
-
-  const body = (req.body ?? {}) as ReorderRequestBody
-  const key = normalizeText(body.key)
   if (!key) {
     res.status(400).json({ message: "Missing purchase history key" })
     return
@@ -44,7 +49,13 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       logger,
       customerId,
       key,
-      source: "storefront_reorder",
+      source: "admin_staff_reorder",
+      metadata: {
+        staff_actor_customer_id: normalizeText(body.staff_actor_customer_id),
+        staff_actor_email: normalizeText(body.staff_actor_email),
+        staff_actor_name: normalizeText(body.staff_actor_name),
+        staff_note: normalizeText(body.staff_note),
+      },
     })
     sendResult(res, result)
   } catch (err) {
