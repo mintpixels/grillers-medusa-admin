@@ -117,6 +117,18 @@ Generate a review CSV for the most common unmapped items:
 Every generated row is review-oriented. Apply only rows where the legacy description and target Medusa product are the same sellable item, not merely a similar category. Dry-run the mapping file:
 The candidate CSV intentionally prefixes target columns with `candidate_`; copy reviewed rows into an import CSV with `medusa_variant_id` or `medusa_sku` before applying.
 
+If classifier rules improve after an import, first reconcile legacy line kinds so accounting/service artifacts do not stay in the customer-visible unmapped product pool:
+
+```bash
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/backfill-legacy-line-kind.ts
+```
+
+Review the dry-run `unmappedToNonProduct` samples, then apply:
+
+```bash
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/backfill-legacy-line-kind.ts -- --apply
+```
+
 ```bash
 ./node_modules/.bin/medusa exec ./src/scripts/import-legacy-item-maps.ts -- --file=./legacy-item-maps.csv
 ```

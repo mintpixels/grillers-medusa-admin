@@ -47,6 +47,21 @@ describe("legacy order history line visibility", () => {
     expect(isCustomerVisibleLegacyLine(row)).toBe(true)
   })
 
+  it("does not classify product descriptions with wing tip as gratuity notes", () => {
+    const row = {
+      qbd_item_list_id: "750000-1102879083",
+      sku: "Misc. Item",
+      title: "Misc. Item",
+      description: "Chicken Wings, Wing Tip On @ $2.69",
+      line_total: "245.33",
+      mapping_status: "unmapped",
+      metadata: { line_kind: "product" },
+    }
+
+    expect(legacyLineKind(row)).toBe("product")
+    expect(isCustomerVisibleLegacyLine(row)).toBe(true)
+  })
+
   it("uses the product description for historical items whose title is only a legacy sku", () => {
     expect(
       legacyPurchaseDisplayTitle({

@@ -20,6 +20,10 @@ import {
   uniqueStrings,
   getBooleanArg,
 } from "./lib/legacy-import-utils"
+import {
+  classifyLegacyLineKind,
+  type LegacyLineKind,
+} from "../lib/legacy-line-kind"
 
 type NormalizedInvoice = {
   source: "quickbooks_desktop"
@@ -83,15 +87,6 @@ type UnmappedProductSummary = {
   sku: string | null
   title: string | null
 }
-
-type LegacyLineKind =
-  | "product"
-  | "subtotal"
-  | "fee"
-  | "discount"
-  | "fulfillment"
-  | "note"
-  | "adjustment"
 
 const AMBIGUOUS = Symbol("ambiguous_variant_match")
 
@@ -305,83 +300,6 @@ function legacySkuAliases(value: unknown) {
   }
 
   return Array.from(aliases)
-}
-
-function classifyLegacyLine(input: {
-  qbdItemListId?: string | null
-  sku?: string | null
-  title?: string | null
-  description?: string | null
-  qbdItemFullName?: string | null
-  lineTotal?: number
-}): LegacyLineKind {
-  const sku = normalizeSearchText(input.sku)
-  const title = normalizeSearchText(input.title)
-  const description = normalizeSearchText(input.description)
-  const qbdName = normalizeSearchText(input.qbdItemFullName)
-  const blob = [sku, title, description, qbdName].filter(Boolean).join(" ")
-
-  if (!blob) {
-    return "note"
-  }
-
-  if (
-    sku === "subtotal" ||
-    title === "subtotal" ||
-    blob.includes(" subtotal ")
-  ) {
-    return "subtotal"
-  }
-
-  if (
-    sku === "ccc" ||
-    title === "ccc" ||
-    blob.includes("credit debit") ||
-    blob.includes("credit card") ||
-    blob.includes("processing recovery fee") ||
-    blob.includes("card processing")
-  ) {
-    return "fee"
-  }
-
-  if (
-    blob.includes("discount") ||
-    blob.includes("coupon") ||
-    blob.includes("refund adjustment")
-  ) {
-    return "discount"
-  }
-
-  if (
-    sku === "pick up" ||
-    sku === "pickup" ||
-    title === "pick up" ||
-    title === "pickup" ||
-    sku?.startsWith("del ") ||
-    title?.startsWith("del ") ||
-    blob.includes(" ups ") ||
-    blob.startsWith("ups ") ||
-    blob.includes(" fedex ") ||
-    blob.startsWith("fedex ") ||
-    blob.includes("ground shipping") ||
-    blob.includes("ups ground") ||
-    blob.includes("customer pick up") ||
-    blob.includes("local pickup") ||
-    blob.includes("shipping") ||
-    blob.includes("delivery charge")
-  ) {
-    return "fulfillment"
-  }
-
-  if (!input.qbdItemListId && Number(input.lineTotal || 0) === 0) {
-    return "note"
-  }
-
-  if (!extractSkuLikeValues(input.sku).length && !input.qbdItemListId) {
-    return "adjustment"
-  }
-
-  return "product"
 }
 
 function lineSkuCandidates(line: NormalizedLine) {
@@ -1329,7 +1247,7 @@ function normalizeConductorLine(
   const unitPrice = toNumber(line.rate) || (quantity ? lineTotal / quantity : lineTotal)
   const sku = lastNameSegment(qbdItemFullName)
   const description = toText(line.description)
-  const lineKind = classifyLegacyLine({
+  const lineKind = classifyLegacyLineKind({
     qbdItemListId: toText(line.item?.id),
     qbdItemFullName,
     sku,
@@ -1506,7 +1424,7 @@ function normalizeXmlLine(invoiceId: string, line: any, index: number): Normaliz
   const unitPrice = toNumber(line.Rate) || (quantity ? lineTotal / quantity : lineTotal)
   const sku = lastNameSegment(qbdItemFullName)
   const description = toText(line.Desc)
-  const lineKind = classifyLegacyLine({
+  const lineKind = classifyLegacyLineKind({
     qbdItemListId: toText(itemRef.ListID),
     qbdItemFullName,
     sku,

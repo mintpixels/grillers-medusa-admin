@@ -1,3 +1,9 @@
+import {
+  classifyLegacyLineKind,
+  isGenericLegacyItemTitle,
+  normalizeLegacySearchText,
+} from "./legacy-line-kind"
+
 type KnexLike = any
 
 export type LegacyOrderListQuery = {
@@ -30,12 +36,7 @@ function normalizeText(value: unknown): string | null {
 }
 
 function normalizeSearchText(value: unknown): string {
-  return String(value ?? "")
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
+  return normalizeLegacySearchText(value)
 }
 
 function isSkuLikeTitle(value: unknown, sku?: unknown) {
@@ -51,16 +52,6 @@ function isSkuLikeTitle(value: unknown, sku?: unknown) {
   }
 
   return /^[a-z0-9]{1,6}(?:-[a-z0-9]{1,8}){1,5}p?$/i.test(text)
-}
-
-function isGenericLegacyItemTitle(value: unknown) {
-  const normalized = normalizeSearchText(value)
-  return [
-    "misc item",
-    "miscellaneous item",
-    "misc services",
-    "misc service",
-  ].includes(normalized)
 }
 
 export function legacyPurchaseDisplayTitle(row: any): string {
@@ -107,102 +98,16 @@ export function legacyPurchaseHistoryKey(row: any): string {
 }
 
 export function legacyLineKind(row: any): string | null {
-  const metadata = row.metadata
-  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
-    const kind = normalizeText(metadata.line_kind)
-    if (kind && kind !== "product") {
-      return kind
-    }
-  }
-
-  if (row.mapping_status === "non_product") {
-    return "non_product"
-  }
-
-  const sku = normalizeSearchText(row.sku)
-  const title = normalizeSearchText(row.title)
-  const description = normalizeSearchText(row.description)
-  const rawDescription = String(row.description ?? "").trim().toLowerCase()
-  const text = [sku, title, description].filter(Boolean).join(" ")
-  const isGenericLegacyItem =
-    isGenericLegacyItemTitle(row.sku) || isGenericLegacyItemTitle(row.title)
-
-  if (!text) return "note"
-  if (
-    isGenericLegacyItem &&
-    (!description || isGenericLegacyItemTitle(row.description))
-  ) {
-    return "note"
-  }
-  if (sku === "subtotal" || title === "subtotal" || text.includes(" subtotal ")) return "subtotal"
-  if (
-    sku === "ccc" ||
-    title === "ccc" ||
-    text.includes("credit debit") ||
-    text.includes("credit card") ||
-    text.includes("processing recovery fee") ||
-    (isGenericLegacyItem &&
-      (/\b(pay|paid|paying|payment|cash|check|card)\b/.test(description) ||
-        /\bcommission\b/.test(description) ||
-        /^\s*(miscellaneous item[-,\s]*)?\d+(?:\.\d+)?\s*%?\s*$/.test(rawDescription)))
-  ) {
-    return "fee"
-  }
-  if (
-    text.includes("discount") ||
-    text.includes("coupon") ||
-    text.includes("refund") ||
-    /\bcredit\b/.test(text)
-  ) return "discount"
-  if (
-    sku === "pick up" ||
-    sku === "pickup" ||
-    title === "pick up" ||
-    title === "pickup" ||
-    sku.startsWith("del ") ||
-    title.startsWith("del ") ||
-    text.includes(" ups ") ||
-    text.startsWith("ups ") ||
-    text.includes(" fedex ") ||
-    text.startsWith("fedex ") ||
-    text.includes("ground shipping") ||
-    text.includes("ups ground") ||
-    text.includes("customer pick up") ||
-    text.includes("local pickup") ||
-    text.includes("freight") ||
-    text.includes("shipping") ||
-    text.includes("delivery charge") ||
-    description === "delivery" ||
-    description.startsWith("delivery ")
-  ) {
-    return "fulfillment"
-  }
-  if (
-    isGenericLegacyItem &&
-    (description.includes("repack charge") ||
-      description.includes("repacking charge") ||
-      description.includes("repack surcharge") ||
-      description.includes("custom slicing") ||
-      description.includes("trimming of fat") ||
-      description.includes("additional labor"))
-  ) {
-    return "service"
-  }
-  if (
-    isGenericLegacyItem &&
-    (description.includes("invoice") ||
-      description.includes("recharge") ||
-      description.includes("gratuity") ||
-      description.includes("surcharge") ||
-      /\btip\b/.test(description) ||
-      description.startsWith("actual weight") ||
-      /\bshopping bags?\b/.test(description) ||
-      /^miscellaneous item \d+ items?$/.test(description))
-  ) {
-    return "note"
-  }
-
-  return "product"
+  return classifyLegacyLineKind({
+    qbdItemListId: row.qbd_item_list_id ?? row.qbdItemListId,
+    sku: row.sku,
+    title: row.title,
+    description: row.description,
+    qbdItemFullName: row.qbd_item_full_name ?? row.qbdItemFullName,
+    lineTotal: row.line_total ?? row.lineTotal,
+    metadata: row.metadata,
+    mappingStatus: row.mapping_status ?? row.mappingStatus,
+  })
 }
 
 export function isCustomerVisibleLegacyLine(row: any): boolean {
