@@ -1,5 +1,6 @@
 import {
   isCustomerVisibleLegacyLine,
+  legacyPurchaseDisplayTitle,
   legacyLineKind,
 } from "../legacy-order-history"
 
@@ -28,5 +29,25 @@ describe("legacy order history line visibility", () => {
 
     expect(legacyLineKind(row)).toBe("product")
     expect(isCustomerVisibleLegacyLine(row)).toBe(true)
+  })
+
+  it("uses the product description for historical items whose title is only a legacy sku", () => {
+    expect(
+      legacyPurchaseDisplayTitle({
+        sku: "6-01-21-1",
+        title: "6-01-21-1",
+        description: "Chicken 8-pce Cut-up, DAVID ELLIOT, CHK",
+      })
+    ).toBe("Chicken 8-pce Cut-up, DAVID ELLIOT, CHK")
+  })
+
+  it("keeps a real title when the legacy title is not just a sku", () => {
+    expect(
+      legacyPurchaseDisplayTitle({
+        sku: "Misc. Item",
+        title: "Cocktail Franks in a Blanket",
+        description: "08-FKS9 Cocktail Franks in a Blanket",
+      })
+    ).toBe("Cocktail Franks in a Blanket")
   })
 })

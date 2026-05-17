@@ -38,6 +38,36 @@ function normalizeSearchText(value: unknown): string {
     .trim()
 }
 
+function isSkuLikeTitle(value: unknown, sku?: unknown) {
+  const text = normalizeText(value)
+  if (!text) {
+    return false
+  }
+
+  const normalizedText = text.toLowerCase()
+  const normalizedSku = normalizeText(sku)?.toLowerCase()
+  if (normalizedSku && normalizedText === normalizedSku) {
+    return true
+  }
+
+  return /^[a-z0-9]{1,6}(?:-[a-z0-9]{1,8}){1,5}p?$/i.test(text)
+}
+
+export function legacyPurchaseDisplayTitle(row: any): string {
+  const mappedTitle = normalizeText(row.medusa_variant_title || row.medusa_product_title)
+  if (mappedTitle) {
+    return mappedTitle
+  }
+
+  const title = normalizeText(row.title)
+  const description = normalizeText(row.description)
+  if (title && !isSkuLikeTitle(title, row.sku)) {
+    return title
+  }
+
+  return description || title || normalizeText(row.sku) || "Legacy item"
+}
+
 export function legacyLineKind(row: any): string | null {
   const metadata = row.metadata
   if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
@@ -353,6 +383,7 @@ export async function listLegacyPurchaseHistoryForCustomer(
       ? new Date(row.placed_at).toISOString()
       : new Date(0).toISOString()
     const quantity = asNumber(row.quantity)
+    const displayTitle = legacyPurchaseDisplayTitle(row)
     const existing = grouped.get(key)
 
     if (existing) {
@@ -362,6 +393,8 @@ export async function listLegacyPurchaseHistoryForCustomer(
       if (placedAt > existing.lastOrderedAt) {
         existing.lastOrderedAt = placedAt
         existing.unitPrice = asNumber(row.unit_price)
+        existing.title = displayTitle
+        existing.productTitle = displayTitle
         existing.lastOrderRef = row.ref_number || row.qbd_txn_id || null
       }
       continue
@@ -374,9 +407,8 @@ export async function listLegacyPurchaseHistoryForCustomer(
       productId: row.medusa_product_id ?? "",
       legacyItemId: row.qbd_item_list_id ?? null,
       sku: row.sku ?? null,
-      title: row.medusa_variant_title || row.title || row.description || "Legacy item",
-      productTitle:
-        row.medusa_product_title || row.title || row.description || "Legacy item",
+      title: displayTitle,
+      productTitle: displayTitle,
       thumbnail: null,
       lastOrderedAt: placedAt,
       timesOrdered: 1,
