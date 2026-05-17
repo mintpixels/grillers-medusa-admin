@@ -295,7 +295,7 @@ async function getProviderPasswordHash(db: any, authIdentityId: string) {
     .where("provider", AUTH_PROVIDER)
     .where("auth_identity_id", authIdentityId)
     .whereNull("deleted_at")
-    .whereRaw("provider_metadata ? 'password'")
+    .whereRaw("provider_metadata->>'password' is not null")
     .first()
 
   return typeof row?.provider_metadata?.password === "string"
@@ -637,6 +637,8 @@ export default async function importLegacyCustomers({ container }: ExecArgs) {
   )
   const limit = getNumberArg(args, ["limit"], 0)
   const offset = getNumberArg(args, ["offset"], 0)
+  const requestedBatchSize = getNumberArg(args, ["batch-size"], 500)
+  const batchSize = Math.max(requestedBatchSize || 500, 1)
   const envFile = getStringArg(args, ["env-file", "legacy-env-file"])
 
   const loadedEnv = loadFirstExistingEnvFile([
@@ -674,76 +676,110 @@ export default async function importLegacyCustomers({ container }: ExecArgs) {
     failed: 0,
   }
 
-  try {
-    const [rows] = await connection.query(buildLegacyCustomerQuery(limit, offset))
+  async function processLegacyCustomerRow(row: LegacyCustomerRow) {
+    stats.seen += 1
+    const legacy = normalizeLegacyCustomer(row)
+    if (!legacy.emailLower) {
+      stats.skippedInvalidEmail += 1
+      return
+    }
 
-    for (const row of rows as LegacyCustomerRow[]) {
-      stats.seen += 1
-      const legacy = normalizeLegacyCustomer(row)
-      if (!legacy.emailLower) {
-        stats.skippedInvalidEmail += 1
-        continue
+    try {
+      const existing = await findCustomerByEmail(db, legacy.emailLower)
+      const customer = await ensureCustomer({
+        db,
+        customerModule,
+        legacy,
+        apply,
+      })
+      const customerId = customer?.id ?? null
+      if (existing) {
+        stats.customersMatched += 1
+      } else if (apply && customerId) {
+        stats.customersCreated += 1
       }
 
-      try {
-        const existing = await findCustomerByEmail(db, legacy.emailLower)
-        const customer = await ensureCustomer({
-          db,
-          customerModule,
-          legacy,
-          apply,
-        })
-        const customerId = customer?.id ?? null
-        if (existing) {
-          stats.customersMatched += 1
-        } else if (apply && customerId) {
-          stats.customersCreated += 1
-        }
+      const auth = await ensureAuthIdentity({
+        db,
+        legacy,
+        customerId,
+        apply,
+        updateExistingPasswords,
+      })
+      if (
+        auth.status === "imported" ||
+        auth.status === "imported_with_alias_conflicts"
+      ) {
+        stats.authImported += 1
+      } else {
+        stats.authSkipped += 1
+      }
 
-        const auth = await ensureAuthIdentity({
-          db,
-          legacy,
-          customerId,
-          apply,
-          updateExistingPasswords,
-        })
-        if (auth.status === "imported" || auth.status === "imported_with_alias_conflicts") {
-          stats.authImported += 1
-        } else {
-          stats.authSkipped += 1
-        }
+      const addressResult = await ensureAddresses({
+        customerModule,
+        customerId,
+        addresses: legacy.addresses,
+        apply,
+      })
+      stats.addressRowsCreated += addressResult.created
 
-        const addressResult = await ensureAddresses({
-          customerModule,
-          customerId,
-          addresses: legacy.addresses,
-          apply,
-        })
-        stats.addressRowsCreated += addressResult.created
+      await upsertCustomerMap({
+        db,
+        legacy,
+        customerId,
+        authIdentityId: auth.authIdentityId,
+        authStatus: auth.status,
+        addressStatus: addressResult.status,
+        apply,
+      })
 
-        await upsertCustomerMap({
-          db,
-          legacy,
-          customerId,
-          authIdentityId: auth.authIdentityId,
-          authStatus: auth.status,
-          addressStatus: addressResult.status,
-          apply,
-        })
+      await backfillLegacyOrderCustomerLink({
+        db,
+        legacy,
+        customerId,
+        apply,
+      })
+    } catch (error) {
+      stats.failed += 1
+      logger.error(
+        `[legacy-customers] failed legacy_customer_id=${legacy.legacyCustomerId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      )
+    }
+  }
 
-        await backfillLegacyOrderCustomerLink({
-          db,
-          legacy,
-          customerId,
-          apply,
-        })
-      } catch (error) {
-        stats.failed += 1
-        logger.error(
-          `[legacy-customers] failed legacy_customer_id=${legacy.legacyCustomerId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        )
+  try {
+    let currentOffset = offset
+    let remaining = limit > 0 ? limit : Number.POSITIVE_INFINITY
+
+    while (remaining > 0) {
+      const pageLimit = Math.min(batchSize, remaining)
+      const [rows] = await connection.query(
+        buildLegacyCustomerQuery(pageLimit, currentOffset)
+      )
+      const batch = rows as LegacyCustomerRow[]
+      if (!batch.length) {
+        break
+      }
+
+      for (const row of batch) {
+        await processLegacyCustomerRow(row)
+      }
+
+      currentOffset += batch.length
+      remaining -= batch.length
+
+      logger.info(
+        `[legacy-customers] progress ${JSON.stringify({
+          seen: stats.seen,
+          failed: stats.failed,
+          nextOffset: currentOffset,
+        })}`
+      )
+
+      if (batch.length < pageLimit) {
+        break
       }
     }
   } finally {

@@ -51,10 +51,16 @@ Dry-run customers:
 ./node_modules/.bin/medusa exec ./src/scripts/import-legacy-customers.ts -- --limit=100
 ```
 
+For full-table dry-runs or applies, the script pages through the legacy customer table and logs progress after each batch. Use `--batch-size` to tune batch size and `--offset` to resume a partial run:
+
+```bash
+./node_modules/.bin/medusa exec ./src/scripts/import-legacy-customers.ts -- --batch-size=500 --offset=0
+```
+
 Apply customers:
 
 ```bash
-./node_modules/.bin/medusa exec ./src/scripts/import-legacy-customers.ts -- --apply
+./node_modules/.bin/medusa exec ./src/scripts/import-legacy-customers.ts -- --batch-size=500 --apply
 ```
 
 By default, existing Medusa provider passwords are not overwritten. To deliberately refresh existing imported hashes from the legacy password source:
