@@ -53,9 +53,18 @@ type VariantRow = {
 
 type Candidate = {
   item: LegacyItemSummary
-  variant: VariantRow
+  variant: VariantRow | null
   score: number
   reasons: string[]
+  identity_warnings: string[]
+}
+
+type IdentityGroup = {
+  name: string
+  terms: Array<{
+    key: string
+    patterns: RegExp[]
+  }>
 }
 
 const STOP_WORDS = new Set([
@@ -200,6 +209,151 @@ function tokenSimilarity(left: Set<string>, right: Set<string>) {
   return intersection / (left.size + right.size - intersection)
 }
 
+const IDENTITY_GROUPS: IdentityGroup[] = [
+  {
+    name: "poultry_part",
+    terms: [
+      { key: "8_piece_cut_up", patterns: [/\b(?:8|eight)[-\s]*(?:pce|pc|piece|pieces)\b/i, /\bcut[-\s]?up\b/i] },
+      { key: "whole", patterns: [/\bwhole\b/i] },
+      { key: "neck", patterns: [/\bnecks?\b/i] },
+      { key: "wing", patterns: [/\bwings?\b/i] },
+      { key: "drumette", patterns: [/\bdrumettes?\b/i] },
+      { key: "drumstick", patterns: [/\bdrumsticks?\b/i] },
+      { key: "leg_quarter", patterns: [/\bleg quarters?\b/i] },
+      { key: "thigh", patterns: [/\bthighs?\b/i] },
+      { key: "breast", patterns: [/\bbreasts?\b/i] },
+      { key: "liver", patterns: [/\blivers?\b/i] },
+      { key: "bone", patterns: [/\bbones?\b/i] },
+      { key: "ground", patterns: [/\bground\b/i] },
+      { key: "schnitzel", patterns: [/\bschnitzel\b/i] },
+      { key: "cutlet", patterns: [/\bcutlets?\b/i] },
+      { key: "tender", patterns: [/\btenders?\b/i] },
+    ],
+  },
+  {
+    name: "beef_lamb_cut",
+    terms: [
+      { key: "london_broil", patterns: [/\blondon broil\b/i] },
+      { key: "brisket", patterns: [/\bbrisket\b/i] },
+      { key: "deckel", patterns: [/\bdeckel\b/i] },
+      { key: "short_rib", patterns: [/\bshort ribs?\b/i] },
+      { key: "flanken", patterns: [/\bflanken\b/i] },
+      { key: "ribeye", patterns: [/\bribeye\b/i] },
+      { key: "oyster", patterns: [/\boyster steak\b/i] },
+      { key: "strip_denver", patterns: [/\bstrip steak\b/i, /\bdenver steak\b/i] },
+      { key: "chuckeye_delmonico", patterns: [/\bchuckeye\b/i, /\bdelmonico\b/i] },
+      { key: "biltong_jerky", patterns: [/\bbiltong\b/i, /\bbeef jerky\b/i] },
+      { key: "dry_wors", patterns: [/\bdry wors\b/i, /\bdried sausage\b/i] },
+      { key: "liver", patterns: [/\bliver\b/i] },
+      { key: "pepper_steak", patterns: [/\bpepper steak\b/i] },
+      { key: "minute_steak", patterns: [/\bminute steak\b/i] },
+      { key: "kebab", patterns: [/\bkebabs?\b/i] },
+    ],
+  },
+  {
+    name: "prepared_item",
+    terms: [
+      { key: "pot_pie", patterns: [/\bpot pie\b/i] },
+      { key: "pocket_pie", patterns: [/\bpocket pies?\b/i] },
+      { key: "matzo_ball", patterns: [/\bmatzo balls?\b/i] },
+      { key: "butternut_souffle", patterns: [/\bbutternut souffle\b/i] },
+      { key: "corn_souffle", patterns: [/\bcorn souffle\b/i] },
+      { key: "kugel", patterns: [/\bkugel\b/i] },
+      { key: "gravy", patterns: [/\bgravy\b/i] },
+      { key: "stuffing_dressing", patterns: [/\bstuffing\b/i, /\bdressing\b/i] },
+      { key: "orange_chicken", patterns: [/\borange chicken\b/i] },
+      { key: "meatballs", patterns: [/\bmeat ?balls?\b/i] },
+      { key: "katsu", patterns: [/\bkatsu\b/i] },
+      { key: "pulled_chicken", patterns: [/\bpulled chicken\b/i] },
+      { key: "smoked_salmon", patterns: [/\bsmoked salmon\b/i] },
+      { key: "turkey_pastrami", patterns: [/\bturkey pastrami\b/i] },
+    ],
+  },
+  {
+    name: "brand_or_program",
+    terms: [
+      { key: "david_elliot", patterns: [/\bdavid elliot\b/i] },
+      { key: "empire", patterns: [/\bempire\b/i] },
+      { key: "aarons", patterns: [/\baarons?\b/i] },
+      { key: "organic", patterns: [/\borganic\b/i] },
+      { key: "antibiotic_free", patterns: [/\bantibiotic[-\s]?free\b/i] },
+      { key: "grass_fed", patterns: [/\bgrass[-\s]?fed\b/i] },
+      { key: "american_angus", patterns: [/\bamerican angus\b/i] },
+      { key: "haolam", patterns: [/\bhaolam\b/i] },
+      { key: "bgan", patterns: [/\bb'?gan\b/i] },
+    ],
+  },
+]
+
+function extractIdentityKeys(value: unknown, group: IdentityGroup) {
+  const text = String(value ?? "")
+  const keys = new Set<string>()
+
+  for (const term of group.terms) {
+    if (term.patterns.some((pattern) => pattern.test(text))) {
+      keys.add(term.key)
+    }
+  }
+
+  return keys
+}
+
+function setIntersects(left: Set<string>, right: Set<string>) {
+  for (const value of left) {
+    if (right.has(value)) {
+      return true
+    }
+  }
+  return false
+}
+
+function passoverStatus(value: unknown) {
+  const text = normalizeSearchText(value)
+  if (!text) {
+    return null
+  }
+
+  if (/\bnot (?:kosher for passover|kfp)\b/.test(text)) {
+    return "not_kfp"
+  }
+  if (/\b(?:kosher for passover|kfp)\b/.test(text)) {
+    return "kfp"
+  }
+
+  return null
+}
+
+function identityWarnings(legacyText: string, candidateText: string) {
+  const warnings: string[] = []
+  const legacyPassoverStatus = passoverStatus(legacyText)
+  const candidatePassoverStatus = passoverStatus(candidateText)
+  if (
+    legacyPassoverStatus &&
+    candidatePassoverStatus &&
+    legacyPassoverStatus !== candidatePassoverStatus
+  ) {
+    warnings.push(
+      `passover_status:${legacyPassoverStatus}->${candidatePassoverStatus}`
+    )
+  }
+
+  for (const group of IDENTITY_GROUPS) {
+    const legacyKeys = extractIdentityKeys(legacyText, group)
+    const candidateKeys = extractIdentityKeys(candidateText, group)
+    if (
+      legacyKeys.size &&
+      candidateKeys.size &&
+      !setIntersects(legacyKeys, candidateKeys)
+    ) {
+      warnings.push(
+        `${group.name}:${Array.from(legacyKeys).sort().join("+")}->${Array.from(candidateKeys).sort().join("+")}`
+      )
+    }
+  }
+
+  return warnings
+}
+
 function csvCell(value: unknown) {
   const text = String(value ?? "").replace(/\s+/g, " ").trim()
   if (!/[",\n\r]/.test(text)) {
@@ -340,11 +494,22 @@ function scoreCandidate(item: LegacyItemSummary, variant: VariantRow): Candidate
     return null
   }
 
+  const warnings = identityWarnings(legacyText, variantText)
+  const hasExactReason = reasons.some((reason) => reason.endsWith("_exact"))
+  if (warnings.length && !hasExactReason) {
+    return null
+  }
+
+  if (warnings.length) {
+    score = Math.min(score, 0.94)
+  }
+
   return {
     item,
     variant,
     score: Number(score.toFixed(4)),
     reasons,
+    identity_warnings: warnings,
   }
 }
 
@@ -556,11 +721,22 @@ async function loadVariants(db: any) {
     }) as Promise<VariantRow[]>
 }
 
+function unmatchedCandidate(item: LegacyItemSummary): Candidate {
+  return {
+    item,
+    variant: null,
+    score: 0,
+    reasons: ["no_candidate_above_threshold"],
+    identity_warnings: [],
+  }
+}
+
 function renderCsv(candidates: Candidate[]) {
   const header = [
     "review_status",
     "score",
     "reasons",
+    "identity_warnings",
     "qbd_item_list_id",
     "sku",
     "legacy_title",
@@ -589,16 +765,20 @@ function renderCsv(candidates: Candidate[]) {
   return [
     csvRow(header),
     ...candidates.map((candidate) => {
-      const reviewStatus =
-        candidate.score >= 0.97 &&
+      const reviewStatus = !candidate.variant
+        ? "no_candidate"
+        : candidate.identity_warnings.length
+          ? "review_required"
+          : candidate.score >= 0.97 &&
         candidate.item.description_count === 1 &&
         candidate.reasons.some((reason) => reason.endsWith("_exact"))
           ? "high_confidence"
           : "review_required"
       return csvRow([
         reviewStatus,
-        candidate.score,
+        candidate.score || "",
         candidate.reasons.join(";"),
+        candidate.identity_warnings.join(";"),
         candidate.item.qbd_item_list_id,
         candidate.item.sku,
         candidate.item.title,
@@ -614,13 +794,13 @@ function renderCsv(candidates: Candidate[]) {
         candidate.item.qbd_item?.sales_description,
         candidate.item.qbd_item?.sales_price,
         "",
-        candidate.variant.variant_id,
-        candidate.variant.sku,
-        candidate.variant.product_id,
-        candidate.variant.product_title,
-        candidate.variant.variant_title,
-        candidate.score,
-        "candidate_export",
+        candidate.variant?.variant_id,
+        candidate.variant?.sku,
+        candidate.variant?.product_id,
+        candidate.variant?.product_title,
+        candidate.variant?.variant_title,
+        candidate.score || "",
+        candidate.variant ? "candidate_export" : "",
         "",
       ])
     }),
@@ -637,6 +817,7 @@ export default async function exportLegacyItemMapCandidates({ container }: ExecA
   const candidatesPerItem = getNumberArg(args, ["candidates-per-item"], 3)
   const descriptionSamples = getNumberArg(args, ["description-samples"], 5)
   const includeQbdItems = getBooleanArg(args, ["include-qbd-items"], false)
+  const includeUnmatched = getBooleanArg(args, ["include-unmatched"], true)
   const qbdItemLimit = getNumberArg(args, ["qbd-item-limit"], limit)
   const output = getStringArg(args, ["output", "file"]) ||
     `legacy-item-map-candidates-${new Date().toISOString().slice(0, 10)}.csv`
@@ -659,15 +840,18 @@ export default async function exportLegacyItemMapCandidates({ container }: ExecA
     top_descriptions: item.top_descriptions.slice(0, descriptionSamples),
   }))
 
-  const candidates = items.flatMap((item) =>
-    variants
+  const candidates = items.flatMap((item) => {
+    const itemCandidates = variants
       .map((variant) => scoreCandidate(item, variant))
       .filter((candidate): candidate is Candidate =>
         Boolean(candidate && candidate.score >= minScore)
       )
       .sort((a, b) => b.score - a.score)
       .slice(0, candidatesPerItem)
-  )
+    return itemCandidates.length || !includeUnmatched
+      ? itemCandidates
+      : [unmatchedCandidate(item)]
+  })
 
   const outputPath = path.resolve(process.cwd(), output)
   await writeFile(outputPath, `${renderCsv(candidates)}\n`, "utf8")
@@ -678,11 +862,16 @@ export default async function exportLegacyItemMapCandidates({ container }: ExecA
       unmappedItemsReviewed: items.length,
       variantsCompared: variants.length,
       candidates: candidates.length,
+      unmatched: candidates.filter((candidate) => !candidate.variant).length,
+      identityWarnings: candidates.filter(
+        (candidate) => candidate.identity_warnings.length
+      ).length,
       qbdItemFacts: qbdItemFacts.size,
       highConfidence: candidates.filter((candidate) =>
         candidate.score >= 0.97 &&
         candidate.item.description_count === 1 &&
-        candidate.reasons.some((reason) => reason.endsWith("_exact"))
+        candidate.reasons.some((reason) => reason.endsWith("_exact")) &&
+        !candidate.identity_warnings.length
       ).length,
     })}`
   )

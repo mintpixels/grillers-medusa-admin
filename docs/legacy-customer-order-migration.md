@@ -115,7 +115,7 @@ Generate a review CSV for the most common unmapped items:
 ```
 
 Every generated row is review-oriented. Apply only rows where the legacy description and target Medusa product are the same sellable item, not merely a similar category. Dry-run the mapping file:
-The candidate CSV intentionally prefixes target columns with `candidate_`; copy reviewed rows into an import CSV with `medusa_variant_id` or `medusa_sku` before applying.
+The candidate CSV intentionally prefixes target columns with `candidate_`; copy reviewed rows into an import CSV with `medusa_variant_id` or `medusa_sku` before applying. Rows marked `no_candidate` are still important: they mean the exporter could not find a safe catalog candidate above the requested score threshold, so the item should stay visible as historical/unavailable unless a human finds the exact current equivalent. Rows with `identity_warnings` need extra scrutiny because the legacy text and candidate differ on product identity markers such as cut, preparation, brand/program, or Passover status.
 For tougher review passes, include the most common historical descriptions and live QuickBooks item facts from Conductor:
 
 ```bash
