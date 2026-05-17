@@ -18,5 +18,10 @@ export default defineMiddlewares({
       method: ["GET", "POST"],
       middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
     },
+    {
+      matcher: "/admin/legacy-item-mapping-candidates*",
+      method: ["GET", "POST"],
+      middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
+    },
   ],
 })

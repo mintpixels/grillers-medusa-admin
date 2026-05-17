@@ -116,6 +116,22 @@ Generate a review CSV for the most common unmapped items:
 
 Every generated row is review-oriented. Apply only rows where the legacy description and target Medusa product are the same sellable item, not merely a similar category. Dry-run the mapping file:
 The candidate CSV intentionally prefixes target columns with `candidate_`; copy reviewed rows into an import CSV with `medusa_variant_id` or `medusa_sku` before applying. Rows marked `no_candidate` are still important: they mean the exporter could not find a safe catalog candidate above the requested score threshold, so the item should stay visible as historical/unavailable unless a human finds the exact current equivalent. Rows with `identity_warnings` need extra scrutiny because the legacy text and candidate differ on product identity markers such as cut, preparation, brand/program, or Passover status.
+
+You can also review and approve the largest unmapped product buckets directly in Medusa Admin:
+
+- Go to Legacy Item Mapping.
+- Search by legacy item, description, SKU, customer, or invoice, or leave the search blank to start with the highest-volume unmapped groups.
+- Open matching historical orders before approving if the grouping is ambiguous.
+- Search the current catalog and select the exact current Medusa variant.
+- Preview every mapping before approval. The preview confirms the target variant, whether the approval creates a direct QuickBooks item map or scoped description rule, and how many historical lines will be backfilled.
+- Generic QuickBooks buckets such as `Misc. Item` require a description matcher and create scoped `legacy_item_match_rule` rows rather than broad item maps.
+
+For a redacted CLI view of the same admin queue:
+
+```bash
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/audit-legacy-item-mapping-candidates.ts -- --limit=20 --min-lines=10
+```
+
 For tougher review passes, include the most common historical descriptions and live QuickBooks item facts from Conductor:
 
 ```bash
