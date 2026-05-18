@@ -22,8 +22,10 @@ type CustomerProjectionRow = {
   customer_exists: boolean
   has_account: boolean
   auth_exists: boolean
+  auth_provider_has_password: boolean
   email_provider_exists: boolean
   email_provider_has_password: boolean
+  email_provider_conflict_exists: boolean
   username_provider_exists: boolean
   username_provider_has_password: boolean
   username_lower_provider_exists: boolean
@@ -92,6 +94,18 @@ function legacyUsernameFallbackCanCover(row: CustomerProjectionRow) {
       row.medusa_auth_identity_id &&
       row.auth_exists &&
       row.email_provider_has_password
+  )
+}
+
+function legacyEmailFallbackCanCover(row: CustomerProjectionRow) {
+  return Boolean(
+    row.medusa_customer_id &&
+      row.customer_exists &&
+      row.has_account &&
+      row.medusa_auth_identity_id &&
+      row.auth_exists &&
+      row.auth_provider_has_password &&
+      row.email_provider_conflict_exists
   )
 }
 
@@ -241,6 +255,24 @@ async function getCustomerProjectionRows(db: any): Promise<CustomerProjectionRow
         and deleted_at is null
       group by auth_identity_id, entity_id
     ),
+    auth_provider_passwords as (
+      select
+        auth_identity_id,
+        bool_or(provider_metadata->>'password' is not null) as has_password
+      from provider_identity
+      where provider = ?
+        and deleted_at is null
+      group by auth_identity_id
+    ),
+    provider_entity_owners as (
+      select
+        entity_id,
+        count(distinct auth_identity_id) as owner_count
+      from provider_identity
+      where provider = ?
+        and deleted_at is null
+      group by entity_id
+    ),
     address_counts as (
       select customer_id, count(*) as address_count
       from customer_address
@@ -266,8 +298,13 @@ async function getCustomerProjectionRows(db: any): Promise<CustomerProjectionRow
       (c.id is not null) as customer_exists,
       coalesce(c.has_account, false) as has_account,
       (ai.id is not null) as auth_exists,
+      coalesce(auth_provider_passwords.has_password, false) as auth_provider_has_password,
       (email_provider.auth_identity_id is not null) as email_provider_exists,
       coalesce(email_provider.has_password, false) as email_provider_has_password,
+      case
+        when email_provider.auth_identity_id is null then coalesce(provider_entity_owners.owner_count, 0) > 0
+        else coalesce(provider_entity_owners.owner_count, 0) > 1
+      end as email_provider_conflict_exists,
       (username_provider.auth_identity_id is not null) as username_provider_exists,
       coalesce(username_provider.has_password, false) as username_provider_has_password,
       (username_lower_provider.auth_identity_id is not null) as username_lower_provider_exists,
@@ -277,9 +314,13 @@ async function getCustomerProjectionRows(db: any): Promise<CustomerProjectionRow
     from maps m
     left join customer c on c.id = m.medusa_customer_id and c.deleted_at is null
     left join auth_identity ai on ai.id = m.medusa_auth_identity_id and ai.deleted_at is null
+    left join auth_provider_passwords
+      on auth_provider_passwords.auth_identity_id = m.medusa_auth_identity_id
     left join provider_keys email_provider
       on email_provider.auth_identity_id = m.medusa_auth_identity_id
       and email_provider.entity_id = m.email_lower
+    left join provider_entity_owners
+      on provider_entity_owners.entity_id = m.email_lower
     left join provider_keys username_provider
       on username_provider.auth_identity_id = m.medusa_auth_identity_id
       and username_provider.entity_id = m.legacy_username
@@ -289,7 +330,7 @@ async function getCustomerProjectionRows(db: any): Promise<CustomerProjectionRow
     left join address_counts on address_counts.customer_id = m.medusa_customer_id
     left join legacy_order_counts on legacy_order_counts.medusa_customer_id = m.medusa_customer_id
     order by m.legacy_customer_id::numeric nulls last, m.legacy_customer_id
-  `, [AUTH_PROVIDER]).then((result: any) => result.rows ?? result)
+  `, [AUTH_PROVIDER, AUTH_PROVIDER, AUTH_PROVIDER]).then((result: any) => result.rows ?? result)
 }
 
 async function getLegacyOrderProjectionStats(db: any) {
@@ -438,6 +479,7 @@ export default async function auditLegacyCustomerProjection({
   let sourceNoPasswordAccounts = 0
   let sourceNoPasswordNoOnlineAccounts = 0
   let resetReadyNoPasswordAccounts = 0
+  let emailProviderFallbackSupported = 0
   let expectedAddressAccounts = 0
   let expectedAddressAccountsWithAddress = 0
 
@@ -491,7 +533,11 @@ export default async function auditLegacyCustomerProjection({
       if (!row.medusa_auth_identity_id || !row.auth_exists) {
         bump(hardGapCounts, "expected_auth_missing", row)
       } else if (!row.email_provider_has_password) {
-        bump(hardGapCounts, "expected_email_login_password_missing", row)
+        if (legacyEmailFallbackCanCover(row)) {
+          emailProviderFallbackSupported += 1
+        } else {
+          bump(hardGapCounts, "expected_email_login_password_missing", row)
+        }
       }
 
       const loginKeys = usernameLoginKeys(row)
@@ -608,6 +654,7 @@ export default async function auditLegacyCustomerProjection({
       withAuthId,
       authExists,
       emailProviderHasPassword,
+      emailProviderFallbackSupported,
       usernameAliasExpected,
       usernameAliasPresent,
       usernameAliasFallbackSupported,

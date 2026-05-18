@@ -20,6 +20,7 @@ export type LegacyLoginCandidate = {
   customerId: string
   authIdentityId: string
   passwordHash: string
+  passwordHashes?: string[]
 }
 
 export type VerifiedLegacyLogin = {
@@ -29,6 +30,16 @@ export type VerifiedLegacyLogin = {
 
 function truthy(value: unknown) {
   return value === true || value === "true" || value === 1 || value === "1"
+}
+
+function uniqueStrings(values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => (typeof value === "string" ? value.trim() : ""))
+        .filter(Boolean)
+    )
+  )
 }
 
 export function normalizeLegacyLoginIdentifier(value: unknown) {
@@ -60,7 +71,7 @@ export function legacyLoginCandidatesFromProviderRows(
       customerId: string
       authIdentityId: string
       canonicalPasswordHash: string | null
-      fallbackPasswordHash: string | null
+      fallbackPasswordHashes: string[]
     }
   >()
 
@@ -89,13 +100,13 @@ export function legacyLoginCandidatesFromProviderRows(
         customerId,
         authIdentityId,
         canonicalPasswordHash: null,
-        fallbackPasswordHash: null,
+        fallbackPasswordHashes: [],
       }
 
     if (truthy(row.is_canonical_provider)) {
       existing.canonicalPasswordHash ??= passwordHash
     } else {
-      existing.fallbackPasswordHash ??= passwordHash
+      existing.fallbackPasswordHashes.push(passwordHash)
     }
 
     byAccount.set(key, existing)
@@ -107,9 +118,13 @@ export function legacyLoginCandidatesFromProviderRows(
       customerId: candidate.customerId,
       authIdentityId: candidate.authIdentityId,
       passwordHash:
-        candidate.canonicalPasswordHash ?? candidate.fallbackPasswordHash ?? "",
+        candidate.canonicalPasswordHash ?? candidate.fallbackPasswordHashes[0] ?? "",
+      passwordHashes: uniqueStrings([
+        candidate.canonicalPasswordHash,
+        ...candidate.fallbackPasswordHashes,
+      ]),
     }))
-    .filter((candidate) => candidate.passwordHash)
+    .filter((candidate) => candidate.passwordHashes?.length)
 }
 
 export async function selectUniqueVerifiedLegacyLoginCandidate(
@@ -121,10 +136,20 @@ export async function selectUniqueVerifiedLegacyLoginCandidate(
 
   for (const candidate of candidates) {
     let passwordMatches = false
-    try {
-      passwordMatches = await verifyPassword(candidate.passwordHash, password)
-    } catch {
-      passwordMatches = false
+    const passwordHashes = candidate.passwordHashes?.length
+      ? candidate.passwordHashes
+      : [candidate.passwordHash]
+
+    for (const passwordHash of passwordHashes) {
+      try {
+        passwordMatches = await verifyPassword(passwordHash, password)
+      } catch {
+        passwordMatches = false
+      }
+
+      if (passwordMatches) {
+        break
+      }
     }
 
     if (!passwordMatches) {

@@ -75,3 +75,47 @@ Use `smoke-legacy-reorder-flow.ts` after customer/order imports or auth changes.
   --storefront-url https://grillers-medusa-frontend.vercel.app \
   --publishable-key pk_...
 ```
+
+## Legacy Auth Password Audit
+
+Use `audit-legacy-auth-passwords.ts` to prove imported auth hashes still verify the source legacy-site passwords. It compares source credentials against Medusa provider hashes without printing emails or passwords.
+
+```bash
+./node_modules/.bin/medusa exec ./src/scripts/audit-legacy-auth-passwords.ts \
+  -- \
+  --concurrency 4
+```
+
+If the audit finds legacy passwords that are not covered by any provider hash,
+use `backfill-legacy-auth-password-fallbacks.ts`. It preserves current Medusa
+passwords and adds a legacy-only fallback provider hash for the storefront
+legacy login path.
+
+```bash
+./node_modules/.bin/medusa exec ./src/scripts/backfill-legacy-auth-password-fallbacks.ts \
+  -- \
+  --apply \
+  --concurrency 4
+```
+
+If the audit finds an auth identity attached to multiple mapped customers, use
+`repair-legacy-shared-auth-identities.ts` first. It splits only the mismatched
+legacy map onto a fresh auth identity and moves that map's email/username
+provider rows.
+
+```bash
+./node_modules/.bin/medusa exec ./src/scripts/repair-legacy-shared-auth-identities.ts \
+  -- \
+  --apply
+```
+
+If the broader projection audit reports `expected_email_login_password_missing`,
+use `repair-legacy-email-login-providers.ts`. It creates or repairs the
+canonical email provider row from an existing verified provider hash, preserving
+the source legacy password for primary email/password login.
+
+```bash
+./node_modules/.bin/medusa exec ./src/scripts/repair-legacy-email-login-providers.ts \
+  -- \
+  --apply
+```

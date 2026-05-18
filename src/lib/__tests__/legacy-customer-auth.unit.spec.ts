@@ -47,8 +47,30 @@ describe("legacy customer auth fallback", () => {
         customerId: "cus_100",
         authIdentityId: "auth_100",
         passwordHash: "current-email-hash",
+        passwordHashes: ["current-email-hash", "stale-alias-hash"],
       },
     ])
+  })
+
+  it("accepts a legacy fallback hash when the canonical provider has a newer password", async () => {
+    const match = await selectUniqueVerifiedLegacyLoginCandidate(
+      [
+        {
+          legacyCustomerId: "100",
+          customerId: "cus_100",
+          authIdentityId: "auth_100",
+          passwordHash: "current-email-hash",
+          passwordHashes: ["current-email-hash", "legacy-fallback-hash"],
+        },
+      ],
+      "legacy-secret",
+      async (hash) => hash === "legacy-fallback-hash"
+    )
+
+    expect(match).toEqual({
+      customerId: "cus_100",
+      authIdentityId: "auth_100",
+    })
   })
 
   it("issues a fallback login only when exactly one legacy account password verifies", async () => {
