@@ -72,5 +72,6 @@ Use `smoke-legacy-reorder-flow.ts` after customer/order imports or auth changes.
 ./node_modules/.bin/medusa exec ./src/scripts/smoke-legacy-reorder-flow.ts \
   -- \
   --backend-url https://grillers-medusa-admin-production.up.railway.app \
+  --storefront-url https://grillers-medusa-frontend.vercel.app \
   --publishable-key pk_...
 ```
