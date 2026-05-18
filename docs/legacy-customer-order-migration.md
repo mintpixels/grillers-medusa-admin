@@ -6,7 +6,7 @@ This migration keeps the customer experience frictionless while keeping QuickBoo
 
 - Legacy site customer accounts with valid emails.
 - Existing legacy passwords re-hashed into Medusa emailpass provider metadata.
-- Legacy usernames as additional emailpass provider identities, so password managers that fill the old username can still authenticate.
+- Legacy usernames as additional emailpass provider identities where safe. Contested username aliases are not reassigned; storefront username login falls back to a legacy verifier that checks the submitted password against the mapped customer and only issues a token when exactly one legacy account matches.
 - Legacy billing and shipping addresses into the Medusa customer address book.
 - QuickBooks Desktop invoice history into `legacy_order`, `legacy_order_line`, and `legacy_item_map`.
 
