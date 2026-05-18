@@ -165,6 +165,29 @@ The redacted audit can also include live QBD facts without writing a CSV:
 DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/audit-legacy-item-mapping-candidates.ts -- --limit=20 --min-lines=10 --include-suggestions --include-qbd-items
 ```
 
+For active QuickBooks product items that do not have a safe current-catalog
+match, create hidden draft Medusa products that exist only to make historical
+reorder lines cartable. The importer prefers exact published SKU matches first,
+skips generic buckets such as `Misc. Item`, then uses Conductor to confirm the
+QBD item is active and product-like before it creates a `legacy_reorder_only`
+variant. These products are draft, not linked to the storefront sales channel,
+and are still add-to-cart capable by variant ID from the reorder page.
+
+Dry-run the highest-volume candidates:
+
+```bash
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/import-legacy-reorder-only-products.ts -- --limit=50 --min-lines=20
+```
+
+Review `wouldCreateProducts`, `mappedCurrentSkuVariant`,
+`skippedGeneric`, `skippedInactiveQbdItem`, `skippedUnsupportedQbdType`, and
+`skippedNoPrice`. Apply only after the dry-run samples show the expected QBD
+source facts and prices:
+
+```bash
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/import-legacy-reorder-only-products.ts -- --limit=50 --min-lines=20 --apply
+```
+
 If classifier rules improve after an import, first reconcile legacy line kinds so accounting/service artifacts do not stay in the customer-visible unmapped product pool:
 
 ```bash

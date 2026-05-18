@@ -303,6 +303,30 @@ async function getLegacyOrderProjectionStats(db: any) {
       (select count(*) from legacy_order_line where deleted_at is null and mapping_status = 'non_product') as non_product_lines,
       (
         select count(*)
+        from product
+        where deleted_at is null
+          and metadata->>'legacy_reorder_only' = 'true'
+      ) as legacy_reorder_only_products,
+      (
+        select count(*)
+        from product_variant
+        where deleted_at is null
+          and metadata->>'legacy_reorder_only' = 'true'
+      ) as legacy_reorder_only_variants,
+      (
+        select count(*)
+        from legacy_item_map
+        where deleted_at is null
+          and metadata->>'legacy_reorder_only' = 'true'
+      ) as legacy_reorder_only_item_maps,
+      (
+        select count(*)
+        from legacy_order_line
+        where deleted_at is null
+          and metadata->>'mapping_source' = 'legacy_reorder_only_product'
+      ) as legacy_reorder_only_lines,
+      (
+        select count(*)
         from legacy_order_line
         where deleted_at is null
           and coalesce(mapping_status, '') not in ('mapped', 'unmapped', 'non_product')
@@ -324,6 +348,10 @@ async function getLegacyOrderProjectionStats(db: any) {
     mappedProductLines: toNumber(stats.mapped_product_lines),
     unmappedProductLines: toNumber(stats.unmapped_product_lines),
     nonProductLines: toNumber(stats.non_product_lines),
+    legacyReorderOnlyProducts: toNumber(stats.legacy_reorder_only_products),
+    legacyReorderOnlyVariants: toNumber(stats.legacy_reorder_only_variants),
+    legacyReorderOnlyItemMaps: toNumber(stats.legacy_reorder_only_item_maps),
+    legacyReorderOnlyLines: toNumber(stats.legacy_reorder_only_lines),
     otherLineStatuses: toNumber(stats.other_line_statuses),
   }
 }
