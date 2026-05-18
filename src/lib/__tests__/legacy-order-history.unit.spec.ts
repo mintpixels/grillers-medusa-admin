@@ -193,5 +193,8 @@ describe("legacy order history line visibility", () => {
     expect(line.customer_visible).toBe(true)
     expect(line.line_kind).toBe("product")
     expect(line.display_title).toBe("Chicken Wings, Wing Tip On @ $2.69")
+    expect(line.purchase_history_key).toBe(
+      "legacy-description:750000-1102879083:chicken wings wing tip on 2 69"
+    )
   })
 })

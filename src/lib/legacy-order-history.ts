@@ -587,6 +587,7 @@ export function serializeLegacyOrderLine(row: any) {
   return {
     id: row.id,
     legacy_order_id: row.legacy_order_id,
+    purchase_history_key: legacyPurchaseHistoryKey(row),
     qbd_txn_line_id: row.qbd_txn_line_id,
     qbd_item_list_id: row.qbd_item_list_id,
     sku: row.sku,

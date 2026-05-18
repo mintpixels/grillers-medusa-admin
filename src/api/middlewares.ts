@@ -19,6 +19,11 @@ export default defineMiddlewares({
       middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
     },
     {
+      matcher: "/admin/legacy-order-history/*",
+      method: ["GET", "POST"],
+      middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
+    },
+    {
       matcher: "/admin/legacy-reorder-requests*",
       method: ["GET", "POST"],
       middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
