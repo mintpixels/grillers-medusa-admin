@@ -138,6 +138,11 @@ export function classifyLegacyLineKind(input: {
     blob.startsWith("fedex ") ||
     blob.includes("ground shipping") ||
     blob.includes("ups ground") ||
+    blob.includes("usps") ||
+    blob.includes("postal") ||
+    blob.includes("flat rate box") ||
+    /\bfrb\d*\b/.test(blob) ||
+    blob.includes("dry ice") ||
     blob.includes("customer pick up") ||
     blob.includes("local pickup") ||
     blob.includes("freight") ||
