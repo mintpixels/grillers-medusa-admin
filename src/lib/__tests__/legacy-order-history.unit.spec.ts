@@ -252,4 +252,31 @@ describe("legacy order history line visibility", () => {
       "legacy-description:750000-1102879083:chicken wings wing tip on 2 69"
     )
   })
+
+  it("keeps staff-assisted historical products visible without making them mapped", () => {
+    const line = serializeLegacyOrderLine({
+      id: "line_staff_1",
+      legacy_order_id: "order_1",
+      qbd_item_list_id: "750000-1102879083",
+      sku: "Misc. Item",
+      title: "Misc. Item",
+      description: "Yael's Challah",
+      quantity: "1",
+      unit_price: "0",
+      line_total: "0",
+      currency_code: "usd",
+      mapping_status: "staff_assisted",
+      metadata: {
+        line_kind: "product",
+        staff_assisted: true,
+        staff_assisted_reason: "non_positive_legacy_price",
+      },
+    })
+
+    expect(line.customer_visible).toBe(true)
+    expect(line.line_kind).toBe("product")
+    expect(line.mapping_status).toBe("staff_assisted")
+    expect(line.medusa_variant_id).toBeUndefined()
+    expect(line.display_title).toBe("Yael's Challah")
+  })
 })

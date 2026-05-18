@@ -44,7 +44,7 @@ function staleLineBaseQuery(db: any, qbdItemListId: string) {
   return db("legacy_order_line")
     .whereNull("deleted_at")
     .where("qbd_item_list_id", qbdItemListId)
-    .where("mapping_status", "unmapped")
+    .whereIn("mapping_status", ["unmapped", "staff_assisted"])
     .whereRaw("coalesce(metadata->>'line_kind', 'product') = 'product'")
 }
 
@@ -62,7 +62,12 @@ async function listCandidates(
     .join("legacy_order_line as lol", function joinLine(this: any) {
       this.on("lol.qbd_item_list_id", "=", "lim.qbd_item_list_id")
         .andOnNull("lol.deleted_at")
-        .andOn("lol.mapping_status", "=", db.raw("?", ["unmapped"]))
+        .andOn(
+          db.raw("lol.mapping_status in (?, ?)", [
+            "unmapped",
+            "staff_assisted",
+          ])
+        )
         .andOn(
           db.raw("coalesce(lol.metadata->>'line_kind', 'product')"),
           "=",

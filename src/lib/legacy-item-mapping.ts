@@ -138,7 +138,7 @@ export function buildLegacyLineBackfillQuery(
     })
     .andWhere((builder: any) => {
       builder
-        .whereIn("mapping_status", ["mapped", "unmapped"])
+        .whereIn("mapping_status", ["mapped", "unmapped", "staff_assisted"])
         .orWhereRaw("metadata->>? = ?", ["line_kind", "product"])
     })
 }

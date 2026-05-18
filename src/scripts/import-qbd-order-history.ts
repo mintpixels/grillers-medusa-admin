@@ -70,6 +70,50 @@ type VariantMatch = {
   matchedByRule?: boolean
 }
 
+function isStaffAssistedLegacyProductLine(
+  line: NormalizedLine,
+  match: VariantMatch
+) {
+  return (
+    line.lineKind === "product" &&
+    !match.medusaVariantId &&
+    line.unitPrice <= 0 &&
+    line.lineTotal <= 0
+  )
+}
+
+function legacyMappingStatusForLine(line: NormalizedLine, match: VariantMatch) {
+  if (line.lineKind !== "product") {
+    return "non_product"
+  }
+
+  if (match.medusaVariantId) {
+    return "mapped"
+  }
+
+  if (isStaffAssistedLegacyProductLine(line, match)) {
+    return "staff_assisted"
+  }
+
+  return "unmapped"
+}
+
+function legacyLineMetadataForLine(line: NormalizedLine, match: VariantMatch) {
+  const mappingStatus = legacyMappingStatusForLine(line, match)
+
+  return {
+    line_kind: line.lineKind,
+    mapping_confidence: match.confidence,
+    mapping_source: match.mappingSource,
+    ...(mappingStatus === "staff_assisted"
+      ? {
+          staff_assisted: true,
+          staff_assisted_reason: "non_positive_legacy_price",
+        }
+      : {}),
+  }
+}
+
 type LegacyItemMatchRule = {
   qbd_item_list_id: string | null
   sku: string | null
@@ -855,7 +899,7 @@ async function upsertInvoiceProjection({
       const match = resolveVariantMatch(line, variantIndexes, existingItemMap, itemMatchRules)
       if (match.medusaVariantId) {
         mappedLines += 1
-      } else {
+      } else if (legacyMappingStatusForLine(line, match) === "unmapped") {
         unmappedProductItems.push(summarizeUnmappedProduct(line))
       }
     }
@@ -890,6 +934,7 @@ async function upsertInvoiceProjection({
 
   for (const line of invoice.lines) {
     const match = resolveVariantMatch(line, variantIndexes, existingItemMap, itemMatchRules)
+    const mappingStatus = legacyMappingStatusForLine(line, match)
     if (line.lineKind === "product") {
       productLines += 1
     } else {
@@ -897,7 +942,7 @@ async function upsertInvoiceProjection({
     }
     if (line.lineKind === "product" && match.medusaVariantId) {
       mappedLines += 1
-    } else if (line.lineKind === "product") {
+    } else if (mappingStatus === "unmapped") {
       unmappedProductItems.push(summarizeUnmappedProduct(line))
     }
     await upsertLegacyItemMap(db, line, match, apply, touchedItemMapKeys)
@@ -932,17 +977,10 @@ async function upsertInvoiceProjection({
       medusa_variant_id: match.medusaVariantId,
       medusa_product_title: match.medusaProductTitle,
       medusa_variant_title: match.medusaVariantTitle,
-      mapping_status:
-        line.lineKind === "product"
-          ? match.medusaVariantId ? "mapped" : "unmapped"
-          : "non_product",
+      mapping_status: mappingStatus,
       imported_at: now,
       source_snapshot: line.snapshot,
-      metadata: {
-        line_kind: line.lineKind,
-        mapping_confidence: match.confidence,
-        mapping_source: match.mappingSource,
-      },
+      metadata: legacyLineMetadataForLine(line, match),
       updated_at: now,
       deleted_at: null,
       created_at: now,
@@ -1058,6 +1096,7 @@ function prepareInvoiceProjectionDraft({
 
   for (const line of invoice.lines) {
     const match = resolveVariantMatch(line, variantIndexes, existingItemMap, itemMatchRules)
+    const mappingStatus = legacyMappingStatusForLine(line, match)
     if (line.lineKind === "product") {
       productLines += 1
     } else {
@@ -1066,7 +1105,7 @@ function prepareInvoiceProjectionDraft({
 
     if (line.lineKind === "product" && match.medusaVariantId) {
       mappedLines += 1
-    } else if (line.lineKind === "product") {
+    } else if (mappingStatus === "unmapped") {
       unmappedProductItems.push(summarizeUnmappedProduct(line))
     }
 
@@ -1109,17 +1148,10 @@ function prepareInvoiceProjectionDraft({
       medusa_variant_id: match.medusaVariantId,
       medusa_product_title: match.medusaProductTitle,
       medusa_variant_title: match.medusaVariantTitle,
-      mapping_status:
-        line.lineKind === "product"
-          ? match.medusaVariantId ? "mapped" : "unmapped"
-          : "non_product",
+      mapping_status: mappingStatus,
       imported_at: now,
       source_snapshot: line.snapshot,
-      metadata: {
-        line_kind: line.lineKind,
-        mapping_confidence: match.confidence,
-        mapping_source: match.mappingSource,
-      },
+      metadata: legacyLineMetadataForLine(line, match),
       created_at: now,
       updated_at: now,
       deleted_at: null,

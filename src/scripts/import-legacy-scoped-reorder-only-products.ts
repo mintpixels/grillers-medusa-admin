@@ -524,7 +524,7 @@ async function countScopedBackfillRows(db: KnexLike, candidate: CandidateRow) {
     ])
     .andWhere((builder: any) => {
       builder
-        .whereIn("mapping_status", ["mapped", "unmapped"])
+        .whereIn("mapping_status", ["mapped", "unmapped", "staff_assisted"])
         .orWhereRaw("metadata->>? = ?", ["line_kind", "product"])
     })
     .count({ count: "*" })

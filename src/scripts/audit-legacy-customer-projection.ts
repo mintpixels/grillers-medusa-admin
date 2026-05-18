@@ -18,6 +18,7 @@ type CustomerProjectionRow = {
   legacy_username: string | null
   auth_import_status: string | null
   address_import_status: string | null
+  metadata: Record<string, unknown> | null
   customer_exists: boolean
   has_account: boolean
   auth_exists: boolean
@@ -55,6 +56,16 @@ function addSample(samples: GapSample[], sampleLimit: number, sample: GapSample)
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim()
+}
+
+function legacyFlagIsTruthy(value: unknown): boolean {
+  return ["1", "true", "yes", "y", "active"].includes(
+    String(value ?? "").trim().toLowerCase()
+  )
+}
+
+function mapMetadataCanOrderOnline(row: CustomerProjectionRow): boolean {
+  return legacyFlagIsTruthy(row.metadata?.can_order_online)
 }
 
 function usernameLoginKeys(row: CustomerProjectionRow) {
@@ -122,6 +133,7 @@ async function loadLegacySourceFacts({
       available: false,
       reason: "disabled",
       idsWithPassword: new Set<string>(),
+      idsCanOrderOnline: new Set<string>(),
       idsWithRawAddress: new Set<string>(),
       totals: null,
     }
@@ -145,6 +157,7 @@ async function loadLegacySourceFacts({
       loadedEnvFile: loadedEnvFiles[0] ?? null,
       loadedEnvFiles,
       idsWithPassword: new Set<string>(),
+      idsCanOrderOnline: new Set<string>(),
       idsWithRawAddress: new Set<string>(),
       totals: null,
     }
@@ -168,18 +181,23 @@ async function loadLegacySourceFacts({
       select
         ID,
         case when NULLIF(TRIM(PASSWORD), '') is not null then 1 else 0 end as has_password,
+        case when lower(trim(coalesce(CANORDERONLINE, ''))) in ('1', 'true', 'yes', 'y', 'active') then 1 else 0 end as can_order_online,
         case when ${rawAddressExpression()} then 1 else 0 end as has_raw_address
       from CUSTOMERS
       where NULLIF(TRIM(EMAIL), '') is not null
     `)
 
     const idsWithPassword = new Set<string>()
+    const idsCanOrderOnline = new Set<string>()
     const idsWithRawAddress = new Set<string>()
 
     for (const row of rows) {
       const id = String(row.ID)
       if (Number(row.has_password) > 0) {
         idsWithPassword.add(id)
+      }
+      if (Number(row.can_order_online) > 0) {
+        idsCanOrderOnline.add(id)
       }
       if (Number(row.has_raw_address) > 0) {
         idsWithRawAddress.add(id)
@@ -192,10 +210,12 @@ async function loadLegacySourceFacts({
       loadedEnvFile: loadedEnvFiles[0] ?? null,
       loadedEnvFiles,
       idsWithPassword,
+      idsCanOrderOnline,
       idsWithRawAddress,
       totals: {
         customersWithEmail: rows.length,
         withPassword: idsWithPassword.size,
+        canOrderOnline: idsCanOrderOnline.size,
         withRawAddress: idsWithRawAddress.size,
       },
     }
@@ -242,6 +262,7 @@ async function getCustomerProjectionRows(db: any): Promise<CustomerProjectionRow
       m.legacy_username,
       m.auth_import_status,
       m.address_import_status,
+      m.metadata,
       (c.id is not null) as customer_exists,
       coalesce(c.has_account, false) as has_account,
       (ai.id is not null) as auth_exists,
@@ -300,6 +321,7 @@ async function getLegacyOrderProjectionStats(db: any) {
       (select count(*) from legacy_order_line where deleted_at is null) as legacy_lines_total,
       (select count(*) from legacy_order_line where deleted_at is null and mapping_status = 'mapped') as mapped_product_lines,
       (select count(*) from legacy_order_line where deleted_at is null and mapping_status = 'unmapped') as unmapped_product_lines,
+      (select count(*) from legacy_order_line where deleted_at is null and mapping_status = 'staff_assisted') as staff_assisted_product_lines,
       (select count(*) from legacy_order_line where deleted_at is null and mapping_status = 'non_product') as non_product_lines,
       (
         select count(*)
@@ -329,7 +351,7 @@ async function getLegacyOrderProjectionStats(db: any) {
         select count(*)
         from legacy_order_line
         where deleted_at is null
-          and coalesce(mapping_status, '') not in ('mapped', 'unmapped', 'non_product')
+          and coalesce(mapping_status, '') not in ('mapped', 'unmapped', 'staff_assisted', 'non_product')
       ) as other_line_statuses
   `).then((result: any) => result.rows ?? result)
 
@@ -347,6 +369,7 @@ async function getLegacyOrderProjectionStats(db: any) {
     legacyLinesTotal: toNumber(stats.legacy_lines_total),
     mappedProductLines: toNumber(stats.mapped_product_lines),
     unmappedProductLines: toNumber(stats.unmapped_product_lines),
+    staffAssistedProductLines: toNumber(stats.staff_assisted_product_lines),
     nonProductLines: toNumber(stats.non_product_lines),
     legacyReorderOnlyProducts: toNumber(stats.legacy_reorder_only_products),
     legacyReorderOnlyVariants: toNumber(stats.legacy_reorder_only_variants),
@@ -412,6 +435,8 @@ export default async function auditLegacyCustomerProjection({
   let customersWithAddress = 0
   let customersWithLegacyOrders = 0
   let expectedPasswordAccounts = 0
+  let sourceNoPasswordAccounts = 0
+  let sourceNoPasswordNoOnlineAccounts = 0
   let resetReadyNoPasswordAccounts = 0
   let expectedAddressAccounts = 0
   let expectedAddressAccountsWithAddress = 0
@@ -422,6 +447,9 @@ export default async function auditLegacyCustomerProjection({
     const sourceExpectsPassword = legacySource.available
       ? legacySource.idsWithPassword.has(row.legacy_customer_id)
       : row.auth_import_status !== "no_password"
+    const sourceCanOrderOnline = legacySource.available
+      ? legacySource.idsCanOrderOnline.has(row.legacy_customer_id)
+      : mapMetadataCanOrderOnline(row)
     const sourceExpectsAddress = legacySource.available
       ? legacySource.idsWithRawAddress.has(row.legacy_customer_id)
       : false
@@ -497,14 +525,24 @@ export default async function auditLegacyCustomerProjection({
         }
       }
     } else {
+      sourceNoPasswordAccounts += 1
+      if (!sourceCanOrderOnline) {
+        sourceNoPasswordNoOnlineAccounts += 1
+      }
+
       if (
         row.medusa_auth_identity_id &&
         row.auth_exists &&
         row.email_provider_exists
       ) {
         resetReadyNoPasswordAccounts += 1
+      } else {
+        bump(hardGapCounts, "reset_ready_no_password_auth_missing", row)
       }
-      bump(compromiseCounts, "legacy_customer_without_password", row)
+
+      if (sourceCanOrderOnline) {
+        bump(compromiseCounts, "online_legacy_customer_without_password", row)
+      }
     }
 
     if (sourceExpectsAddress) {
@@ -564,6 +602,8 @@ export default async function auditLegacyCustomerProjection({
     },
     auth: {
       expectedPasswordAccounts,
+      sourceNoPasswordAccounts,
+      sourceNoPasswordNoOnlineAccounts,
       resetReadyNoPasswordAccounts,
       withAuthId,
       authExists,
