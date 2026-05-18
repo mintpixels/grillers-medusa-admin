@@ -187,9 +187,9 @@ Fallback to the legacy MySQL invoice XML mirror:
 ## Verification
 
 After import, run the redacted projection audit. This checks Medusa customers,
-`has_account`, emailpass password identities, legacy username aliases, address
-presence when the legacy source is available, QuickBooks order links, and
-historical line mapping coverage:
+`has_account`, emailpass password identities, legacy username aliases, legacy
+username fallback coverage, address presence when the legacy source is
+available, QuickBooks order links, and historical line mapping coverage:
 
 ```bash
 DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/audit-legacy-customer-projection.ts
@@ -202,11 +202,16 @@ DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scr
 ```
 
 For launch-readiness, also fail on known user-experience compromises such as
-legacy username alias conflicts and unmapped historical product lines:
+uncovered legacy username alias conflicts and unmapped historical product lines:
 
 ```bash
 DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/audit-legacy-customer-projection.ts -- --strict-launch
 ```
+
+A contested legacy username is not counted as uncovered when the mapped
+customer has a valid Medusa account, auth identity, and canonical email password
+hash. In that case `/store/legacy-auth/login` can verify the submitted password
+against the mapped legacy customer without moving the contested alias.
 
 You can still verify raw table counts when debugging:
 

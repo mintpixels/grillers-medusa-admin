@@ -72,6 +72,18 @@ function usernameLoginKeys(row: CustomerProjectionRow) {
   }
 }
 
+function legacyUsernameFallbackCanCover(row: CustomerProjectionRow) {
+  return Boolean(
+    normalizeText(row.legacy_username) &&
+      row.medusa_customer_id &&
+      row.customer_exists &&
+      row.has_account &&
+      row.medusa_auth_identity_id &&
+      row.auth_exists &&
+      row.email_provider_has_password
+  )
+}
+
 function legacyEnvIsAvailable() {
   return envVarsAreSet([
     "LEGACY_DB_HOST",
@@ -365,8 +377,10 @@ export default async function auditLegacyCustomerProjection({
   let emailProviderHasPassword = 0
   let usernameAliasExpected = 0
   let usernameAliasPresent = 0
+  let usernameAliasFallbackSupported = 0
   let usernameLowerAliasExpected = 0
   let usernameLowerAliasPresent = 0
+  let usernameLowerAliasFallbackSupported = 0
   let customersWithAddress = 0
   let customersWithLegacyOrders = 0
   let expectedPasswordAccounts = 0
@@ -426,11 +440,14 @@ export default async function auditLegacyCustomerProjection({
       const loginKeys = usernameLoginKeys(row)
       const isAliasConflict =
         row.auth_import_status === "imported_with_alias_conflicts"
+      const fallbackCanCover = legacyUsernameFallbackCanCover(row)
 
       if (loginKeys.expectsExact) {
         usernameAliasExpected += 1
         if (row.username_provider_has_password) {
           usernameAliasPresent += 1
+        } else if (isAliasConflict && fallbackCanCover) {
+          usernameAliasFallbackSupported += 1
         } else if (isAliasConflict) {
           bump(compromiseCounts, "username_alias_conflict", row)
         } else {
@@ -442,6 +459,8 @@ export default async function auditLegacyCustomerProjection({
         usernameLowerAliasExpected += 1
         if (row.username_lower_provider_has_password) {
           usernameLowerAliasPresent += 1
+        } else if (isAliasConflict && fallbackCanCover) {
+          usernameLowerAliasFallbackSupported += 1
         } else if (isAliasConflict) {
           bump(compromiseCounts, "username_lower_alias_conflict", row)
         } else {
@@ -514,8 +533,14 @@ export default async function auditLegacyCustomerProjection({
       emailProviderHasPassword,
       usernameAliasExpected,
       usernameAliasPresent,
+      usernameAliasFallbackSupported,
+      usernameAliasCovered:
+        usernameAliasPresent + usernameAliasFallbackSupported,
       usernameLowerAliasExpected,
       usernameLowerAliasPresent,
+      usernameLowerAliasFallbackSupported,
+      usernameLowerAliasCovered:
+        usernameLowerAliasPresent + usernameLowerAliasFallbackSupported,
     },
     addresses: {
       legacySourceChecked: checkLegacySource,
