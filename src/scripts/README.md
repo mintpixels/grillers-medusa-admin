@@ -61,3 +61,16 @@ Then, pass the arguments in the `exec` command after the file path:
 ```bash
 npx medusa exec ./src/scripts/my-script.ts arg1 arg2
 ```
+
+---
+
+## Legacy Customer Reorder Smoke Test
+
+Use `smoke-legacy-reorder-flow.ts` after customer/order imports or auth changes. It samples an imported legacy customer with a source password, logs in through `/store/legacy-auth/login`, then verifies the returned customer token can load saved addresses, QuickBooks-backed purchase history, and legacy order history. Output is aggregate-only; it does not print customer identifiers, email addresses, or passwords.
+
+```bash
+./node_modules/.bin/medusa exec ./src/scripts/smoke-legacy-reorder-flow.ts \
+  -- \
+  --backend-url https://grillers-medusa-admin-production.up.railway.app \
+  --publishable-key pk_...
+```
