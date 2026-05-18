@@ -60,6 +60,27 @@ describe("legacy order history line visibility", () => {
     [{ sku: "PickUp/Silverman", title: "PickUp/Silverman", description: "Pick Up at Silverman", metadata: { line_kind: "product" } }, "fulfillment"],
     [{ sku: "Dallas", title: "Dallas", description: "Dallas Delivery 12.5%", metadata: { line_kind: "product" } }, "fulfillment"],
     [{ sku: "Catering/Non Profit", title: "Catering/Non Profit", description: "Catering Event/ Non Profit/ Salmon Meals", metadata: { line_kind: "product" } }, "service"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Miscellaneous Item, Custom Cutting Fee", metadata: { line_kind: "product" } }, "service"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Additional trimming of 1.5\" Ribeye Steaks", metadata: { line_kind: "product" } }, "service"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "splitting AND RE-PACK CHARGE", metadata: { line_kind: "product" } }, "service"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Frenching charge for labor", metadata: { line_kind: "product" } }, "service"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Agreed Charge: 50 people @ $22.50/person", metadata: { line_kind: "product" } }, "service"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Inbound Transportation: 210.81 @ $0.25/lb.", metadata: { line_kind: "product" } }, "fulfillment"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Uber Charge", metadata: { line_kind: "product" } }, "fulfillment"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Jodie tip", metadata: { line_kind: "product" } }, "note"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "$5 for Jodie", metadata: { line_kind: "product" } }, "note"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Miscellaneous Item- tip- thank you", metadata: { line_kind: "product" } }, "note"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Miscellaneous Item, 4 cases of plastic grocery bags for Backpack Buddies", metadata: { line_kind: "product" } }, "note"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Cindy Silberman order # 80037", metadata: { line_kind: "product" } }, "note"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Miscellaneous Item  Rabbi Tendler's order", metadata: { line_kind: "product" } }, "note"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Foil Baking Pans (9 X 13)", metadata: { line_kind: "product" } }, "note"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "please include 10 brochures", metadata: { line_kind: "product" } }, "note"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "pmt on acct - Chabad of GA", metadata: { line_kind: "product" } }, "adjustment"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Ketchup- FREE", metadata: { line_kind: "product" } }, "note"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "cajun turkey sausages not good", metadata: { line_kind: "product" } }, "note"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Sliced Shoulder Pastrami ***OUT OF STOCK", metadata: { line_kind: "product" } }, "note"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "Miscellaneous Item 6% on lamb chops", metadata: { line_kind: "product" } }, "fee"],
+    [{ sku: "Misc. Item", title: "Misc. Item", description: "720009: Flaums Bulk Babaganush 5 lb. Did not Receive", metadata: { line_kind: "product" } }, "note"],
   ])("classifies non-product QuickBooks line %#", (row, expected) => {
     expect(legacyLineKind(row)).toBe(expected)
     expect(isCustomerVisibleLegacyLine(row)).toBe(false)
@@ -101,6 +122,37 @@ describe("legacy order history line visibility", () => {
       description:
         "Combination of Chicken Breast Tenders and Chicken Cutlets cut into the shape of Chicken Breast Tenders @ $7.49/lb.\nPrepared identically to the previous order (Inv. #72121)\nNEEDS 250 lbs.",
       line_total: "1917.44",
+      mapping_status: "unmapped",
+      metadata: { line_kind: "product" },
+    }
+
+    expect(legacyLineKind(row)).toBe("product")
+    expect(isCustomerVisibleLegacyLine(row)).toBe(true)
+  })
+
+  it("keeps custom production-weight descriptions visible as products", () => {
+    const row = {
+      qbd_item_list_id: "750000-1102879083",
+      sku: "Misc. Item",
+      title: "Misc. Item",
+      description:
+        "Chicken Tenders 50 lb. of 2 oz. pieces. Needs 50 lb. @ $10.71/lb. Actual Finished Weight: 50 lb.",
+      line_total: "535.50",
+      mapping_status: "unmapped",
+      metadata: { line_kind: "product" },
+    }
+
+    expect(legacyLineKind(row)).toBe("product")
+    expect(isCustomerVisibleLegacyLine(row)).toBe(true)
+  })
+
+  it("keeps food-bearing bulk order descriptions visible as products", () => {
+    const row = {
+      qbd_item_list_id: "750000-1102879083",
+      sku: "Misc. Item",
+      title: "Misc. Item",
+      description: "Miscellaneous Item-----Gourmet food Cookie Dough Bulk Order",
+      line_total: "120",
       mapping_status: "unmapped",
       metadata: { line_kind: "product" },
     }

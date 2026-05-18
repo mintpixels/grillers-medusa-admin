@@ -53,6 +53,10 @@ function metadataLineKind(metadata: unknown) {
   return normalizeText((metadata as Record<string, unknown>).line_kind)
 }
 
+function hasLegacyFoodKeyword(value: string) {
+  return /\b(beef|brisket|burger|chicken|cookie|dough|frank|kugel|lamb|pastrami|rib|ribs|roast|salami|sausage|steak|turkey|veal|wing|wings)\b/.test(value)
+}
+
 export function classifyLegacyLineKind(input: {
   qbdItemListId?: string | null
   sku?: string | null
@@ -132,6 +136,9 @@ export function classifyLegacyLineKind(input: {
           description.includes("instead")) ||
         description.includes("put under wrong") ||
         description.includes("wrong account") ||
+        description.includes("price adjustment") ||
+        description.includes("pmt on acct") ||
+        description.includes("balance on acct") ||
         (description.includes("charged") &&
           description.includes("instead")) ||
         (description.includes("moved to") &&
@@ -153,13 +160,22 @@ export function classifyLegacyLineKind(input: {
     blob.includes("bulk case repack") ||
     blob.includes("repack charge") ||
     blob.includes("repacking charge") ||
+    blob.includes("re packaging charge") ||
+    blob.includes("re pack charge") ||
     blob.includes("repacking case") ||
     blob.includes("repack surcharge") ||
     blob.includes("cut pack charge") ||
     blob.includes("cut and pack charge") ||
     blob.includes("custom slicing") ||
+    blob.includes("custom cutting") ||
+    blob.includes("additional trimming") ||
     blob.includes("trimming of fat") ||
     blob.includes("additional labor") ||
+    description.includes("frenching charge") ||
+    description.includes("agreed charge") ||
+    (isGenericLegacyItem &&
+      description.includes("excess") &&
+      description.includes("charge")) ||
     title.startsWith("catering ") ||
     sku.startsWith("catering ") ||
     description.includes("catering event")
@@ -178,6 +194,7 @@ export function classifyLegacyLineKind(input: {
     (isGenericLegacyItem &&
       (/\b(pay|paid|paying|payment|cash|check|card)\b/.test(description) ||
         /\bcommis?sion\b/.test(description) ||
+        /\d+(?:\.\d+)?\s*%\s+on\b/.test(rawDescription) ||
         /^\s*(miscellaneous item[-,\s]*)?\d+(?:\.\d+)?\s*%?\s*$/.test(rawDescription)))
   ) {
     return "fee"
@@ -220,6 +237,12 @@ export function classifyLegacyLineKind(input: {
     blob.includes("local pickup") ||
     blob.includes("freight") ||
     blob.includes("shipping") ||
+    blob.includes("transportation") ||
+    blob.includes("ice charge") ||
+    blob.includes("customer delivery") ||
+    description.includes("deliver mike morris") ||
+    description === "uber" ||
+    description === "uber charge" ||
     blob.includes("delivery charge") ||
     blob.includes("pick up at") ||
     /\bdelivery\s+\d+(?:\.\d+)?%?\b/.test(blob) ||
@@ -231,7 +254,51 @@ export function classifyLegacyLineKind(input: {
 
   if (
     isGenericLegacyItem &&
-    (description.includes("invoice") ||
+    (description.startsWith("invoice ") ||
+      description.includes("invoice from") ||
+      description.includes("from home depot") ||
+      description.includes("plastic grocery bags") ||
+      description.includes("polystyrene container") ||
+      description === "regular box" ||
+      description.includes("this is for") ||
+      /\b(?:card|cash|credit|delivery|driver|jodie|miscellaneous)\s+tip\b/.test(description) ||
+      description.includes("item tip") ||
+      description.includes("tip thank") ||
+      description.includes("did not receive") ||
+      description.includes("for jodie") ||
+      description.includes("from june") ||
+      description === "helping" ||
+      description.includes("costel order") ||
+      description.includes("yoel habif") ||
+      (/^(miscellaneous item\s+)?[a-z][a-z\s.'-]{1,80}\s+order$/.test(description) &&
+        !hasLegacyFoodKeyword(description)) ||
+      /\border\s*#?\s*\d+\b/.test(description) ||
+      description.includes("peter to bring") ||
+      description.includes("peter to try") ||
+      description.includes("pick up at kroger") ||
+      description.includes("aluminum pans") ||
+      description.includes("aluminmum pans") ||
+      description.includes("baking pans") ||
+      description.includes("brochures") ||
+      description.includes("k360 box") ||
+      description.includes("plastic containers") ||
+      description.includes("soup containers") ||
+      description.includes("insulated container") ||
+      description.includes("advance medical") ||
+      description.includes("out of date") ||
+      description.includes("out of stock") ||
+      description.includes("ketchup free") ||
+      description.includes("not good") ||
+      description.includes("too small") ||
+      description.includes("would like") ||
+      ["chaim", "deedee", "dee dee", "don", "ephraim", "for don", "julie took"].includes(description) ||
+      description === "miscellaneous item don" ||
+      description === "ice purchased for return trip back to atlanta" ||
+      description === "jeffrey sunday july 2 2023" ||
+      (description.includes("from") && description.includes("account")) ||
+      description.includes("expired") ||
+      description.includes("no charge") ||
+      description.includes("received whole chicken instead") ||
       description.includes("recharge") ||
       description.includes("gratuity") ||
       description.includes("surcharge") ||
