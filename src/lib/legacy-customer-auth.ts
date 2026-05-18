@@ -34,6 +34,17 @@ export function normalizeLegacyLoginIdentifier(value: unknown) {
   return String(value ?? "").trim()
 }
 
+export function legacyLoginSearchTerms(identifier: unknown) {
+  const normalized = normalizeLegacyLoginIdentifier(identifier)
+  const lower = normalized.toLowerCase()
+
+  return {
+    normalized,
+    usernameLower: lower,
+    emailLower: normalized.includes("@") ? lower : null,
+  }
+}
+
 async function verifyScryptPassword(passwordHash: string, password: string) {
   const scrypt = await import("scrypt-kdf")
   const kdf = ((scrypt as any).default ?? scrypt) as {
@@ -138,8 +149,8 @@ export async function selectUniqueVerifiedLegacyLoginCandidate(
 }
 
 export async function findLegacyLoginCandidates(db: any, identifier: string) {
-  const normalized = normalizeLegacyLoginIdentifier(identifier)
-  if (!normalized) {
+  const search = legacyLoginSearchTerms(identifier)
+  if (!search.normalized) {
     return []
   }
 
@@ -165,7 +176,13 @@ export async function findLegacyLoginCandidates(db: any, identifier: string) {
     .where("pi.provider", AUTH_PROVIDER)
     .whereRaw("coalesce(c.has_account, false) = true")
     .whereRaw("pi.provider_metadata->>'password' is not null")
-    .whereRaw("lower(m.legacy_username) = ?", [normalized.toLowerCase()])) as
+    .andWhere((builder: any) => {
+      builder.whereRaw("lower(m.legacy_username) = ?", [search.usernameLower])
+
+      if (search.emailLower) {
+        builder.orWhere("m.email_lower", search.emailLower)
+      }
+    })) as
     LegacyLoginProviderRow[]
 
   return legacyLoginCandidatesFromProviderRows(rows)

@@ -1,9 +1,24 @@
 import {
+  legacyLoginSearchTerms,
   legacyLoginCandidatesFromProviderRows,
   selectUniqueVerifiedLegacyLoginCandidate,
 } from "../legacy-customer-auth"
 
 describe("legacy customer auth fallback", () => {
+  it("searches legacy email addresses only for email-shaped identifiers", () => {
+    expect(legacyLoginSearchTerms(" Customer@Example.COM ")).toEqual({
+      normalized: "Customer@Example.COM",
+      usernameLower: "customer@example.com",
+      emailLower: "customer@example.com",
+    })
+
+    expect(legacyLoginSearchTerms("LegacyUser")).toEqual({
+      normalized: "LegacyUser",
+      usernameLower: "legacyuser",
+      emailLower: null,
+    })
+  })
+
   it("prefers the canonical email provider hash for a legacy username", async () => {
     const candidates = legacyLoginCandidatesFromProviderRows([
       {
