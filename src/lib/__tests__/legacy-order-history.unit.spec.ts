@@ -57,6 +57,9 @@ describe("legacy order history line visibility", () => {
     [{ sku: "Misc. Item", title: "Misc. Item", description: "Please note that prices are extremely volatile at this time" }, "note"],
     [{ sku: "Miscellaneous Item", title: "Miscellaneous Item", description: "Miscellaneous Dallas Commision 5%" }, "fee"],
     [{ sku: "Misc. Services", title: "Misc. Services", description: "50 cent stamp charge" }, "note"],
+    [{ sku: "PickUp/Silverman", title: "PickUp/Silverman", description: "Pick Up at Silverman", metadata: { line_kind: "product" } }, "fulfillment"],
+    [{ sku: "Dallas", title: "Dallas", description: "Dallas Delivery 12.5%", metadata: { line_kind: "product" } }, "fulfillment"],
+    [{ sku: "Catering/Non Profit", title: "Catering/Non Profit", description: "Catering Event/ Non Profit/ Salmon Meals", metadata: { line_kind: "product" } }, "service"],
   ])("classifies non-product QuickBooks line %#", (row, expected) => {
     expect(legacyLineKind(row)).toBe(expected)
     expect(isCustomerVisibleLegacyLine(row)).toBe(false)

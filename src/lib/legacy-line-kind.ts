@@ -159,7 +159,10 @@ export function classifyLegacyLineKind(input: {
     blob.includes("cut and pack charge") ||
     blob.includes("custom slicing") ||
     blob.includes("trimming of fat") ||
-    blob.includes("additional labor")
+    blob.includes("additional labor") ||
+    title.startsWith("catering ") ||
+    sku.startsWith("catering ") ||
+    description.includes("catering event")
   ) {
     return "service"
   }
@@ -192,8 +195,12 @@ export function classifyLegacyLineKind(input: {
   if (
     sku === "pick up" ||
     sku === "pickup" ||
+    sku.startsWith("pickup ") ||
+    sku.startsWith("pick up ") ||
     title === "pick up" ||
     title === "pickup" ||
+    title.startsWith("pickup ") ||
+    title.startsWith("pick up ") ||
     sku.startsWith("del ") ||
     title.startsWith("del ") ||
     blob.includes(" ups ") ||
@@ -214,6 +221,8 @@ export function classifyLegacyLineKind(input: {
     blob.includes("freight") ||
     blob.includes("shipping") ||
     blob.includes("delivery charge") ||
+    blob.includes("pick up at") ||
+    /\bdelivery\s+\d+(?:\.\d+)?%?\b/.test(blob) ||
     description === "delivery" ||
     description.startsWith("delivery ")
   ) {
