@@ -3,6 +3,7 @@ import {
   legacyPurchaseHistoryKey,
   legacyPurchaseDisplayTitle,
   legacyLineKind,
+  serializeLegacyOrderLine,
 } from "../legacy-order-history"
 
 describe("legacy order history line visibility", () => {
@@ -171,5 +172,26 @@ describe("legacy order history line visibility", () => {
     })
 
     expect(first).not.toBe(second)
+  })
+
+  it("serializes customer-safe display metadata for legacy order lines", () => {
+    const line = serializeLegacyOrderLine({
+      id: "line_1",
+      legacy_order_id: "order_1",
+      qbd_item_list_id: "750000-1102879083",
+      sku: "Misc. Item",
+      title: "Misc. Item",
+      description: "Chicken Wings, Wing Tip On @ $2.69",
+      quantity: "2",
+      unit_price: "269",
+      line_total: "538",
+      currency_code: "usd",
+      mapping_status: "unmapped",
+      metadata: { line_kind: "product" },
+    })
+
+    expect(line.customer_visible).toBe(true)
+    expect(line.line_kind).toBe("product")
+    expect(line.display_title).toBe("Chicken Wings, Wing Tip On @ $2.69")
   })
 })

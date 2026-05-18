@@ -16,6 +16,25 @@ export type LegacyOrderListQuery = {
   offset?: number
 }
 
+export type LegacyCustomerOrderListQuery = {
+  limit?: number
+  offset?: number
+}
+
+type LegacyCustomerMatchTerms = {
+  qbdCustomerListIds: string[]
+  legacyCustomerIds: string[]
+  emailLowers: string[]
+}
+
+function compactUniqueStrings(values: Array<string | null>): string[] {
+  return [
+    ...new Set(
+      values.filter((value: string | null): value is string => Boolean(value))
+    ),
+  ]
+}
+
 function asNumber(value: unknown): number {
   if (typeof value === "number") {
     return Number.isFinite(value) ? value : 0
@@ -183,6 +202,47 @@ function applyLegacyOrderFilters(query: any, filters: LegacyOrderListQuery) {
   }
 }
 
+async function legacyCustomerMatchTerms(
+  db: KnexLike,
+  medusaCustomerId: string
+): Promise<LegacyCustomerMatchTerms> {
+  const customerMaps = await db("legacy_customer_map")
+    .select(["legacy_customer_id", "qbd_customer_list_id", "email_lower"])
+    .where("medusa_customer_id", medusaCustomerId)
+    .whereNull("deleted_at")
+
+  return {
+    qbdCustomerListIds: compactUniqueStrings(
+      customerMaps.map((row: any) => normalizeText(row.qbd_customer_list_id))
+    ),
+    legacyCustomerIds: compactUniqueStrings(
+      customerMaps.map((row: any) => normalizeText(row.legacy_customer_id))
+    ),
+    emailLowers: compactUniqueStrings(
+      customerMaps.map((row: any) => normalizeEmail(row.email_lower))
+    ),
+  }
+}
+
+function applyLegacyCustomerMatch(
+  query: any,
+  medusaCustomerId: string,
+  terms: LegacyCustomerMatchTerms
+) {
+  query.where((builder: any) => {
+    builder.where("lo.medusa_customer_id", medusaCustomerId)
+    if (terms.qbdCustomerListIds.length) {
+      builder.orWhereIn("lo.qbd_customer_list_id", terms.qbdCustomerListIds)
+    }
+    if (terms.legacyCustomerIds.length) {
+      builder.orWhereIn("lo.legacy_customer_id", terms.legacyCustomerIds)
+    }
+    if (terms.emailLowers.length) {
+      builder.orWhereIn("lo.email_lower", terms.emailLowers)
+    }
+  })
+}
+
 export async function listLegacyOrders(db: KnexLike, filters: LegacyOrderListQuery) {
   const { limit, offset } = clampPagination(filters.limit, filters.offset)
 
@@ -293,30 +353,115 @@ export async function retrieveLegacyOrder(db: KnexLike, id: string) {
   }
 }
 
+export async function listLegacyOrdersForCustomer(
+  db: KnexLike,
+  medusaCustomerId: string,
+  filters: LegacyCustomerOrderListQuery = {}
+) {
+  const { limit, offset } = clampPagination(filters.limit, filters.offset)
+  const terms = await legacyCustomerMatchTerms(db, medusaCustomerId)
+
+  const base = db("legacy_order as lo").whereNull("lo.deleted_at")
+  applyLegacyCustomerMatch(base, medusaCustomerId, terms)
+
+  const countQuery = base
+    .clone()
+    .clearSelect()
+    .count({ count: "*" })
+    .first()
+
+  const orderRows = await base
+    .clone()
+    .select([
+      "lo.id",
+      "lo.source",
+      "lo.source_order_id",
+      "lo.qbd_txn_id",
+      "lo.ref_number",
+      "lo.legacy_order_id",
+      "lo.legacy_customer_id",
+      "lo.qbd_customer_list_id",
+      "lo.medusa_customer_id",
+      "lo.email_lower",
+      "lo.customer_name",
+      "lo.placed_at",
+      "lo.ship_date",
+      "lo.status",
+      "lo.subtotal",
+      "lo.tax_total",
+      "lo.shipping_total",
+      "lo.discount_total",
+      "lo.total",
+      "lo.currency_code",
+      "lo.line_count",
+      "lo.imported_at",
+    ])
+    .orderBy("lo.placed_at", "desc")
+    .orderBy("lo.created_at", "desc")
+    .limit(limit)
+    .offset(offset)
+
+  const ids = orderRows.map((row: any) => row.id)
+  const lines = ids.length
+    ? await db("legacy_order_line")
+        .select([
+          "id",
+          "legacy_order_id",
+          "qbd_txn_line_id",
+          "qbd_item_list_id",
+          "sku",
+          "title",
+          "description",
+          "quantity",
+          "unit_price",
+          "line_total",
+          "currency_code",
+          "medusa_product_id",
+          "medusa_variant_id",
+          "medusa_product_title",
+          "medusa_variant_title",
+          "mapping_status",
+          "metadata",
+        ])
+        .whereIn("legacy_order_id", ids)
+        .whereNull("deleted_at")
+        .orderBy("created_at", "asc")
+    : []
+
+  const linesByOrder = new Map<string, any[]>()
+  for (const line of lines) {
+    if (!isCustomerVisibleLegacyLine(line)) {
+      continue
+    }
+
+    const bucket = linesByOrder.get(line.legacy_order_id) ?? []
+    bucket.push(serializeLegacyOrderLine(line))
+    linesByOrder.set(line.legacy_order_id, bucket)
+  }
+
+  const countRow = await countQuery
+  return {
+    orders: orderRows.map((row: any) => {
+      const visibleLines = linesByOrder.get(row.id) ?? []
+      return {
+        ...serializeLegacyOrder(row),
+        customer_visible_line_count: visibleLines.length,
+        lines: visibleLines,
+      }
+    }),
+    count: asNumber(countRow?.count),
+    limit,
+    offset,
+  }
+}
+
 export async function listLegacyPurchaseHistoryForCustomer(
   db: KnexLike,
   medusaCustomerId: string
 ) {
-  const customerMaps = await db("legacy_customer_map")
-    .select([
-      "legacy_customer_id",
-      "qbd_customer_list_id",
-      "email_lower",
-    ])
-    .where("medusa_customer_id", medusaCustomerId)
-    .whereNull("deleted_at")
+  const terms = await legacyCustomerMatchTerms(db, medusaCustomerId)
 
-  const qbdCustomerListIds = customerMaps
-    .map((row: any) => normalizeText(row.qbd_customer_list_id))
-    .filter(Boolean)
-  const legacyCustomerIds = customerMaps
-    .map((row: any) => normalizeText(row.legacy_customer_id))
-    .filter(Boolean)
-  const emailLowers = customerMaps
-    .map((row: any) => normalizeEmail(row.email_lower))
-    .filter(Boolean)
-
-  const rows = await db("legacy_order_line as lol")
+  const query = db("legacy_order_line as lol")
     .join("legacy_order as lo", "lo.id", "lol.legacy_order_id")
     .select([
       "lol.id",
@@ -339,20 +484,11 @@ export async function listLegacyPurchaseHistoryForCustomer(
       "lo.ref_number",
       "lo.qbd_txn_id",
     ])
-    .where((builder: any) => {
-      builder.where("lo.medusa_customer_id", medusaCustomerId)
-      if (qbdCustomerListIds.length) {
-        builder.orWhereIn("lo.qbd_customer_list_id", qbdCustomerListIds)
-      }
-      if (legacyCustomerIds.length) {
-        builder.orWhereIn("lo.legacy_customer_id", legacyCustomerIds)
-      }
-      if (emailLowers.length) {
-        builder.orWhereIn("lo.email_lower", emailLowers)
-      }
-    })
     .whereNull("lo.deleted_at")
     .whereNull("lol.deleted_at")
+  applyLegacyCustomerMatch(query, medusaCustomerId, terms)
+
+  const rows = await query
 
   const grouped = new Map<string, any>()
 
@@ -466,5 +602,8 @@ export function serializeLegacyOrderLine(row: any) {
     medusa_variant_title: row.medusa_variant_title,
     mapping_status: row.mapping_status,
     metadata: row.metadata ?? null,
+    line_kind: legacyLineKind(row),
+    customer_visible: isCustomerVisibleLegacyLine(row),
+    display_title: legacyPurchaseDisplayTitle(row),
   }
 }
