@@ -1,4 +1,7 @@
-import { legacyItemIdentityWarnings } from "../legacy-item-candidate-suggestions"
+import {
+  legacyItemIdentityWarnings,
+  suggestLegacyItemMappingsFromVariants,
+} from "../legacy-item-candidate-suggestions"
 
 describe("legacy item candidate identity warnings", () => {
   it("rejects prepared dishes that only share generic serving words", () => {
@@ -85,5 +88,40 @@ describe("legacy item candidate identity warnings", () => {
         "Strip Steak, South American"
       )
     ).toContain("brand_or_program:american_angus->south_american")
+  })
+
+  it("suppresses token-only suggestions with conflicting poultry identities", () => {
+    const suggestions = suggestLegacyItemMappingsFromVariants(
+      {
+        qbd_item_list_id: "800009B3-1498592193",
+        sku: "6-01-21-1",
+        title: "6-01-21-1",
+        sample_description:
+          "Chicken 8-pce Cut-up, DAVID ELLIOT, CHK Supervision, Vacuum Packed",
+        top_descriptions: [
+          {
+            description:
+              "Chicken 8-pce Cut-up, DAVID ELLIOT, CHK Supervision, Vacuum Packed",
+          },
+        ],
+        description_count: 76,
+      },
+      [
+        {
+          variant_id: "variant_cornish_hen",
+          product_id: "prod_cornish_hen",
+          sku: "6-01-22-4",
+          variant_title:
+            "Cornish Hen, DAVID ELLIOT, CHK Supervision, Vacuum Packed",
+          product_title:
+            "Cornish Hen, DAVID ELLIOT, CHK Supervision, Vacuum Packed",
+          variant_metadata: null,
+          product_metadata: null,
+        },
+      ],
+      { minScore: 0.45 }
+    )
+
+    expect(suggestions).toEqual([])
   })
 })

@@ -11,7 +11,7 @@ export type LegacyItemSuggestionInput = {
   last_ordered_at?: string | null
 }
 
-type VariantRow = {
+export type LegacyItemSuggestionVariantRow = {
   variant_id: string
   product_id: string | null
   sku: string | null
@@ -19,6 +19,18 @@ type VariantRow = {
   product_title: string | null
   variant_metadata: Record<string, unknown> | null
   product_metadata: Record<string, unknown> | null
+}
+
+export type LegacyItemMappingSuggestion = {
+  variant_id: string
+  sku: string | null
+  variant_title: string | null
+  product_id: string | null
+  product_title: string | null
+  score: number
+  reasons: string[]
+  identity_warnings: string[]
+  review_status: "high_confidence" | "review_required"
 }
 
 type IdentityGroup = {
@@ -449,8 +461,8 @@ function legacyTextForSuggestion(item: LegacyItemSuggestionInput) {
 
 function scoreVariantSuggestion(
   item: LegacyItemSuggestionInput,
-  variant: VariantRow
-) {
+  variant: LegacyItemSuggestionVariantRow
+): LegacyItemMappingSuggestion | null {
   const reasons: string[] = []
   let score = 0
   const legacySkuCandidates = legacySkuAliases(item.sku)
@@ -548,7 +560,7 @@ function scoreVariantSuggestion(
   }
 
   const roundedScore = Number(score.toFixed(4))
-  const reviewStatus =
+  const reviewStatus: LegacyItemMappingSuggestion["review_status"] =
     !warnings.length &&
     roundedScore >= 0.97 &&
     (item.description_count ?? 0) <= 1 &&
@@ -575,11 +587,6 @@ export async function suggestLegacyItemMappings(
   options: { limit?: number; minScore?: number } = {}
 )
 {
-  const limit = Math.min(Math.max(Number(options.limit) || 8, 1), 20)
-  const minScore = Number.isFinite(Number(options.minScore))
-    ? Number(options.minScore)
-    : 0.45
-
   const variants = (await db("product_variant as pv")
     .leftJoin("product as p", "p.id", "pv.product_id")
     .select([
@@ -594,7 +601,20 @@ export async function suggestLegacyItemMappings(
     .whereNull("pv.deleted_at")
     .where((builder: any) => {
       builder.whereNull("p.deleted_at").orWhereNull("p.id")
-    })) as VariantRow[]
+    })) as LegacyItemSuggestionVariantRow[]
+
+  return suggestLegacyItemMappingsFromVariants(item, variants, options)
+}
+
+export function suggestLegacyItemMappingsFromVariants(
+  item: LegacyItemSuggestionInput,
+  variants: LegacyItemSuggestionVariantRow[],
+  options: { limit?: number; minScore?: number } = {}
+): LegacyItemMappingSuggestion[] {
+  const limit = Math.min(Math.max(Number(options.limit) || 8, 1), 20)
+  const minScore = Number.isFinite(Number(options.minScore))
+    ? Number(options.minScore)
+    : 0.45
 
   return variants
     .map((variant) => scoreVariantSuggestion(item, variant))
