@@ -384,6 +384,7 @@ export default async function auditLegacyCustomerProjection({
   let customersWithAddress = 0
   let customersWithLegacyOrders = 0
   let expectedPasswordAccounts = 0
+  let resetReadyNoPasswordAccounts = 0
   let expectedAddressAccounts = 0
   let expectedAddressAccountsWithAddress = 0
 
@@ -468,6 +469,13 @@ export default async function auditLegacyCustomerProjection({
         }
       }
     } else {
+      if (
+        row.medusa_auth_identity_id &&
+        row.auth_exists &&
+        row.email_provider_exists
+      ) {
+        resetReadyNoPasswordAccounts += 1
+      }
       bump(compromiseCounts, "legacy_customer_without_password", row)
     }
 
@@ -528,6 +536,7 @@ export default async function auditLegacyCustomerProjection({
     },
     auth: {
       expectedPasswordAccounts,
+      resetReadyNoPasswordAccounts,
       withAuthId,
       authExists,
       emailProviderHasPassword,

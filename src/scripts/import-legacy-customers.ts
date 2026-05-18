@@ -313,6 +313,113 @@ async function getProviderPasswordHash(db: any, authIdentityId: string) {
     : null
 }
 
+async function ensureResetReadyAuthIdentity({
+  db,
+  legacy,
+  customerId,
+  apply,
+}: {
+  db: any
+  legacy: ReturnType<typeof normalizeLegacyCustomer>
+  customerId: string | null
+  apply: boolean
+}) {
+  if (!customerId) {
+    return { status: "no_customer", authIdentityId: null }
+  }
+
+  const canonicalIdentifiers = uniqueStrings([
+    legacy.emailLower,
+    legacy.emailOriginal,
+  ])
+  const canonicalRows = await listProviderIdentities(db, canonicalIdentifiers)
+  const authIds = uniqueStrings(canonicalRows.map((row: any) => row.auth_identity_id))
+  if (authIds.length > 1) {
+    return { status: "conflict_multiple_email_identities", authIdentityId: null }
+  }
+
+  const now = new Date()
+  let authIdentityId = authIds[0] ?? null
+
+  if (!apply) {
+    return {
+      status: authIdentityId
+        ? "would_update_reset_ready_no_password"
+        : "would_create_reset_ready_no_password",
+      authIdentityId,
+    }
+  }
+
+  if (!authIdentityId) {
+    authIdentityId = generateEntityId(undefined, "authid")
+    await db("auth_identity").insert({
+      id: authIdentityId,
+      app_metadata: { customer_id: customerId },
+      created_at: now,
+      updated_at: now,
+    })
+  } else {
+    await db("auth_identity")
+      .where({ id: authIdentityId })
+      .update({
+        app_metadata: db.raw("coalesce(app_metadata, '{}'::jsonb) || ?::jsonb", [
+          JSON.stringify({ customer_id: customerId }),
+        ]),
+        updated_at: now,
+      })
+  }
+
+  const existingRows = await listProviderIdentities(db, canonicalIdentifiers)
+  const existingByIdentifier = new Map(
+    existingRows.map((row: any) => [row.entity_id, row])
+  )
+  let aliasesSkipped = 0
+
+  for (const identifier of canonicalIdentifiers) {
+    const existing = existingByIdentifier.get(identifier)
+    if (existing && existing.auth_identity_id !== authIdentityId) {
+      aliasesSkipped += 1
+      continue
+    }
+
+    if (existing) {
+      await db("provider_identity").where({ id: existing.id }).update({
+        user_metadata: db.raw("coalesce(user_metadata, '{}'::jsonb) || ?::jsonb", [
+          JSON.stringify({
+            legacy_import: true,
+            legacy_customer_id: legacy.legacyCustomerId,
+            legacy_password_reset_ready: true,
+          }),
+        ]),
+        updated_at: now,
+      })
+      continue
+    }
+
+    await db("provider_identity").insert({
+      id: generateEntityId(),
+      entity_id: identifier,
+      provider: AUTH_PROVIDER,
+      auth_identity_id: authIdentityId,
+      provider_metadata: {},
+      user_metadata: {
+        legacy_import: true,
+        legacy_customer_id: legacy.legacyCustomerId,
+        legacy_password_reset_ready: true,
+      },
+      created_at: now,
+      updated_at: now,
+    })
+  }
+
+  return {
+    status: aliasesSkipped
+      ? "reset_ready_no_password_with_email_conflicts"
+      : "reset_ready_no_password",
+    authIdentityId,
+  }
+}
+
 async function ensureAuthIdentity({
   db,
   legacy,
@@ -326,8 +433,17 @@ async function ensureAuthIdentity({
   apply: boolean
   updateExistingPasswords: boolean
 }) {
-  if (!legacy.password || !customerId) {
-    return { status: legacy.password ? "no_customer" : "no_password", authIdentityId: null }
+  if (!customerId) {
+    return { status: "no_customer", authIdentityId: null }
+  }
+
+  if (!legacy.password) {
+    return ensureResetReadyAuthIdentity({
+      db,
+      legacy,
+      customerId,
+      apply,
+    })
   }
 
   const canonicalIdentifiers = uniqueStrings([
@@ -614,7 +730,11 @@ function normalizeLegacyCustomer(row: LegacyCustomerRow) {
   }
 }
 
-function buildLegacyCustomerQuery(limit: number, offset: number) {
+function buildLegacyCustomerQuery(
+  limit: number,
+  offset: number,
+  options: { onlyNoPassword?: boolean } = {}
+) {
   const base = `
     SELECT
       ID, LISTID, NAME, FULLNAME, COMPANYNAME, FIRSTNAME, LASTNAME,
@@ -623,6 +743,7 @@ function buildLegacyCustomerQuery(limit: number, offset: number) {
       PHONE, MOBILE, EMAIL, CONTACT, PASSWORD, USERNAME, ISACTIVE, CANORDERONLINE
     FROM CUSTOMERS
     WHERE NULLIF(TRIM(EMAIL), '') IS NOT NULL
+      ${options.onlyNoPassword ? "AND NULLIF(TRIM(PASSWORD), '') IS NULL" : ""}
     ORDER BY ID
   `
 
@@ -645,6 +766,7 @@ export default async function importLegacyCustomers({ container }: ExecArgs) {
     ["update-existing-passwords"],
     false
   )
+  const onlyNoPassword = getBooleanArg(args, ["only-no-password"], false)
   const limit = getNumberArg(args, ["limit"], 0)
   const offset = getNumberArg(args, ["offset"], 0)
   const requestedBatchSize = getNumberArg(args, ["batch-size"], 500)
@@ -682,7 +804,7 @@ export default async function importLegacyCustomers({ container }: ExecArgs) {
     const connection = await mysql.createConnection(legacyConnectionConfig)
     try {
       const [rows] = await connection.query(
-        buildLegacyCustomerQuery(pageLimit, currentOffset)
+        buildLegacyCustomerQuery(pageLimit, currentOffset, { onlyNoPassword })
       )
       return rows as LegacyCustomerRow[]
     } finally {
@@ -733,7 +855,9 @@ export default async function importLegacyCustomers({ container }: ExecArgs) {
       })
       if (
         auth.status === "imported" ||
-        auth.status === "imported_with_alias_conflicts"
+        auth.status === "imported_with_alias_conflicts" ||
+        auth.status === "reset_ready_no_password" ||
+        auth.status === "reset_ready_no_password_with_email_conflicts"
       ) {
         stats.authImported += 1
       } else {

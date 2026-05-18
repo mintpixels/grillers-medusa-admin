@@ -79,6 +79,15 @@ By default, existing Medusa provider passwords are not overwritten. To deliberat
 ./node_modules/.bin/medusa exec ./src/scripts/import-legacy-customers.ts -- --apply --update-existing-passwords
 ```
 
+If the legacy source has accounts with no password value, make them reset-ready
+without reprocessing every customer. This creates emailpass provider identities
+with no password hash so forgot-password can issue a reset link; it still cannot
+make a missing old password work:
+
+```bash
+DISABLE_REDIS_MODULES=true railway run ./node_modules/.bin/medusa exec ./src/scripts/import-legacy-customers.ts -- --only-no-password --apply
+```
+
 Dry-run QBD invoices via Conductor:
 
 ```bash
