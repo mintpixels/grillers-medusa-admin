@@ -218,8 +218,8 @@ export async function findLegacyLoginCandidates(db: any, identifier: string) {
         "case when m.email_lower is not null and lower(pi.entity_id) = m.email_lower then true else false end as is_canonical_provider"
       ),
       db.raw(
-        "case when ? is not null and m.email_lower = ? then 0 else 1 end as identifier_match_priority",
-        [search.emailLower, search.emailLower]
+        "case when m.email_lower = ? then 0 else 1 end as identifier_match_priority",
+        [search.emailLower ?? ""]
       ),
     ])
     .whereNull("m.deleted_at")
