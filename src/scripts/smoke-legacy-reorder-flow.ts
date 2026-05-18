@@ -33,6 +33,12 @@ type FetchJsonResult = {
   body: any
 }
 
+type FetchTextResult = {
+  ok: boolean
+  status: number
+  body: string
+}
+
 function legacyEnvIsAvailable() {
   return envVarsAreSet([
     "LEGACY_DB_HOST",
@@ -58,6 +64,11 @@ async function fetchJson(url: string, init: RequestInit): Promise<FetchJsonResul
   }
 
   return { ok: res.ok, status: res.status, body }
+}
+
+async function fetchText(url: string, init: RequestInit): Promise<FetchTextResult> {
+  const res = await fetch(url, init)
+  return { ok: res.ok, status: res.status, body: await res.text() }
 }
 
 function candidateIdentifiers(candidate: CandidateRow) {
@@ -157,6 +168,10 @@ export default async function smokeLegacyReorderFlow({ container }: ExecArgs) {
     getStringArg(args, ["backend-url"], process.env.MEDUSA_BACKEND_URL) ||
       "http://localhost:9000"
   )
+  const storefrontUrl = getStringArg(args, ["storefront-url"], process.env.STOREFRONT_URL)
+  const normalizedStorefrontUrl = storefrontUrl
+    ? normalizeBaseUrl(storefrontUrl)
+    : null
   const publishableKey =
     getStringArg(args, ["publishable-key"], process.env.NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY) ||
     ""
@@ -248,6 +263,14 @@ export default async function smokeLegacyReorderFlow({ container }: ExecArgs) {
       const legacyOrders = Array.isArray(orders.body?.orders)
         ? orders.body.orders
         : []
+      const storefront = normalizedStorefrontUrl
+        ? await fetchText(`${normalizedStorefrontUrl}/us/account/reorder`, {
+            headers: {
+              cookie: `_medusa_jwt=${token}; _medusa_cache_id=legacy-reorder-smoke`,
+            },
+          })
+        : null
+      const storefrontBody = storefront?.body ?? ""
 
       success = {
         identifierType,
@@ -275,6 +298,11 @@ export default async function smokeLegacyReorderFlow({ container }: ExecArgs) {
             sum + (Array.isArray(order.lines) ? order.lines.length : 0),
           0
         ),
+        storefrontChecked: Boolean(storefront),
+        storefrontStatus: storefront?.status ?? null,
+        storefrontQuickReorderVisible: storefrontBody.includes("Quick Reorder"),
+        storefrontSignInVisible: storefrontBody.includes("Sign in"),
+        storefrontHasApplicationError: storefrontBody.includes("Application error"),
         sourceCandidateLegacyOrders: toNumber(candidate.legacy_order_count),
         sourceCandidateMappedOrAssistedLines: toNumber(candidate.legacy_line_count),
       }
@@ -304,7 +332,11 @@ export default async function smokeLegacyReorderFlow({ container }: ExecArgs) {
     !success.customerLoaded ||
     !success.tokenCustomerMatchesCandidate ||
     !success.purchaseHistoryCount ||
-    !success.legacyOrdersCount
+    !success.legacyOrdersCount ||
+    (normalizedStorefrontUrl &&
+      (!success.storefrontQuickReorderVisible ||
+        success.storefrontSignInVisible ||
+        success.storefrontHasApplicationError))
   ) {
     throw new Error("Legacy reorder smoke failed")
   }
