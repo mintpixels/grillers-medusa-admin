@@ -9,6 +9,11 @@ export default defineMiddlewares({
       middlewares: [authenticate("customer", ["session", "bearer"])],
     },
     {
+      matcher: "/store/customers/me/password",
+      method: ["POST"],
+      middlewares: [authenticate("customer", ["session", "bearer"])],
+    },
+    {
       matcher: "/admin/legacy-orders*",
       method: ["GET"],
       middlewares: [authenticate("user", ["session", "bearer", "api-key"])],

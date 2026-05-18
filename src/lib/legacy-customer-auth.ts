@@ -1,4 +1,5 @@
 import { generateJwtToken } from "@medusajs/framework/utils"
+import { verifyEmailpassPasswordHash } from "./emailpass-password"
 
 const AUTH_PROVIDER = "emailpass"
 
@@ -46,12 +47,7 @@ export function legacyLoginSearchTerms(identifier: unknown) {
 }
 
 async function verifyScryptPassword(passwordHash: string, password: string) {
-  const scrypt = await import("scrypt-kdf")
-  const kdf = ((scrypt as any).default ?? scrypt) as {
-    verify: (key: string | Uint8Array, passphrase: string | Uint8Array) => Promise<boolean>
-  }
-
-  return kdf.verify(passwordHash, password)
+  return verifyEmailpassPasswordHash(passwordHash, password)
 }
 
 export function legacyLoginCandidatesFromProviderRows(
