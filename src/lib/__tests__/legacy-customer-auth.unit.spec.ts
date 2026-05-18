@@ -48,6 +48,7 @@ describe("legacy customer auth fallback", () => {
         authIdentityId: "auth_100",
         passwordHash: "current-email-hash",
         passwordHashes: ["current-email-hash", "stale-alias-hash"],
+        identifierMatchPriority: 0,
       },
     ])
   })
@@ -120,6 +121,34 @@ describe("legacy customer auth fallback", () => {
     )
 
     expect(match).toBeNull()
+  })
+
+  it("prefers a canonical email identifier match over a username alias match", async () => {
+    const match = await selectUniqueVerifiedLegacyLoginCandidate(
+      [
+        {
+          legacyCustomerId: "100",
+          customerId: "cus_email",
+          authIdentityId: "auth_email",
+          passwordHash: "shared-hash",
+          identifierMatchPriority: 0,
+        },
+        {
+          legacyCustomerId: "200",
+          customerId: "cus_username",
+          authIdentityId: "auth_username",
+          passwordHash: "shared-hash",
+          identifierMatchPriority: 1,
+        },
+      ],
+      "secret",
+      async () => true
+    )
+
+    expect(match).toEqual({
+      customerId: "cus_email",
+      authIdentityId: "auth_email",
+    })
   })
 
   it("skips provider identities whose auth metadata points at a different customer", () => {

@@ -13,6 +13,7 @@ export type LegacyLoginProviderRow = {
   provider_entity_id?: string | null
   password_hash?: string | null
   is_canonical_provider?: boolean | string | number | null
+  identifier_match_priority?: number | string | null
 }
 
 export type LegacyLoginCandidate = {
@@ -21,6 +22,7 @@ export type LegacyLoginCandidate = {
   authIdentityId: string
   passwordHash: string
   passwordHashes?: string[]
+  identifierMatchPriority?: number
 }
 
 export type VerifiedLegacyLogin = {
@@ -40,6 +42,11 @@ function uniqueStrings(values: Array<string | null | undefined>) {
         .filter(Boolean)
     )
   )
+}
+
+function toPriority(value: unknown) {
+  const parsed = Number(value ?? 0)
+  return Number.isFinite(parsed) ? parsed : 0
 }
 
 export function normalizeLegacyLoginIdentifier(value: unknown) {
@@ -72,6 +79,7 @@ export function legacyLoginCandidatesFromProviderRows(
       authIdentityId: string
       canonicalPasswordHash: string | null
       fallbackPasswordHashes: string[]
+      identifierMatchPriority: number
     }
   >()
 
@@ -101,7 +109,13 @@ export function legacyLoginCandidatesFromProviderRows(
         authIdentityId,
         canonicalPasswordHash: null,
         fallbackPasswordHashes: [],
+        identifierMatchPriority: toPriority(row.identifier_match_priority),
       }
+
+    existing.identifierMatchPriority = Math.min(
+      existing.identifierMatchPriority,
+      toPriority(row.identifier_match_priority)
+    )
 
     if (truthy(row.is_canonical_provider)) {
       existing.canonicalPasswordHash ??= passwordHash
@@ -123,6 +137,7 @@ export function legacyLoginCandidatesFromProviderRows(
         candidate.canonicalPasswordHash,
         ...candidate.fallbackPasswordHashes,
       ]),
+      identifierMatchPriority: candidate.identifierMatchPriority,
     }))
     .filter((candidate) => candidate.passwordHashes?.length)
 }
@@ -132,7 +147,7 @@ export async function selectUniqueVerifiedLegacyLoginCandidate(
   password: string,
   verifyPassword: VerifyPassword = verifyScryptPassword
 ): Promise<VerifiedLegacyLogin | null> {
-  const matches: VerifiedLegacyLogin[] = []
+  const matches: Array<VerifiedLegacyLogin & { priority: number }> = []
 
   for (const candidate of candidates) {
     let passwordMatches = false
@@ -159,11 +174,24 @@ export async function selectUniqueVerifiedLegacyLoginCandidate(
     matches.push({
       customerId: candidate.customerId,
       authIdentityId: candidate.authIdentityId,
+      priority: candidate.identifierMatchPriority ?? 0,
     })
   }
 
+  if (!matches.length) {
+    return null
+  }
+
+  const bestPriority = Math.min(...matches.map((match) => match.priority))
+  const bestMatches = matches.filter((match) => match.priority === bestPriority)
   const uniqueMatches = new Map(
-    matches.map((match) => [`${match.customerId}:${match.authIdentityId}`, match])
+    bestMatches.map((match) => [
+      `${match.customerId}:${match.authIdentityId}`,
+      {
+        customerId: match.customerId,
+        authIdentityId: match.authIdentityId,
+      },
+    ])
   )
 
   return uniqueMatches.size === 1 ? Array.from(uniqueMatches.values())[0] : null
@@ -188,6 +216,10 @@ export async function findLegacyLoginCandidates(db: any, identifier: string) {
       db.raw("pi.provider_metadata->>'password' as password_hash"),
       db.raw(
         "case when m.email_lower is not null and lower(pi.entity_id) = m.email_lower then true else false end as is_canonical_provider"
+      ),
+      db.raw(
+        "case when ? is not null and m.email_lower = ? then 0 else 1 end as identifier_match_priority",
+        [search.emailLower, search.emailLower]
       ),
     ])
     .whereNull("m.deleted_at")
