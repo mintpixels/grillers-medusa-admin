@@ -5,6 +5,9 @@ import fs from "node:fs"
 import path from "node:path"
 import process from "node:process"
 
+const DEFAULT_BACKEND_URL =
+  "https://grillers-medusa-admin-production.up.railway.app"
+
 function argValue(name) {
   const equalsPrefix = `--${name}=`
   const equalsArg = process.argv.find((arg) => arg.startsWith(equalsPrefix))
@@ -20,6 +23,30 @@ function hasFlag(name) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function readDotEnv(file = ".env") {
+  if (!fs.existsSync(file)) return {}
+
+  const env = {}
+  for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/)
+    if (!match) continue
+
+    let value = match[2].trim()
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1)
+    }
+    env[match[1]] = value
+  }
+  return env
+}
+
+function normalizeUrl(url) {
+  return (url || "").replace(/\/+$/, "")
 }
 
 function commandExists(command) {
@@ -72,8 +99,53 @@ async function waitForRailway(attempts, delayMs) {
   return false
 }
 
+async function backendHealthy(backendUrl) {
+  try {
+    const startedAt = Date.now()
+    const response = await fetch(`${backendUrl}/health`, {
+      headers: { accept: "text/plain,application/json" },
+      signal: AbortSignal.timeout(15_000),
+    })
+    const body = await response.text()
+    const elapsed = Date.now() - startedAt
+
+    if (response.ok && body.trim() === "OK") {
+      console.log(`Backend health check passed in ${elapsed}ms`)
+      return true
+    }
+
+    console.error(
+      `Backend not healthy yet: HTTP ${response.status} in ${elapsed}ms. Body: ${body
+        .replace(/\s+/g, " ")
+        .slice(0, 200)}`
+    )
+    return false
+  } catch (error) {
+    console.error(`Backend health check failed: ${error.message}`)
+    return false
+  }
+}
+
+async function waitForBackend(backendUrl, attempts, delayMs) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    console.log(`\nBackend health check ${attempt}/${attempts}: ${backendUrl}`)
+    if (await backendHealthy(backendUrl)) return true
+    if (attempt < attempts) await sleep(delayMs)
+  }
+  return false
+}
+
+const dotEnv = readDotEnv()
 const attempts = Number(argValue("attempts") || (hasFlag("wait") ? 30 : 1))
 const delayMs = Number(argValue("delay-ms") || 60_000)
+const backendUrl = normalizeUrl(
+  argValue("backend-url") ||
+    process.env.MEDUSA_BACKEND_URL ||
+    dotEnv.MEDUSA_BACKEND_URL ||
+    DEFAULT_BACKEND_URL
+)
+const backendAttempts = Number(argValue("backend-attempts") || 60)
+const backendDelayMs = Number(argValue("backend-delay-ms") || 10_000)
 const frontendDir = path.resolve(
   argValue("frontend-dir") ||
     process.env.FRONTEND_DIR ||
@@ -81,6 +153,7 @@ const frontendDir = path.resolve(
 )
 const skipDeploy = hasFlag("skip-deploy")
 const skipFrontend = hasFlag("skip-frontend")
+const skipBackendWait = hasFlag("skip-backend-wait")
 
 if (hasFlag("help")) {
   console.log(`Usage:
@@ -90,7 +163,11 @@ Options:
   --wait                  Poll Railway up to 30 times before giving up.
   --attempts <n>          Number of Railway readiness attempts. Default: 1.
   --delay-ms <ms>         Delay between readiness attempts. Default: 60000.
+  --backend-url <url>     Backend URL to smoke check. Default: MEDUSA_BACKEND_URL.
+  --backend-attempts <n>  Backend health attempts after deploy. Default: 60.
+  --backend-delay-ms <ms> Delay between backend health attempts. Default: 10000.
   --skip-deploy           Do not run railway up; only run smoke checks.
+  --skip-backend-wait     Do not wait for backend /health before smoke checks.
   --skip-frontend         Do not run the storefront/backend smoke check.
   --frontend-dir <path>   Frontend repo path. Default: ../grillers-medusa-frontend.
 
@@ -116,6 +193,13 @@ if (!ready) {
 
 if (!skipDeploy) {
   await run("railway", ["up", "--detach"])
+}
+
+if (!skipBackendWait) {
+  const healthy = await waitForBackend(backendUrl, backendAttempts, backendDelayMs)
+  if (!healthy) {
+    throw new Error("Backend did not become healthy after deployment")
+  }
 }
 
 await run("yarn", ["smoke:production-backend"])
