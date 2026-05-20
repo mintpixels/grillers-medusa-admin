@@ -37,7 +37,7 @@ function normalizeUrl(url) {
   return (url || "").replace(/\/+$/, "")
 }
 
-async function requestJson(label, url, options = {}) {
+async function requestJsonResult(label, url, options = {}) {
   const startedAt = Date.now()
   const response = await fetch(url, {
     redirect: "manual",
@@ -58,28 +58,42 @@ async function requestJson(label, url, options = {}) {
     body = null
   }
 
-  if (!response.ok) {
-    const preview = bodyText.replace(/\s+/g, " ").slice(0, 500)
+  return {
+    body,
+    bodyText,
+    elapsed,
+    ok: response.ok,
+    status: response.status,
+  }
+}
+
+async function requestJson(label, url, options = {}) {
+  const result = await requestJsonResult(label, url, options)
+
+  if (!result.ok) {
+    const preview = result.bodyText.replace(/\s+/g, " ").slice(0, 500)
     throw new Error(
-      `${label} failed: HTTP ${response.status} in ${elapsed}ms. Body: ${preview}`
+      `${label} failed: HTTP ${result.status} in ${result.elapsed}ms. Body: ${preview}`
     )
   }
 
-  return { body, bodyText, elapsed, status: response.status }
+  return result
 }
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
-function chooseProductVariant(products) {
+function productVariantCandidates(products) {
+  const candidates = []
   for (const product of products) {
-    const variant = product.variants?.find((candidate) => candidate?.id)
-    if (variant?.id) {
-      return { product, variant }
+    for (const variant of product.variants || []) {
+      if (variant?.id) {
+        candidates.push({ product, variant })
+      }
     }
   }
-  return null
+  return candidates
 }
 
 function positiveNumber(...values) {
@@ -156,7 +170,7 @@ console.log(`ok selected region (${region.id}, country=${countryCode})`)
 
 const products = await requestJson(
   "store products",
-  `${backendUrl}/store/products?limit=25&region_id=${encodeURIComponent(
+  `${backendUrl}/store/products?limit=50&region_id=${encodeURIComponent(
     region.id
   )}`,
   { headers: storeHeaders }
@@ -176,9 +190,9 @@ console.log(
     .join(", ")})`
 )
 
-const selection = chooseProductVariant(products.body.products)
+const candidates = productVariantCandidates(products.body.products)
 assert(
-  selection,
+  candidates.length > 0,
   "Expected at least one product with a variant id for cart smoke testing"
 )
 
@@ -193,20 +207,42 @@ const cartCreate = await requestJson("cart create", `${backendUrl}/store/carts`,
 const cartId = cartCreate.body?.cart?.id
 assert(cartId, "Expected cart create to return cart.id")
 
-const cartLine = await requestJson(
-  "cart add line item",
-  `${backendUrl}/store/carts/${cartId}/line-items`,
-  {
-    method: "POST",
-    headers: {
-      ...storeHeaders,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      variant_id: selection.variant.id,
-      quantity: 1,
-    }),
+let cartLine = null
+let selection = null
+let lastAddFailure = null
+for (const candidate of candidates) {
+  const result = await requestJsonResult(
+    "cart add line item",
+    `${backendUrl}/store/carts/${cartId}/line-items`,
+    {
+      method: "POST",
+      headers: {
+        ...storeHeaders,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        variant_id: candidate.variant.id,
+        quantity: 1,
+      }),
+    }
+  )
+
+  if (result.ok) {
+    cartLine = result
+    selection = candidate
+    break
   }
+
+  lastAddFailure = `HTTP ${result.status}: ${result.bodyText
+    .replace(/\s+/g, " ")
+    .slice(0, 200)}`
+}
+
+assert(
+  cartLine && selection,
+  `Expected at least one catalog variant to be addable to cart. Last failure: ${
+    lastAddFailure || "none"
+  }`
 )
 const cart = cartLine.body?.cart
 const item = cart?.items?.[0]

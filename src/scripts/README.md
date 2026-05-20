@@ -92,7 +92,9 @@ flows. It fails on Railway fallback errors, invalid publishable-key behavior,
 empty catalog responses, the default Medusa seed product catalog, and broken
 cart create/add-to-cart/live-pricing behavior. It selects the cart region from
 `--country-code`, `NEXT_PUBLIC_DEFAULT_REGION`, or `us` by default, and fetches
-products for that region before testing cart pricing.
+products for that region before testing cart pricing. If the first returned
+variant cannot be added to a cart, the script tries additional catalog variants
+before failing the smoke.
 
 ## Production Backend Recovery Runner
 
