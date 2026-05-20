@@ -202,14 +202,19 @@ if (!skipBackendWait) {
   }
 }
 
-await run("yarn", ["smoke:production-backend"])
+const smokeEnv = { MEDUSA_BACKEND_URL: backendUrl }
+
+await run("yarn", ["smoke:production-backend"], { env: smokeEnv })
 
 if (!skipFrontend) {
   if (!fs.existsSync(path.join(frontendDir, "package.json"))) {
     throw new Error(`Frontend repo not found at ${frontendDir}`)
   }
 
-  await run("yarn", ["smoke:storefront-backend"], { cwd: frontendDir })
+  await run("yarn", ["smoke:storefront-backend"], {
+    cwd: frontendDir,
+    env: smokeEnv,
+  })
 }
 
 console.log("\nProduction backend recovery checks passed.")

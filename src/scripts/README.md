@@ -104,6 +104,8 @@ yarn recover:production-backend --wait
 After `railway up --detach`, the runner waits for the configured backend
 `/health` endpoint to return `OK` before running deeper store/admin/cart checks.
 Use `--backend-attempts` and `--backend-delay-ms` to tune that post-deploy wait.
+If you pass `--backend-url`, that same URL is used for the backend health wait,
+the backend smoke test, and the storefront/backend smoke test.
 
 Use `--skip-deploy` if the service was already redeployed from the Railway
 dashboard. Use `--skip-backend-wait` only when you intentionally want to run
