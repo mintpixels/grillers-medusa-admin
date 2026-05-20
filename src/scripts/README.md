@@ -108,9 +108,10 @@ If you pass `--backend-url`, that same URL is used for the backend health wait,
 the backend smoke test, and the storefront/backend smoke test.
 
 Use `--skip-deploy` if the service was already redeployed from the Railway
-dashboard. Use `--skip-backend-wait` only when you intentionally want to run
-smoke checks immediately. Use `--skip-frontend` if you only want to verify the
-Medusa backend.
+dashboard or an automatic GitHub deploy; this bypasses the Railway CLI readiness
+check and verifies the configured backend URL directly. Use
+`--skip-backend-wait` only when you intentionally want to run smoke checks
+immediately. Use `--skip-frontend` if you only want to verify the Medusa backend.
 
 ## Legacy Auth Password Audit
 

@@ -186,13 +186,15 @@ if (!(await commandExists("yarn"))) {
   throw new Error("yarn is not installed or not on PATH")
 }
 
-const ready = await waitForRailway(attempts, delayMs)
-if (!ready) {
-  throw new Error("Railway did not become ready; not deploying")
-}
-
 if (!skipDeploy) {
+  const ready = await waitForRailway(attempts, delayMs)
+  if (!ready) {
+    throw new Error("Railway did not become ready; not deploying")
+  }
+
   await run("railway", ["up", "--detach"])
+} else {
+  console.log("\nSkipping Railway deploy; checking the configured backend URL.")
 }
 
 if (!skipBackendWait) {
