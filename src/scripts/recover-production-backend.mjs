@@ -80,6 +80,42 @@ function run(command, args, options = {}) {
   })
 }
 
+function runCapture(command, args, options = {}) {
+  const label = [command, ...args].join(" ")
+  console.log(`\n$ ${label}`)
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd || process.cwd(),
+      env: { ...process.env, ...(options.env || {}) },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+
+    let stdout = ""
+    let stderr = ""
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk
+    })
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk
+    })
+
+    child.on("error", reject)
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve(stdout)
+        return
+      }
+      const detail = stderr.trim() || stdout.trim()
+      reject(
+        new Error(
+          `${label} exited with code ${code}${detail ? `: ${detail}` : ""}`
+        )
+      )
+    })
+  })
+}
+
 async function railwayReady() {
   try {
     await run("railway", ["status"])
@@ -135,6 +171,64 @@ async function waitForBackend(backendUrl, attempts, delayMs) {
   return false
 }
 
+async function currentGitSha() {
+  return (await runCapture("git", ["rev-parse", "HEAD"])).trim()
+}
+
+async function verifyGithubDeployment(repo, expectedSha, environmentFilter) {
+  const output = await runCapture("gh", [
+    "api",
+    `repos/${repo}/deployments`,
+    "--paginate",
+    "--jq",
+    ".[] | {sha, environment, created_at, updated_at, description} | @json",
+  ])
+  const deployments = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+  const latest = deployments.find((deployment) =>
+    String(deployment.environment || "").includes(environmentFilter)
+  )
+
+  if (!latest) {
+    throw new Error(
+      `No GitHub deployment found for ${repo} environment containing ${JSON.stringify(
+        environmentFilter
+      )}`
+    )
+  }
+
+  if (latest.sha !== expectedSha) {
+    throw new Error(
+      `Latest GitHub deployment for ${environmentFilter} is ${latest.sha.slice(
+        0,
+        7
+      )}, expected ${expectedSha.slice(0, 7)}`
+    )
+  }
+
+  console.log(
+    `GitHub deployment matches expected commit (${expectedSha.slice(0, 7)})`
+  )
+}
+
+async function maybeVerifyGithubDeployment() {
+  if (!requireGithubDeployment) return
+
+  if (!(await commandExists("gh"))) {
+    throw new Error("gh is required when --require-github-deployment is set")
+  }
+
+  const expectedSha = argValue("commit") || (await currentGitSha())
+  await verifyGithubDeployment(
+    githubRepo,
+    expectedSha,
+    githubDeploymentEnvironment
+  )
+}
+
 const dotEnv = readDotEnv()
 const attempts = Number(argValue("attempts") || (hasFlag("wait") ? 30 : 1))
 const delayMs = Number(argValue("delay-ms") || 60_000)
@@ -154,6 +248,10 @@ const frontendDir = path.resolve(
 const skipDeploy = hasFlag("skip-deploy")
 const skipFrontend = hasFlag("skip-frontend")
 const skipBackendWait = hasFlag("skip-backend-wait")
+const requireGithubDeployment = hasFlag("require-github-deployment")
+const githubRepo = argValue("github-repo") || "mintpixels/grillers-medusa-admin"
+const githubDeploymentEnvironment =
+  argValue("github-deployment-environment") || "grillers / production"
 
 if (hasFlag("help")) {
   console.log(`Usage:
@@ -170,15 +268,23 @@ Options:
   --skip-backend-wait     Do not wait for backend /health before smoke checks.
   --skip-frontend         Do not run the storefront/backend smoke check.
   --frontend-dir <path>   Frontend repo path. Default: ../grillers-medusa-frontend.
+  --require-github-deployment
+                          Verify latest GitHub deployment matches this commit.
+  --github-repo <owner/repo>
+                          GitHub repo to inspect. Default: mintpixels/grillers-medusa-admin.
+  --github-deployment-environment <text>
+                          Deployment environment substring. Default: grillers / production.
+  --commit <sha>          Expected deployment commit. Default: current git HEAD.
 
 Required external tools:
-  railway
+  railway, unless --skip-deploy is set
   yarn
+  gh, when --require-github-deployment is set
 `)
   process.exit(0)
 }
 
-if (!(await commandExists("railway"))) {
+if (!skipDeploy && !(await commandExists("railway"))) {
   throw new Error("Railway CLI is not installed or not on PATH")
 }
 
@@ -196,6 +302,8 @@ if (!skipDeploy) {
 } else {
   console.log("\nSkipping Railway deploy; checking the configured backend URL.")
 }
+
+await maybeVerifyGithubDeployment()
 
 if (!skipBackendWait) {
   const healthy = await waitForBackend(backendUrl, backendAttempts, backendDelayMs)
