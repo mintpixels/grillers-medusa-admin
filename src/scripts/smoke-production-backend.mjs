@@ -86,6 +86,17 @@ function positiveNumber(...values) {
   return values.some((value) => Number.isFinite(value) && value > 0)
 }
 
+function chooseRegion(regions, countryCode) {
+  return (
+    regions.find((candidate) =>
+      candidate.countries?.some(
+        (country) =>
+          country?.iso_2?.toLowerCase() === countryCode.toLowerCase()
+      )
+    ) || regions[0]
+  )
+}
+
 const dotEnv = readDotEnv()
 const backendUrl = normalizeUrl(
   getArg("backend-url") ||
@@ -101,6 +112,11 @@ const adminToken =
   getArg("admin-token") ||
   process.env.MEDUSA_ADMIN_API_TOKEN ||
   dotEnv.MEDUSA_ADMIN_API_TOKEN
+const countryCode =
+  getArg("country-code") ||
+  process.env.NEXT_PUBLIC_DEFAULT_REGION ||
+  dotEnv.NEXT_PUBLIC_DEFAULT_REGION ||
+  "us"
 
 assert(backendUrl, "Missing backend URL")
 assert(publishableKey, "Missing NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY")
@@ -131,9 +147,18 @@ assert(
 )
 console.log(`ok /store/regions (${regions.body.regions.length} regions)`)
 
+const region = chooseRegion(regions.body.regions, countryCode)
+assert(
+  region?.id,
+  `Expected to find a Medusa region for country code ${countryCode}`
+)
+console.log(`ok selected region (${region.id}, country=${countryCode})`)
+
 const products = await requestJson(
   "store products",
-  `${backendUrl}/store/products?limit=25`,
+  `${backendUrl}/store/products?limit=25&region_id=${encodeURIComponent(
+    region.id
+  )}`,
   { headers: storeHeaders }
 )
 assert(
@@ -150,9 +175,6 @@ console.log(
     .slice(0, 5)
     .join(", ")})`
 )
-
-const region = regions.body.regions[0]
-assert(region?.id, "Expected the first region to have an id")
 
 const selection = chooseProductVariant(products.body.products)
 assert(

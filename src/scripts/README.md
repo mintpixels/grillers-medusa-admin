@@ -90,7 +90,9 @@ The script requires `NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY`. When
 `MEDUSA_ADMIN_API_TOKEN` is set, it also verifies admin routes used by staff
 flows. It fails on Railway fallback errors, invalid publishable-key behavior,
 empty catalog responses, the default Medusa seed product catalog, and broken
-cart create/add-to-cart/live-pricing behavior.
+cart create/add-to-cart/live-pricing behavior. It selects the cart region from
+`--country-code`, `NEXT_PUBLIC_DEFAULT_REGION`, or `us` by default, and fetches
+products for that region before testing cart pricing.
 
 ## Production Backend Recovery Runner
 
