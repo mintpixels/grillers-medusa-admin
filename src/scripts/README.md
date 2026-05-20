@@ -76,6 +76,21 @@ Use `smoke-legacy-reorder-flow.ts` after customer/order imports or auth changes.
   --publishable-key pk_...
 ```
 
+## Production Backend Smoke Test
+
+Use this after the Railway Medusa service has been redeployed and before
+pointing the storefront at it or declaring the backend restored.
+
+```bash
+yarn smoke:production-backend \
+  --backend-url https://grillers-medusa-admin-production.up.railway.app
+```
+
+The script requires `NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY`. When
+`MEDUSA_ADMIN_API_TOKEN` is set, it also verifies admin routes used by staff
+flows. It fails on Railway fallback errors, invalid publishable-key behavior,
+empty catalog responses, and the default Medusa seed product catalog.
+
 ## Legacy Auth Password Audit
 
 Use `audit-legacy-auth-passwords.ts` to prove imported auth hashes still verify the source legacy-site passwords. It compares source credentials against Medusa provider hashes without printing emails or passwords.
