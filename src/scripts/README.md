@@ -89,7 +89,8 @@ yarn smoke:production-backend \
 The script requires `NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY`. When
 `MEDUSA_ADMIN_API_TOKEN` is set, it also verifies admin routes used by staff
 flows. It fails on Railway fallback errors, invalid publishable-key behavior,
-empty catalog responses, and the default Medusa seed product catalog.
+empty catalog responses, the default Medusa seed product catalog, and broken
+cart create/add-to-cart/live-pricing behavior.
 
 ## Production Backend Recovery Runner
 

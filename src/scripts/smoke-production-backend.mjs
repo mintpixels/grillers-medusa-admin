@@ -72,6 +72,20 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+function chooseProductVariant(products) {
+  for (const product of products) {
+    const variant = product.variants?.find((candidate) => candidate?.id)
+    if (variant?.id) {
+      return { product, variant }
+    }
+  }
+  return null
+}
+
+function positiveNumber(...values) {
+  return values.some((value) => Number.isFinite(value) && value > 0)
+}
+
 const dotEnv = readDotEnv()
 const backendUrl = normalizeUrl(
   getArg("backend-url") ||
@@ -119,7 +133,7 @@ console.log(`ok /store/regions (${regions.body.regions.length} regions)`)
 
 const products = await requestJson(
   "store products",
-  `${backendUrl}/store/products?limit=5&fields=id,title,handle,status`,
+  `${backendUrl}/store/products?limit=25`,
   { headers: storeHeaders }
 )
 assert(
@@ -133,7 +147,57 @@ assert(
 console.log(
   `ok /store/products (${products.body.products
     .map((product) => product.title || product.handle || product.id)
+    .slice(0, 5)
     .join(", ")})`
+)
+
+const region = regions.body.regions[0]
+assert(region?.id, "Expected the first region to have an id")
+
+const selection = chooseProductVariant(products.body.products)
+assert(
+  selection,
+  "Expected at least one product with a variant id for cart smoke testing"
+)
+
+const cartCreate = await requestJson("cart create", `${backendUrl}/store/carts`, {
+  method: "POST",
+  headers: {
+    ...storeHeaders,
+    "content-type": "application/json",
+  },
+  body: JSON.stringify({ region_id: region.id }),
+})
+const cartId = cartCreate.body?.cart?.id
+assert(cartId, "Expected cart create to return cart.id")
+
+const cartLine = await requestJson(
+  "cart add line item",
+  `${backendUrl}/store/carts/${cartId}/line-items`,
+  {
+    method: "POST",
+    headers: {
+      ...storeHeaders,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      variant_id: selection.variant.id,
+      quantity: 1,
+    }),
+  }
+)
+const cart = cartLine.body?.cart
+const item = cart?.items?.[0]
+assert(cart?.id === cartId, "Expected cart add response to return the same cart")
+assert(item?.id, "Expected cart to contain a line item after add-to-cart")
+assert(
+  positiveNumber(cart.subtotal, cart.total, item.unit_price, item.subtotal),
+  "Expected cart add response to include positive live pricing totals"
+)
+console.log(
+  `ok cart create/add (${cartId}, ${
+    selection.product.title || selection.product.handle || selection.product.id
+  })`
 )
 
 if (adminToken) {
