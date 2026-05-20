@@ -91,6 +91,19 @@ The script requires `NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY`. When
 flows. It fails on Railway fallback errors, invalid publishable-key behavior,
 empty catalog responses, and the default Medusa seed product catalog.
 
+## Production Backend Recovery Runner
+
+Once Railway is available again, run the recovery runner from this repo. It
+checks Railway, deploys the current backend, runs the backend smoke test, then
+runs the storefront/backend smoke test from the sibling frontend repo.
+
+```bash
+yarn recover:production-backend --wait
+```
+
+Use `--skip-deploy` if the service was already redeployed from the Railway
+dashboard. Use `--skip-frontend` if you only want to verify the Medusa backend.
+
 ## Legacy Auth Password Audit
 
 Use `audit-legacy-auth-passwords.ts` to prove imported auth hashes still verify the source legacy-site passwords. It compares source credentials against Medusa provider hashes without printing emails or passwords.
