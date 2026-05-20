@@ -122,6 +122,37 @@ Use `--require-github-deployment` when validating a Railway/GitHub auto-deploy;
 it verifies the latest `grillers / production` deployment record matches the
 current git commit before accepting the backend smoke result.
 
+### Manual GitHub Recovery Deploy
+
+If the local Railway CLI session is stale or unavailable, use the
+`Manual Railway Backend Deploy` GitHub Actions workflow. It uploads the current
+backend to Railway with `railway up`, waits for `/health` to return `OK`, then
+runs `yarn smoke:production-backend`.
+
+Required repository secret:
+
+- `RAILWAY_TOKEN`
+
+Required repository variables, or equivalent workflow-dispatch inputs:
+
+- `RAILWAY_PROJECT_ID`
+- `RAILWAY_ENVIRONMENT_ID`
+- `RAILWAY_SERVICE_ID`
+- `NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY`
+
+Optional repository variable:
+
+- `NEXT_PUBLIC_DEFAULT_REGION` defaults to `us`
+
+Trigger it from GitHub Actions, or with the GitHub CLI after the secret and
+variables are present:
+
+```bash
+gh workflow run "Manual Railway Backend Deploy" \
+  -R mintpixels/grillers-medusa-admin \
+  -f backend_url=https://grillers-medusa-admin-production.up.railway.app
+```
+
 ## Legacy Auth Password Audit
 
 Use `audit-legacy-auth-passwords.ts` to prove imported auth hashes still verify the source legacy-site passwords. It compares source credentials against Medusa provider hashes without printing emails or passwords.

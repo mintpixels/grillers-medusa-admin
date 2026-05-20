@@ -1,0 +1,92 @@
+name: Manual Railway Backend Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_url:
+        description: "Medusa backend URL to smoke check"
+        required: false
+        default: "https://grillers-medusa-admin-production.up.railway.app"
+      project_id:
+        description: "Railway project ID. Falls back to repository variable RAILWAY_PROJECT_ID."
+        required: false
+      environment_id:
+        description: "Railway environment ID or name. Falls back to repository variable RAILWAY_ENVIRONMENT_ID."
+        required: false
+      service_id:
+        description: "Railway service ID or name. Falls back to repository variable RAILWAY_SERVICE_ID."
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy backend and smoke check
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      MEDUSA_BACKEND_URL: ${{ inputs.backend_url }}
+      NEXT_PUBLIC_DEFAULT_REGION: ${{ vars.NEXT_PUBLIC_DEFAULT_REGION || 'us' }}
+      NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY || vars.NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY }}
+      RAILWAY_ENVIRONMENT_ID: ${{ inputs.environment_id || vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_PROJECT_ID: ${{ inputs.project_id || vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_SERVICE_ID: ${{ inputs.service_id || vars.RAILWAY_SERVICE_ID }}
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+    steps:
+      - name: Check required configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${RAILWAY_TOKEN:?Set the RAILWAY_TOKEN repository secret.}"
+          : "${RAILWAY_PROJECT_ID:?Set RAILWAY_PROJECT_ID as an input or repository variable.}"
+          : "${RAILWAY_ENVIRONMENT_ID:?Set RAILWAY_ENVIRONMENT_ID as an input or repository variable.}"
+          : "${RAILWAY_SERVICE_ID:?Set RAILWAY_SERVICE_ID as an input or repository variable.}"
+          : "${NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY:?Set NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY as a repository secret or variable.}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        shell: bash
+        run: |
+          set -euo pipefail
+          railway up \
+            --detach \
+            --json \
+            --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --service "$RAILWAY_SERVICE_ID" \
+            --message "manual backend recovery deploy ${GITHUB_SHA}"
+
+      - name: Wait for backend health
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            body="$(curl -fsS --max-time 15 "$MEDUSA_BACKEND_URL/health" || true)"
+            if [ "$body" = "OK" ]; then
+              echo "Backend health is OK"
+              exit 0
+            fi
+
+            echo "Attempt $attempt/60: backend health is not ready yet"
+            sleep 10
+          done
+
+          echo "Backend did not become healthy"
+          exit 1
+
+      - name: Smoke check production backend
+        run: yarn smoke:production-backend --backend-url "$MEDUSA_BACKEND_URL"
