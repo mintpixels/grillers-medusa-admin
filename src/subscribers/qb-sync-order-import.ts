@@ -1,6 +1,6 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 
-const ORDER_FIELDS = [
+export const ORDER_FIELDS = [
   "id",
   "display_id",
   "email",
@@ -14,30 +14,130 @@ const ORDER_FIELDS = [
   "metadata",
   "total",
   "subtotal",
+  "item_total",
+  "item_subtotal",
   "tax_total",
   "shipping_total",
   "discount_total",
-  "shipping_address.*",
-  "billing_address.*",
-  "items.id",
-  "items.title",
-  "items.quantity",
-  "items.unit_price",
-  "items.total",
-  "items.variant_id",
-  "items.product_id",
-  "items.variant_sku",
-  "items.product_title",
-  "items.variant_title",
-  "items.metadata",
-  "items.variant.*",
-  "items.variant.product.*",
-  "shipping_methods.*",
-  "payment_collections.*",
-  "payment_collections.payments.*",
+  "shipping_subtotal",
+  "shipping_tax_total",
+  "+summary",
+  "*shipping_address",
+  "*billing_address",
+  "*items",
+  "*items.variant",
+  "*items.variant.product",
+  "*shipping_methods",
+  "payment_collections.id",
+  "payment_collections.status",
+  "payment_collections.payments.id",
+  "payment_collections.payments.provider_id",
+  "payment_collections.payments.amount",
+  "payment_collections.payments.currency_code",
 ]
 
 const IMPORT_TIMEOUT_MS = 15_000
+
+function numeric(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value
+  }
+
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  if (
+    value &&
+    typeof value === "object" &&
+    "value" in value &&
+    (typeof value.value === "number" || typeof value.value === "string")
+  ) {
+    return numeric(value.value)
+  }
+
+  return null
+}
+
+function firstNumeric(...values: unknown[]): number | null {
+  for (const value of values) {
+    const parsed = numeric(value)
+    if (parsed !== null) {
+      return parsed
+    }
+  }
+
+  return null
+}
+
+function hasPositiveValue(value: unknown): boolean {
+  const parsed = numeric(value)
+  return parsed !== null && parsed > 0
+}
+
+export function normalizeOrderForQbSync(
+  order: Record<string, unknown>
+): Record<string, unknown> {
+  const items = Array.isArray(order.items)
+    ? order.items.map((rawItem) => {
+        if (!rawItem || typeof rawItem !== "object") {
+          return rawItem
+        }
+
+        const item = rawItem as Record<string, unknown>
+        const detail =
+          item.detail && typeof item.detail === "object"
+            ? (item.detail as Record<string, unknown>)
+            : {}
+        const quantity = firstNumeric(item.quantity, detail.quantity) ?? 1
+        const computedLineTotal =
+          firstNumeric(item.unit_price, item.raw_unit_price) !== null
+            ? (firstNumeric(item.unit_price, item.raw_unit_price) as number) *
+              quantity
+            : null
+        const total = hasPositiveValue(item.total)
+          ? numeric(item.total)
+          : computedLineTotal ?? numeric(item.total)
+        const subtotal = hasPositiveValue(item.subtotal)
+          ? numeric(item.subtotal)
+          : computedLineTotal ?? numeric(item.subtotal)
+
+        return {
+          ...item,
+          quantity,
+          subtotal,
+          total,
+        }
+      })
+    : order.items
+
+  const itemTotal = Array.isArray(items)
+    ? items.reduce((sum, item) => {
+        if (!item || typeof item !== "object") return sum
+        return sum + (numeric((item as Record<string, unknown>).total) ?? 0)
+      }, 0)
+    : null
+
+  const shippingTotal = numeric(order.shipping_total) ?? 0
+  const taxTotal = numeric(order.tax_total) ?? 0
+  const discountTotal = numeric(order.discount_total) ?? 0
+  const computedOrderTotal =
+    itemTotal !== null ? itemTotal + shippingTotal + taxTotal - discountTotal : null
+  const total = hasPositiveValue(order.total)
+    ? numeric(order.total)
+    : computedOrderTotal ?? numeric(order.total)
+  const subtotal = hasPositiveValue(order.subtotal)
+    ? numeric(order.subtotal)
+    : itemTotal ?? numeric(order.subtotal)
+
+  return {
+    ...order,
+    items,
+    subtotal,
+    total,
+  }
+}
 
 export async function postOrderToQbSync(
   endpoint: string,
@@ -92,7 +192,11 @@ export default async function qbSyncOrderImportHandler({
       return
     }
 
-    const response = await postOrderToQbSync(endpoint, token, order)
+    const response = await postOrderToQbSync(
+      endpoint,
+      token,
+      normalizeOrderForQbSync(order)
+    )
 
     if (!response.ok) {
       const body = await response.text().catch(() => "")

@@ -1,4 +1,8 @@
-import { postOrderToQbSync } from "../../subscribers/qb-sync-order-import"
+import {
+  ORDER_FIELDS,
+  normalizeOrderForQbSync,
+  postOrderToQbSync,
+} from "../../subscribers/qb-sync-order-import"
 
 describe("qb-sync order import subscriber", () => {
   it("posts order payloads with the shared sync token", async () => {
@@ -22,5 +26,46 @@ describe("qb-sync order import subscriber", () => {
         body: JSON.stringify({ order: { id: "order_1" } }),
       })
     )
+  })
+
+  it("requests order item relations that include Medusa computed quantity and variant data", () => {
+    expect(ORDER_FIELDS).toEqual(
+      expect.arrayContaining([
+        "*items",
+        "*items.variant",
+        "*items.variant.product",
+        "+summary",
+      ])
+    )
+    expect(ORDER_FIELDS).not.toContain("items.variant.*")
+  })
+
+  it("normalizes Medusa order line totals when graph payloads omit computed item fields", () => {
+    const order = normalizeOrderForQbSync({
+      id: "order_1",
+      total: 0,
+      subtotal: 0,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          title: "Ground Beef",
+          quantity: null,
+          detail: { quantity: 2 },
+          unit_price: 84.9,
+          total: 0,
+          subtotal: null,
+        },
+      ],
+    })
+
+    expect(order.total).toBe(169.8)
+    expect(order.subtotal).toBe(169.8)
+    expect((order.items as any[])[0]).toMatchObject({
+      quantity: 2,
+      total: 169.8,
+      subtotal: 169.8,
+    })
   })
 })
