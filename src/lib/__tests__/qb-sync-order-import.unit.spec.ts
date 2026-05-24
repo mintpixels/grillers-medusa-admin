@@ -1,4 +1,4 @@
-import { postOrderToQbSync } from "../qb-sync-order-import"
+import { postOrderToQbSync } from "../../subscribers/qb-sync-order-import"
 
 describe("qb-sync order import subscriber", () => {
   it("posts order payloads with the shared sync token", async () => {
