@@ -19,7 +19,16 @@ const ORDER_FIELDS = [
   "discount_total",
   "shipping_address.*",
   "billing_address.*",
-  "items.*",
+  "items.id",
+  "items.title",
+  "items.quantity",
+  "items.unit_price",
+  "items.total",
+  "items.variant_id",
+  "items.product_id",
+  "items.variant_sku",
+  "items.product_title",
+  "items.variant_title",
   "+items.metadata",
   "items.variant.*",
   "items.variant.product.*",
@@ -27,6 +36,32 @@ const ORDER_FIELDS = [
   "payment_collections.*",
   "payment_collections.payments.*",
 ]
+
+const IMPORT_TIMEOUT_MS = 15_000
+
+export async function postOrderToQbSync(
+  endpoint: string,
+  token: string,
+  order: Record<string, unknown>,
+  fetchFn: typeof fetch = fetch
+): Promise<Response> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), IMPORT_TIMEOUT_MS)
+
+  try {
+    return await fetchFn(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-QB-Sync-Token": token,
+      },
+      body: JSON.stringify({ order }),
+      signal: controller.signal,
+    })
+  } finally {
+    clearTimeout(timeout)
+  }
+}
 
 export default async function qbSyncOrderImportHandler({
   event: { data },
@@ -57,14 +92,7 @@ export default async function qbSyncOrderImportHandler({
       return
     }
 
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-QB-Sync-Token": token,
-      },
-      body: JSON.stringify({ order }),
-    })
+    const response = await postOrderToQbSync(endpoint, token, order)
 
     if (!response.ok) {
       const body = await response.text().catch(() => "")
@@ -76,10 +104,9 @@ export default async function qbSyncOrderImportHandler({
 
     logger.info(`[qb-sync-order-import] imported order=${data.id}`)
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
     logger.error(
-      `[qb-sync-order-import] failed for order ${data.id}: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `[qb-sync-order-import] failed for order ${data.id}: ${message}`
     )
   }
 }
