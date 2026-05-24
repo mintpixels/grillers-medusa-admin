@@ -44,6 +44,47 @@ describe("order email rendering", () => {
     expect(email.text).toContain("1 x Kosher American Angus Boneless Ribeye Roast")
   })
 
+  it("does not render QuickBooks product titles as customer email subtitles", () => {
+    const accountingTitle =
+      "10 lb. TUBE Ground Beef (Alle) Institutional, (75/25) Uncooked, NOT Kosher for Passover @ $8.49/lb."
+    const order = normalizeOrderForEmail({
+      id: "order_email_3",
+      display_id: 34,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 84.9,
+      subtotal: 84.9,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "line_3",
+          title: accountingTitle,
+          product_title: accountingTitle,
+          variant_title: accountingTitle,
+          metadata: {
+            strapi_title: "Ground Beef 75/25 - 10 lb Tube",
+          },
+          quantity: 1,
+          unit_price: 84.9,
+          total: 84.9,
+        },
+      ],
+    })
+
+    expect(order.items?.[0]).toMatchObject({
+      display_title: "Ground Beef 75/25 - 10 lb Tube",
+      source_title: accountingTitle,
+      variant_title: null,
+    })
+
+    const email = buildOrderPlacedEmail(order)
+    expect(email.html).toContain("Ground Beef 75/25 - 10 lb Tube")
+    expect(email.html).not.toContain("Institutional, (75/25)")
+    expect(email.text).not.toContain("Institutional, (75/25)")
+  })
+
   it("falls back through variant product data when product_title is absent", () => {
     const order = normalizeOrderForEmail({
       id: "order_email_2",

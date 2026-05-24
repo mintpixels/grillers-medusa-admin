@@ -107,12 +107,25 @@ const variantTitleForItem = (
   displayTitle: string
 ): string | null => {
   const variant = objectValue(item.variant)
+  const product = objectValue(item.product)
+  const variantProduct = objectValue(variant.product)
   const title =
     cleanText(item.variant_title) ||
     cleanText(variant.title) ||
     cleanText(item.product_variant_title)
 
-  if (!title || title.toLowerCase() === displayTitle.toLowerCase()) {
+  const hiddenTitles = [
+    displayTitle,
+    item.title,
+    item.product_title,
+    product.title,
+    variantProduct.title,
+    "Default variant",
+  ]
+    .map((value) => cleanText(value)?.toLowerCase())
+    .filter(Boolean)
+
+  if (!title || hiddenTitles.includes(title.toLowerCase())) {
     return null
   }
 
