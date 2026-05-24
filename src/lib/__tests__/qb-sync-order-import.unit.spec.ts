@@ -31,13 +31,13 @@ describe("qb-sync order import subscriber", () => {
   it("requests order item relations that include Medusa computed quantity and variant data", () => {
     expect(ORDER_FIELDS).toEqual(
       expect.arrayContaining([
-        "*items",
-        "*items.variant",
-        "*items.variant.product",
-        "+summary",
+        "items.*",
+        "items.detail.*",
+        "items.variant.*",
+        "items.variant.product.*",
       ])
     )
-    expect(ORDER_FIELDS).not.toContain("items.variant.*")
+    expect(ORDER_FIELDS).not.toContain("*items")
   })
 
   it("normalizes Medusa order line totals when graph payloads omit computed item fields", () => {
