@@ -35,9 +35,12 @@ describe("qb-sync order import subscriber", () => {
         "items.detail.*",
         "items.variant.*",
         "items.variant.product.*",
+        "shipping_address.*",
+        "billing_address.*",
       ])
     )
     expect(ORDER_FIELDS).not.toContain("*items")
+    expect(ORDER_FIELDS).not.toContain("*shipping_address")
   })
 
   it("normalizes Medusa order line totals when graph payloads omit computed item fields", () => {
