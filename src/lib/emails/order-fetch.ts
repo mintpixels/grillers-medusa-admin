@@ -89,8 +89,10 @@ const displayTitleForItem = (item: Record<string, any>): string => {
   const metadata = objectValue(item.metadata)
 
   return (
+    cleanText(metadata.strapi_title) ||
     cleanText(metadata.display_title) ||
     cleanText(metadata.customer_title) ||
+    cleanText(metadata.medusa_product_title) ||
     cleanText(item.product_title) ||
     cleanText(variantProduct.title) ||
     cleanText(product.title) ||

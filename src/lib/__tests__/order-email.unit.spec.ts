@@ -2,7 +2,7 @@ import { normalizeOrderForEmail } from "../emails/order-fetch"
 import { buildOrderPlacedEmail } from "../emails/templates/order-placed"
 
 describe("order email rendering", () => {
-  it("uses customer-facing Medusa product titles instead of source accounting titles", () => {
+  it("uses customer-facing line metadata titles instead of source accounting titles", () => {
     const order = normalizeOrderForEmail({
       id: "order_email_1",
       display_id: 29,
@@ -17,8 +17,11 @@ describe("order email rendering", () => {
         {
           id: "line_1",
           title: "108A Bnls RIBEYE Roast Fresh Beef Choice Per LB",
-          product_title: "Kosher American Angus Boneless Ribeye Roast",
+          product_title: "108A Bnls RIBEYE Roast Fresh Beef Choice Per LB",
           variant_title: "12-14 lb",
+          metadata: {
+            strapi_title: "Kosher American Angus Boneless Ribeye Roast",
+          },
           detail: { quantity: 1 },
           unit_price: 84.9,
           total: 0,
