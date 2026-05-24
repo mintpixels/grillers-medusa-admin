@@ -20,12 +20,14 @@ type LayoutInput = {
 }
 
 const BRAND = {
-  blue: "#2D479D",
-  gold: "#BB925C",
+  blue: "#0B5A43",
+  gold: "#A97838",
   charcoal: "#2A2828",
-  black: "#001B23",
-  scroll: "#F0F0ED",
-  smoke: "#686674",
+  black: "#17201A",
+  scroll: "#F7F3EA",
+  smoke: "#6F665B",
+  line: "#E4DED2",
+  cream: "#FBFAF6",
   white: "#ffffff",
 }
 
@@ -47,7 +49,7 @@ export const renderEmail = ({
     <table cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 0 0;">
       <tr>
         <td align="center" style="border-radius:4px;background:${BRAND.blue};">
-          <a href="${escapeHtml(ctaUrl)}" style="display:inline-block;padding:14px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;font-weight:600;color:${BRAND.white};text-decoration:none;border-radius:4px;letter-spacing:0.3px;">${escapeHtml(ctaLabel)}</a>
+          <a href="${escapeHtml(ctaUrl)}" style="display:inline-block;padding:14px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;font-weight:700;color:${BRAND.white};text-decoration:none;border-radius:4px;letter-spacing:0;">${escapeHtml(ctaLabel)}</a>
         </td>
       </tr>
     </table>`
@@ -66,7 +68,7 @@ export const renderEmail = ({
         .email-padding{padding:24px 20px !important;}
         .email-hero{padding:32px 20px !important;}
         .email-hero h1{font-size:24px !important;}
-        .stack-col{display:block !important;width:100% !important;padding:0 0 20px 0 !important;border-left:none !important;border-top:1px solid ${BRAND.scroll} !important;padding-top:20px !important;}
+        .stack-col{display:block !important;width:100% !important;padding:0 0 20px 0 !important;border-left:none !important;border-top:1px solid ${BRAND.line} !important;padding-top:20px !important;}
         .stack-col-first{padding-bottom:20px !important;border-top:none !important;}
       }
       a { color: ${BRAND.blue}; }
@@ -77,19 +79,19 @@ export const renderEmail = ({
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:${BRAND.scroll};">
       <tr>
         <td align="center" style="padding:32px 16px;">
-          <table role="presentation" class="email-container" width="600" cellpadding="0" cellspacing="0" border="0" style="background:${BRAND.white};border-radius:8px;overflow:hidden;max-width:600px;width:100%;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+          <table role="presentation" class="email-container" width="600" cellpadding="0" cellspacing="0" border="0" style="background:${BRAND.white};border-radius:8px;overflow:hidden;max-width:600px;width:100%;border:1px solid ${BRAND.line};">
             <tr>
-              <td class="email-hero" style="background:${BRAND.black};padding:36px 40px;">
-                <div style="font-family:Georgia,'Times New Roman',serif;font-size:13px;letter-spacing:3px;color:${BRAND.gold};text-transform:uppercase;">Griller's Pride</div>
-                <div style="font-size:11px;letter-spacing:2px;color:${BRAND.smoke};text-transform:uppercase;margin-top:4px;">Premium Kosher Meats</div>
+              <td class="email-hero" style="background:${BRAND.black};padding:30px 40px;">
+                <div style="font-family:Georgia,'Times New Roman',serif;font-size:19px;letter-spacing:0;color:${BRAND.white};font-weight:700;">Griller's Pride</div>
+                <div style="font-size:11px;letter-spacing:0;color:${BRAND.gold};text-transform:uppercase;margin-top:5px;">Premium Kosher Meats</div>
               </td>
             </tr>
             ${
               eyebrow || heading
                 ? `<tr>
                 <td class="email-padding" style="padding:36px 40px 8px 40px;">
-                  ${eyebrow ? `<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${BRAND.gold};font-weight:600;margin-bottom:12px;">${escapeHtml(eyebrow)}</div>` : ""}
-                  <h1 style="margin:0;font-size:28px;line-height:1.25;color:${BRAND.black};font-weight:700;letter-spacing:-0.3px;">${escapeHtml(heading)}</h1>
+                  ${eyebrow ? `<div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:${BRAND.gold};font-weight:700;margin-bottom:12px;">${escapeHtml(eyebrow)}</div>` : ""}
+                  <h1 style="margin:0;font-size:28px;line-height:1.25;color:${BRAND.black};font-weight:700;letter-spacing:0;">${escapeHtml(heading)}</h1>
                 </td>
               </tr>`
                 : ""
@@ -113,7 +115,7 @@ export const renderEmail = ({
               footerNote
                 ? `<tr>
                 <td class="email-padding" style="padding:0 40px 32px 40px;">
-                  <div style="background:${BRAND.scroll};border-radius:4px;padding:18px 20px;font-size:13px;line-height:1.6;color:${BRAND.charcoal};">${footerNote}</div>
+                  <div style="background:${BRAND.cream};border:1px solid ${BRAND.line};border-radius:6px;padding:18px 20px;font-size:13px;line-height:1.6;color:${BRAND.charcoal};">${footerNote}</div>
                 </td>
               </tr>`
                 : ""
@@ -123,7 +125,7 @@ export const renderEmail = ({
                 <div style="font-size:13px;color:${BRAND.smoke};line-height:1.6;">
                   Questions? <a href="mailto:${escapeHtml(SUPPORT_EMAIL)}" style="color:${BRAND.blue};text-decoration:none;font-weight:600;">${escapeHtml(SUPPORT_EMAIL)}</a> &nbsp;|&nbsp; <a href="tel:${escapeHtml(SUPPORT_PHONE.replace(/\D/g, ""))}" style="color:${BRAND.blue};text-decoration:none;font-weight:600;">${escapeHtml(SUPPORT_PHONE)}</a>
                 </div>
-                <div style="font-size:11px;color:${BRAND.smoke};margin-top:14px;letter-spacing:0.5px;">
+                <div style="font-size:11px;color:${BRAND.smoke};margin-top:14px;letter-spacing:0;">
                   &copy; Griller's Pride &middot; <a href="${escapeHtml(STOREFRONT_URL)}" style="color:${BRAND.smoke};text-decoration:none;">grillerspride.com</a>
                 </div>
               </td>

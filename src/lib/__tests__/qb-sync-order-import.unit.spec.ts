@@ -1,5 +1,6 @@
 import {
   ORDER_FIELDS,
+  buildQbSyncSignature,
   normalizeOrderForQbSync,
   postOrderToQbSync,
 } from "../../subscribers/qb-sync-order-import"
@@ -19,13 +20,20 @@ describe("qb-sync order import subscriber", () => {
       "https://sync.example.test/api/medusa/orders",
       expect.objectContaining({
         method: "POST",
-        headers: {
+        headers: expect.objectContaining({
           "Content-Type": "application/json",
           "X-QB-Sync-Token": "sync-token",
-        },
+          "X-QB-Sync-Timestamp": expect.any(String),
+          "X-QB-Sync-Signature": expect.any(String),
+        }),
         body: JSON.stringify({ order: { id: "order_1" } }),
       })
     )
+  })
+
+  it("signs order import payloads with a timestamped HMAC", () => {
+    expect(buildQbSyncSignature('{"order":{"id":"order_1"}}', "123", "secret"))
+      .toHaveLength(64)
   })
 
   it("requests order item relations that include Medusa computed quantity and variant data", () => {

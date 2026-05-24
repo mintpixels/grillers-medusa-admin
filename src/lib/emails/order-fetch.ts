@@ -5,32 +5,117 @@ const ORDER_FIELDS = [
   "display_id",
   "email",
   "currency_code",
+  "created_at",
   "total",
   "subtotal",
+  "item_total",
+  "item_subtotal",
   "tax_total",
   "shipping_total",
   "discount_total",
+  "shipping_subtotal",
+  "shipping_tax_total",
   "metadata",
-  "items.id",
-  "items.title",
-  "items.quantity",
-  "items.unit_price",
-  "items.thumbnail",
-  "items.variant_title",
-  "shipping_address.first_name",
-  "shipping_address.last_name",
-  "shipping_address.company",
-  "shipping_address.address_1",
-  "shipping_address.address_2",
-  "shipping_address.city",
-  "shipping_address.province",
-  "shipping_address.postal_code",
-  "shipping_address.country_code",
-  "shipping_address.phone",
-  "shipping_methods.name",
-  "shipping_methods.amount",
+  "items.*",
+  "items.detail.*",
+  "items.variant.*",
+  "items.variant.product.*",
+  "shipping_address.*",
+  "billing_address.*",
+  "shipping_methods.*",
   "payment_collections.payments.provider_id",
+  "payment_collections.payments.amount",
+  "payment_collections.payments.currency_code",
 ]
+
+type MaybeMoney = number | string | { value?: number | string } | null | undefined
+
+const numeric = (value: MaybeMoney): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value
+  }
+
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  if (
+    value &&
+    typeof value === "object" &&
+    "value" in value &&
+    (typeof value.value === "number" || typeof value.value === "string")
+  ) {
+    return numeric(value.value)
+  }
+
+  return null
+}
+
+const firstNumeric = (...values: MaybeMoney[]): number | null => {
+  for (const value of values) {
+    const parsed = numeric(value)
+    if (parsed !== null) {
+      return parsed
+    }
+  }
+
+  return null
+}
+
+const firstPositiveNumeric = (...values: MaybeMoney[]): number | null => {
+  for (const value of values) {
+    const parsed = numeric(value)
+    if (parsed !== null && parsed > 0) {
+      return parsed
+    }
+  }
+
+  return null
+}
+
+const cleanText = (value: unknown): string | null => {
+  const text = String(value ?? "").trim()
+  return text === "" ? null : text
+}
+
+const objectValue = (value: unknown): Record<string, any> =>
+  value && typeof value === "object" ? (value as Record<string, any>) : {}
+
+const displayTitleForItem = (item: Record<string, any>): string => {
+  const variant = objectValue(item.variant)
+  const product = objectValue(item.product)
+  const variantProduct = objectValue(variant.product)
+  const metadata = objectValue(item.metadata)
+
+  return (
+    cleanText(metadata.display_title) ||
+    cleanText(metadata.customer_title) ||
+    cleanText(item.product_title) ||
+    cleanText(variantProduct.title) ||
+    cleanText(product.title) ||
+    cleanText(variant.title) ||
+    cleanText(item.title) ||
+    "Griller's Pride item"
+  )
+}
+
+const variantTitleForItem = (
+  item: Record<string, any>,
+  displayTitle: string
+): string | null => {
+  const variant = objectValue(item.variant)
+  const title =
+    cleanText(item.variant_title) ||
+    cleanText(variant.title) ||
+    cleanText(item.product_variant_title)
+
+  if (!title || title.toLowerCase() === displayTitle.toLowerCase()) {
+    return null
+  }
+
+  return title
+}
 
 export type OrderForEmail = {
   id: string
@@ -46,10 +131,27 @@ export type OrderForEmail = {
   items?: Array<{
     id: string
     title?: string
+    display_title?: string
+    source_title?: string | null
     quantity?: number
     unit_price?: number
+    line_total?: number
     thumbnail?: string | null
     variant_title?: string | null
+    product_title?: string | null
+    variant?: {
+      id?: string
+      title?: string | null
+      sku?: string | null
+      product?: {
+        id?: string
+        title?: string | null
+        thumbnail?: string | null
+      } | null
+    } | null
+    detail?: {
+      quantity?: number | string | null
+    } | null
   }>
   shipping_address?: {
     first_name?: string | null
@@ -77,7 +179,106 @@ export const fetchOrderForEmail = async (
     fields: ORDER_FIELDS,
     filters: { id: orderId },
   })
-  return (orders?.[0] as OrderForEmail) || null
+  const order = orders?.[0] as Record<string, unknown> | undefined
+  return order ? normalizeOrderForEmail(order) : null
+}
+
+export const normalizeOrderForEmail = (
+  order: Record<string, unknown>
+): OrderForEmail => {
+  const rawItems = Array.isArray(order.items) ? order.items : []
+  const items = rawItems.map((rawItem) => {
+    const item = objectValue(rawItem)
+    const detail = objectValue(item.detail)
+    const variant = objectValue(item.variant)
+    const variantProduct = objectValue(variant.product)
+    const quantity = firstNumeric(
+      item.quantity,
+      detail.quantity,
+      item.raw_quantity,
+      detail.raw_quantity
+    ) ?? 1
+    const unitPrice = firstNumeric(item.unit_price, item.raw_unit_price)
+    const computedLineTotal = unitPrice !== null ? unitPrice * quantity : null
+    const lineTotal =
+      firstPositiveNumeric(
+        item.total,
+        item.subtotal,
+        item.item_total,
+        item.item_subtotal,
+        item.original_total,
+        computedLineTotal
+      ) ??
+      firstNumeric(
+        item.total,
+        item.subtotal,
+        item.item_total,
+        item.item_subtotal,
+        item.original_total,
+        computedLineTotal
+      ) ??
+      0
+    const effectiveUnitPrice =
+      unitPrice !== null
+        ? unitPrice
+        : quantity > 0 && lineTotal > 0
+          ? lineTotal / quantity
+          : 0
+    const displayTitle = displayTitleForItem(item)
+    const thumbnail =
+      cleanText(item.thumbnail) ||
+      cleanText(variantProduct.thumbnail) ||
+      cleanText(variant.thumbnail)
+
+    return {
+      ...item,
+      id: String(item.id || ""),
+      title: displayTitle,
+      display_title: displayTitle,
+      source_title: cleanText(item.title),
+      variant_title: variantTitleForItem(item, displayTitle),
+      quantity,
+      unit_price: effectiveUnitPrice,
+      line_total: lineTotal,
+      thumbnail,
+    }
+  })
+
+  const itemSubtotal = items.reduce((sum, item) => sum + (item.line_total || 0), 0)
+  const shippingMethods = Array.isArray(order.shipping_methods)
+    ? order.shipping_methods
+    : []
+  const shippingFromMethods = shippingMethods.reduce(
+    (sum, method) => sum + (numeric(objectValue(method).amount) ?? 0),
+    0
+  )
+  const shippingTotal =
+    firstNumeric(order.shipping_total as MaybeMoney, order.shipping_subtotal as MaybeMoney) ??
+    shippingFromMethods
+  const taxTotal =
+    firstNumeric(order.tax_total as MaybeMoney, order.shipping_tax_total as MaybeMoney) ?? 0
+  const discountTotal = firstNumeric(order.discount_total as MaybeMoney) ?? 0
+  const subtotal =
+    firstPositiveNumeric(
+      order.subtotal as MaybeMoney,
+      order.item_total as MaybeMoney,
+      order.item_subtotal as MaybeMoney
+    ) ??
+    itemSubtotal
+  const total =
+    firstPositiveNumeric(order.total as MaybeMoney) ??
+    subtotal + shippingTotal + taxTotal - discountTotal
+
+  return {
+    ...(order as OrderForEmail),
+    currency_code: String(order.currency_code || "usd"),
+    items,
+    subtotal,
+    total,
+    shipping_total: shippingTotal,
+    tax_total: taxTotal,
+    discount_total: discountTotal,
+  }
 }
 
 export const getPaymentLabel = (order: OrderForEmail): string => {

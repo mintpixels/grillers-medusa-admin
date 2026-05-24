@@ -27,10 +27,12 @@ const sampleOrder: OrderForEmail = {
   items: [
     {
       id: "li_1",
-      title: "Kosher American Angus Boneless Prime Rib",
+      title: "108A Bnls RIBEYE Roast Fresh Beef Choice Per LB",
+      product_title: "Kosher American Angus Boneless Prime Rib",
       variant_title: "12-14 lb",
       quantity: 1,
       unit_price: 441.87,
+      line_total: 441.87,
       thumbnail: null,
     },
   ],
@@ -65,10 +67,12 @@ const samplePickupOrder: OrderForEmail = {
   items: [
     {
       id: "li_2",
-      title: "Kosher Wagyu Brisket",
+      title: "BRISKET WAGYU BEEF RAW FROZEN PER LB",
+      product_title: "Kosher Wagyu Brisket",
       variant_title: "8-10 lb",
       quantity: 1,
       unit_price: 160.0,
+      line_total: 160.0,
       thumbnail: null,
     },
   ],

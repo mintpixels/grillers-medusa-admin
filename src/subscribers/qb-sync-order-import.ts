@@ -1,4 +1,5 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
+import { createHmac } from "node:crypto"
 
 export const ORDER_FIELDS = [
   "id",
@@ -37,7 +38,6 @@ export const ORDER_FIELDS = [
 ]
 
 const IMPORT_TIMEOUT_MS = 15_000
-
 function numeric(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value
@@ -139,23 +139,46 @@ export function normalizeOrderForQbSync(
   }
 }
 
+export function buildQbSyncSignature(
+  body: string,
+  timestamp: string,
+  secret: string
+): string {
+  return createHmac("sha256", secret)
+    .update(`${timestamp}.${body}`)
+    .digest("hex")
+}
+
 export async function postOrderToQbSync(
   endpoint: string,
   token: string,
   order: Record<string, unknown>,
-  fetchFn: typeof fetch = fetch
+  fetchFn: typeof fetch = fetch,
+  signingSecret = process.env.QB_SYNC_ORDER_IMPORT_SIGNING_SECRET || token
 ): Promise<Response> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), IMPORT_TIMEOUT_MS)
+  const body = JSON.stringify({ order })
+  const timestamp = String(Date.now())
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-QB-Sync-Token": token,
+  }
+
+  if (signingSecret) {
+    headers["X-QB-Sync-Timestamp"] = timestamp
+    headers["X-QB-Sync-Signature"] = buildQbSyncSignature(
+      body,
+      timestamp,
+      signingSecret
+    )
+  }
 
   try {
     return await fetchFn(endpoint, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-QB-Sync-Token": token,
-      },
-      body: JSON.stringify({ order }),
+      headers,
+      body,
       signal: controller.signal,
     })
   } finally {
