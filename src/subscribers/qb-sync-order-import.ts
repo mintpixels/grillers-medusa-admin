@@ -29,7 +29,7 @@ const ORDER_FIELDS = [
   "items.variant_sku",
   "items.product_title",
   "items.variant_title",
-  "+items.metadata",
+  "items.metadata",
   "items.variant.*",
   "items.variant.product.*",
   "shipping_methods.*",
