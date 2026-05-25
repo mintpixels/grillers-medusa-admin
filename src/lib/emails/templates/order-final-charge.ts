@@ -37,7 +37,7 @@ export const buildOrderFinalChargeEmail = ({
     subtitle:
       delta === 0
         ? `Your cut came in ${direction}.`
-        : `Your cut came in ${direction} — ${isHigher ? "+" : "-"}${formatMoney(Math.abs(delta), currency)} vs. the estimate.`,
+        : `Your cut came in ${direction}: ${isHigher ? "+" : "-"}${formatMoney(Math.abs(delta), currency)} vs. the estimate.`,
     note:
       delta === 0
         ? undefined
@@ -65,15 +65,15 @@ export const buildOrderFinalChargeEmail = ({
   const bodyHtml = `
     ${headlineCard}
     <p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;">
-      Our butchers cut and weighed your order this morning. Below is your final charge — pay only for what you got.
+      Our butchers cut and weighed your order this morning. Below is your final charge. You pay only for what you got.
     </p>
-    <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#735048;font-weight:600;margin:24px 0 12px 0;">Charge breakdown</div>
+    <div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:#8B5E2D;font-weight:700;margin:24px 0 12px 0;">Charge breakdown</div>
     <div style="margin-bottom:28px;">${renderTotalsTable(totalsRows)}</div>
-    <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#735048;font-weight:600;margin:24px 0 12px 0;">Items</div>
+    <div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:#8B5E2D;font-weight:700;margin:24px 0 12px 0;">Items</div>
     <table width="100%" cellpadding="0" cellspacing="0" border="0">${renderItemRows(order.items, currency)}</table>`
 
   const { html } = renderEmail({
-    preheader: `Final charge ${formatMoney(finalTotal, currency)} — ${isHigher ? "+" : isLower ? "-" : "±"}${formatMoney(Math.abs(delta), currency)} from your estimate.`,
+    preheader: `Final charge ${formatMoney(finalTotal, currency)}: ${isHigher ? "+" : isLower ? "-" : "±"}${formatMoney(Math.abs(delta), currency)} from your estimate.`,
     eyebrow: "Catch-weight final charge",
     heading: `Final charge: ${formatMoney(finalTotal, currency)}`,
     intro:
@@ -81,7 +81,7 @@ export const buildOrderFinalChargeEmail = ({
     bodyHtml,
     ctaUrl: orderUrl,
     ctaLabel: "View order",
-    footerNote: `Catch-weight pricing means you only pay for what you actually receive — within ±15% of the estimate. <a href="${STOREFRONT_URL}/us/page/catch-weight-pricing">Learn how it works</a>.`,
+    footerNote: `Catch-weight pricing means you only pay for what you actually receive, within ±15% of the estimate. <a href="${STOREFRONT_URL}/us/page/catch-weight-pricing">Learn how it works</a>.`,
   })
 
   const text = renderTextFromLines([
@@ -95,7 +95,7 @@ export const buildOrderFinalChargeEmail = ({
   ])
 
   return {
-    subject: `Final charge ${formatMoney(finalTotal, currency)}${display ? " — order " + display : ""}`,
+    subject: `Final charge ${formatMoney(finalTotal, currency)}${display ? " - order " + display : ""}`,
     html,
     text,
   }

@@ -2,6 +2,7 @@ import { fetchOrderForEmail, normalizeOrderForEmail } from "../emails/order-fetc
 import { buildOrderPlacedEmail } from "../emails/templates/order-placed"
 import { buildOrderCanceledEmail } from "../emails/templates/order-canceled"
 import { buildRefundIssuedEmail } from "../emails/templates/refund-issued"
+import { buildPasswordResetEmail } from "../emails/templates/password-reset"
 
 describe("order email rendering", () => {
   it("uses customer-facing line metadata titles instead of source accounting titles", () => {
@@ -376,6 +377,18 @@ describe("order email rendering", () => {
     expect(email.html).toContain("/images/logos/logo-horizontal.png")
     expect(email.html).toContain("Refund of $5.00")
     expect(email.text).toContain("Refund issued: $5.00")
+  })
+
+  it("renders password reset emails with the shared website logo", () => {
+    const email = buildPasswordResetEmail({
+      email: "customer@example.com",
+      token: "reset-token",
+    })
+
+    expect(email.html).toContain("/images/logos/logo-horizontal.png")
+    expect(email.html).toContain("Reset password")
+    expect(email.html).toContain("customer%40example.com")
+    expect(email.html).not.toContain("Premium &middot; Kosher &middot; Hand-cut")
   })
 
   it("suppresses QuickBooks titles that arrive from expanded variant records", () => {

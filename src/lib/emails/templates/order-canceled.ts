@@ -15,10 +15,10 @@ export const buildOrderCanceledEmail = ({
 
   const bodyHtml = `
     <p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;">
-      Your order${display ? ` <strong>${escapeHtml(display)}</strong>` : ""} has been canceled. Any pending authorization on your card will be released — most banks reflect the release within 1–5 business days.
+      Your order${display ? ` <strong>${escapeHtml(display)}</strong>` : ""} has been canceled. Any pending authorization on your card will be released, and most banks reflect the release within 1-5 business days.
     </p>
-    ${reason ? `<div style="background:#F0F0ED;border-left:4px solid #951D20;padding:14px 18px;border-radius:4px;margin:20px 0;font-size:14px;color:#2A2828;"><strong>Reason:</strong> ${escapeHtml(reason)}</div>` : ""}
-    <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#735048;font-weight:600;margin:24px 0 12px 0;">Canceled items</div>
+    ${reason ? `<div style="background:#FBFAF6;border:1px solid #E4DED2;padding:14px 18px;border-radius:6px;margin:20px 0;font-size:14px;color:#2A2828;"><strong style="color:#17201A;">Reason:</strong> ${escapeHtml(reason)}</div>` : ""}
+    <div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:#8B5E2D;font-weight:700;margin:24px 0 12px 0;">Canceled items</div>
     <table width="100%" cellpadding="0" cellspacing="0" border="0">${renderItemRows(order.items, currency)}</table>
     <p style="margin:28px 0 0 0;font-size:14px;line-height:1.6;color:#2A2828;">
       If this cancellation was a mistake, reach out to us right away at <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a> and we'll help sort it out.
@@ -38,20 +38,20 @@ export const buildOrderCanceledEmail = ({
   const text = renderTextFromLines([
     `Order canceled${display ? " " + display : ""}`,
     "",
-    "Your order has been canceled. Any pending authorization will be released within 1–5 business days.",
+    "Your order has been canceled. Any pending authorization will be released within 1-5 business days.",
     reason ? `Reason: ${reason}` : "",
     "",
     "Items:",
     ...(order.items?.map(
       (i) =>
-        `  ${i.quantity} x ${i.title}${i.sku ? ` (SKU ${i.sku})` : ""} — ${formatMoney((i.unit_price || 0) * (i.quantity || 0), currency)}`
+        `  ${i.quantity} x ${i.title}${i.sku ? ` (SKU ${i.sku})` : ""}: ${formatMoney((i.unit_price || 0) * (i.quantity || 0), currency)}`
     ) || []),
     "",
     `Need help? ${SUPPORT_EMAIL}`,
   ])
 
   return {
-    subject: `Order canceled${display ? " " + display : ""} — Griller's Pride`,
+    subject: `Order canceled${display ? " " + display : ""} - Griller's Pride`,
     html,
     text,
   }

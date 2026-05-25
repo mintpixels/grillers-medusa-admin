@@ -56,7 +56,7 @@ const renderField = (label: string, value?: string | number | null) => {
   return `
     <tr>
       <td style="padding:8px 12px 8px 0;color:#686674;font-size:13px;white-space:nowrap;vertical-align:top;">${escapeHtml(label)}</td>
-      <td style="padding:8px 0;color:#001B23;font-size:13px;vertical-align:top;">${escapeHtml(String(value))}</td>
+      <td style="padding:8px 0;color:#17201A;font-size:13px;vertical-align:top;">${escapeHtml(String(value))}</td>
     </tr>`
 }
 
@@ -81,9 +81,9 @@ export const buildLegacyReorderRequestEmail = ({
       : ""
 
   const bodyHtml = `
-    <div style="background:#F0F0ED;border-left:4px solid #BB925C;padding:18px 20px;border-radius:4px;margin-bottom:24px;">
-      <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#735048;font-weight:600;margin-bottom:6px;">Customer asked staff to reorder</div>
-      <div style="font-size:18px;font-weight:600;color:#001B23;line-height:1.3;">${escapeHtml(title)}</div>
+    <div style="background:#FBFAF6;border:1px solid #E4DED2;padding:18px 20px;border-radius:6px;margin-bottom:24px;">
+      <div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:#8B5E2D;font-weight:700;margin-bottom:6px;">Customer asked staff to reorder</div>
+      <div style="font-size:18px;font-weight:700;color:#17201A;line-height:1.3;">${escapeHtml(title)}</div>
       ${
         item.sku
           ? `<div style="font-size:13px;color:#686674;margin-top:6px;">SKU ${escapeHtml(item.sku)}</div>`
@@ -91,14 +91,14 @@ export const buildLegacyReorderRequestEmail = ({
       }
     </div>
 
-    <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#735048;font-weight:600;margin-bottom:10px;">Customer</div>
+    <div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:#8B5E2D;font-weight:700;margin-bottom:10px;">Customer</div>
     <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
       ${renderField("Name", customerName)}
       ${renderField("Email", customerEmail)}
       ${renderField("Customer ID", customerId)}
     </table>
 
-    <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#735048;font-weight:600;margin-bottom:10px;">Historical item</div>
+    <div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:#8B5E2D;font-weight:700;margin-bottom:10px;">Historical item</div>
     <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
       ${renderField("Request ID", requestId)}
       ${renderField("History key", item.key)}

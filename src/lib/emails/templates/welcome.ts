@@ -16,13 +16,13 @@ export const buildWelcomeEmail = ({
       Your account is ready. From here you can place orders, track shipments, save addresses for faster checkout, and view your order history any time.
     </p>
     <p style="margin:0 0 22px 0;font-size:15px;line-height:1.65;color:#2A2828;">
-      A quick note on how we work: most cuts are sold by the pound, so we use <strong>catch-weight pricing</strong> — your card is authorized for an estimate at checkout, then we weigh and charge the actual amount (within ±15%) the morning your order ships. You only pay for what you get.
+      A quick note on how we work: most cuts are sold by the pound, so we use <strong>catch-weight pricing</strong>. Your card is authorized for an estimate at checkout, then we weigh and charge the actual amount (within ±15%) the morning your order ships. You only pay for what you get.
     </p>
     <table cellpadding="0" cellspacing="0" border="0" style="margin:24px 0;width:100%;">
       <tr>
-        <td style="background:#F0F0ED;padding:18px 20px;border-radius:4px;">
-          <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#735048;font-weight:600;margin-bottom:8px;">Your account</div>
-          <div style="font-size:14px;color:#001B23;">${escapeHtml(email)}</div>
+        <td style="background:#FBFAF6;border:1px solid #E4DED2;padding:18px 20px;border-radius:6px;">
+          <div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:#8B5E2D;font-weight:700;margin-bottom:8px;">Your account</div>
+          <div style="font-size:14px;color:#17201A;">${escapeHtml(email)}</div>
         </td>
       </tr>
     </table>`

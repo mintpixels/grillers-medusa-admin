@@ -39,7 +39,7 @@ export const buildOrderShippedEmail = ({
     <p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;color:#2A2828;">
       Your order has shipped. Below is a quick summary of what's on the way.
     </p>
-    <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#735048;font-weight:600;margin:24px 0 12px 0;">Items shipped</div>
+    <div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:#8B5E2D;font-weight:700;margin:24px 0 12px 0;">Items shipped</div>
     <table width="100%" cellpadding="0" cellspacing="0" border="0">${renderItemRows(order.items, currency)}</table>`
 
   const cta =
@@ -49,15 +49,15 @@ export const buildOrderShippedEmail = ({
       : orderUrl)
 
   const { html } = renderEmail({
-    preheader: `Your order${display ? " " + display : ""} has shipped${trackingNumber ? " — " + carrierLabel + " " + trackingNumber : ""}.`,
+    preheader: `Your order${display ? " " + display : ""} has shipped${trackingNumber ? ": " + carrierLabel + " " + trackingNumber : ""}.`,
     eyebrow: "On its way",
     heading: display ? `Order ${display} has shipped` : "Your order has shipped",
     intro:
-      "Good news — your order is on the move. Track your package below.",
+      "Good news, your order is on the move. Track your package below.",
     bodyHtml,
     ctaUrl: cta,
     ctaLabel: trackingUrl ? "Track package" : "View order",
-    footerNote: `Need to make a change? Reply to this email right away — once a package is in the carrier's hands we may not be able to intercept it.`,
+    footerNote: `Need to make a change? Reply to this email right away. Once a package is in the carrier's hands we may not be able to intercept it.`,
   })
 
   const text = renderTextFromLines([
@@ -74,7 +74,7 @@ export const buildOrderShippedEmail = ({
   ])
 
   return {
-    subject: `Shipped${display ? " " + display : ""} — your Griller's Pride order is on the way`,
+    subject: `Shipped${display ? " " + display : ""}: your Griller's Pride order is on the way`,
     html,
     text,
   }

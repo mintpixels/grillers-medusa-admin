@@ -19,7 +19,7 @@ export const buildRefundIssuedEmail = ({
     label: "Refund issued",
     title: formatMoney(refundAmount, currency),
     subtitle: "Returning to your original payment method.",
-    note: "Most banks reflect refunds within 3–10 business days, depending on your card issuer.",
+    note: "Most banks reflect refunds within 3-10 business days, depending on your card issuer.",
   })
 
   const bodyHtml = `
@@ -27,7 +27,7 @@ export const buildRefundIssuedEmail = ({
     <p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;">
       We've issued a refund of <strong>${formatMoney(refundAmount, currency)}</strong> on order${display ? ` <strong>${escapeHtml(display)}</strong>` : ""}. The funds will return to the same card you used at checkout.
     </p>
-    ${reason ? `<div style="background:#F0F0ED;padding:14px 18px;border-radius:4px;margin:20px 0;font-size:14px;color:#2A2828;"><strong>Reason:</strong> ${escapeHtml(reason)}</div>` : ""}
+    ${reason ? `<div style="background:#FBFAF6;border:1px solid #E4DED2;padding:14px 18px;border-radius:6px;margin:20px 0;font-size:14px;color:#2A2828;"><strong style="color:#17201A;">Reason:</strong> ${escapeHtml(reason)}</div>` : ""}
     <p style="margin:24px 0 0 0;font-size:14px;line-height:1.6;color:#2A2828;">
       Questions about this refund? Reply to this email or contact <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>.
     </p>`
@@ -40,20 +40,20 @@ export const buildRefundIssuedEmail = ({
     bodyHtml,
     ctaUrl: orderUrl,
     ctaLabel: "View order",
-    footerNote: `Refunds typically reflect within 3–10 business days depending on your card issuer.`,
+    footerNote: `Refunds typically reflect within 3-10 business days depending on your card issuer.`,
   })
 
   const text = renderTextFromLines([
-    `Refund issued: ${formatMoney(refundAmount, currency)}${display ? " — order " + display : ""}`,
+    `Refund issued: ${formatMoney(refundAmount, currency)}${display ? " - order " + display : ""}`,
     "",
-    "The funds will return to the card you used at checkout, typically within 3–10 business days.",
+    "The funds will return to the card you used at checkout, typically within 3-10 business days.",
     reason ? `Reason: ${reason}` : "",
     "",
     `View order: ${orderUrl}`,
   ])
 
   return {
-    subject: `Refund issued${display ? " — order " + display : ""} — Griller's Pride`,
+    subject: `Refund issued${display ? " - order " + display : ""} - Griller's Pride`,
     html,
     text,
   }

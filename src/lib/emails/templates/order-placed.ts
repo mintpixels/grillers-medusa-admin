@@ -109,7 +109,7 @@ export const buildOrderPlacedEmail = (order: OrderForEmail) => {
       <tr>
         <td valign="top" class="stack-col stack-col-first" style="width:50%;padding-right:24px;">
           <div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:#8B5E2D;font-weight:700;margin-bottom:10px;">${isPickup ? "Pickup contact" : "Shipping address"}</div>
-          <div style="font-size:14px;line-height:1.6;color:#17201A;">${addressBlock || '<span style="color:#6F665B;">&mdash;</span>'}</div>
+          <div style="font-size:14px;line-height:1.6;color:#17201A;">${addressBlock || '<span style="color:#6F665B;">Not provided</span>'}</div>
         </td>
         <td valign="top" class="stack-col" style="width:50%;padding-left:24px;border-left:1px solid #E4DED2;">
           <div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:#8B5E2D;font-weight:700;margin-bottom:10px;">Payment</div>
@@ -120,10 +120,10 @@ export const buildOrderPlacedEmail = (order: OrderForEmail) => {
     </table>`
 
   const footerNote = `
-    <strong style="color:#17201A;">A note on catch-weight pricing.</strong> Most cuts are sold by the pound. Your card has been <em>authorized</em> for the estimate above &mdash; not yet charged. We'll weigh your order before it ships and adjust the final charge within the allowed range. <a href="${STOREFRONT_URL}/us/page/catch-weight-pricing">Learn more</a>.`
+    <strong style="color:#17201A;">A note on catch-weight pricing.</strong> Most cuts are sold by the pound. Your card has been <em>authorized</em> for the estimate above, not yet charged. We'll weigh your order before it ships and adjust the final charge within the allowed range. <a href="${STOREFRONT_URL}/us/page/catch-weight-pricing">Learn more</a>.`
 
   const { html } = renderEmail({
-    preheader: `Order confirmed${display ? " " + display : ""} — total ${orderTotal}.`,
+    preheader: `Order confirmed${display ? " " + display : ""}: total ${orderTotal}.`,
     eyebrow: "Order confirmed",
     heading: display ? `Order ${display}` : "Order confirmed",
     intro:
@@ -140,12 +140,12 @@ export const buildOrderPlacedEmail = (order: OrderForEmail) => {
     "",
     "Thanks for your order. We've received it and our butchers are on it.",
     "",
-    `${shippingMethodName}${scheduledDate ? " — " + scheduledDate : ""}`,
+    `${shippingMethodName}${scheduledDate ? ": " + scheduledDate : ""}`,
     "",
     "Items:",
     ...(order.items?.map(
       (i) =>
-        `  ${formatQuantity(i.quantity)} x ${i.display_title || i.product_title || i.title}${i.sku ? ` (SKU ${i.sku})` : ""} — ${formatMoney(
+        `  ${formatQuantity(i.quantity)} x ${i.display_title || i.product_title || i.title}${i.sku ? ` (SKU ${i.sku})` : ""}: ${formatMoney(
           i.line_total ?? (i.unit_price || 0) * (i.quantity || 0),
           currency
         )}`
@@ -170,7 +170,7 @@ export const buildOrderPlacedEmail = (order: OrderForEmail) => {
   ])
 
   return {
-    subject: `Order confirmed${display ? " " + display : ""} — Griller's Pride`,
+    subject: `Order confirmed${display ? " " + display : ""} - Griller's Pride`,
     html,
     text,
   }
