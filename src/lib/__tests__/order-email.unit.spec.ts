@@ -256,6 +256,45 @@ describe("order email rendering", () => {
     )
   })
 
+  it("preserves useful packaging parentheses when removing legacy Passover text", () => {
+    const legacyTitle =
+      "Aarons Chicken Hotdogs (8 hotdogs, 12 oz.) NOT Kosher for Passover."
+    const order = normalizeOrderForEmail({
+      id: "order_email_parentheses",
+      display_id: 39,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 9.98,
+      subtotal: 9.98,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "line_parentheses",
+          title: legacyTitle,
+          product_title: legacyTitle,
+          metadata: {
+            strapi_title: legacyTitle,
+            sku: "1-06-52-1",
+          },
+          quantity: 2,
+          unit_price: 4.99,
+          total: 9.98,
+        },
+      ],
+    })
+
+    expect(order.items?.[0]).toMatchObject({
+      display_title: "Aarons Chicken Hotdogs (8 hotdogs, 12 oz.)",
+      sku: "1-06-52-1",
+    })
+
+    const email = buildOrderCanceledEmail({ order })
+    expect(email.html).toContain("Aarons Chicken Hotdogs (8 hotdogs, 12 oz.)")
+    expect(email.html).not.toContain("NOT Kosher for Passover")
+  })
+
   it("renders refund emails with the shared website logo", () => {
     const order = normalizeOrderForEmail({
       id: "order_email_refund_logo",
@@ -358,6 +397,10 @@ describe("order email rendering", () => {
       variant_title: "8-10 lb",
     })
     expect(order.total).toBe(157)
+
+    const email = buildOrderPlacedEmail(order)
+    expect(email.html).toContain("Kosher Wagyu Brisket")
+    expect(email.html).not.toContain("8-10 lb")
   })
 
   it("shows the Stripe-authorized total when tax is present", () => {

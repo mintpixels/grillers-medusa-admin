@@ -170,7 +170,7 @@ const cleanLegacyEmailTitle = (value: string | null): string | null => {
     .split(",")
     .map((segment) =>
       segment
-        .replace(/^[\s,.;:()/-]+|[\s,.;:()/-]+$/g, "")
+        .replace(/^[\s,.;:/-]+|[\s,.;:/-]+$/g, "")
         .replace(/\s{2,}/g, " ")
         .trim()
     )

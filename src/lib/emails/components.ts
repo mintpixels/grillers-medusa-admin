@@ -94,9 +94,7 @@ export const renderItemRows = (
         item.product_title ||
         item.title ||
         "Griller's Pride item"
-      const subtext = item.sku
-        ? `SKU ${item.sku}`
-        : item.variant_title
+      const subtext = item.sku ? `SKU ${item.sku}` : null
       const subtitle = subtext
         ? `<div style="color:#6F665B;font-size:13px;font-weight:600;line-height:1.35;margin-top:2px;">${escapeHtml(subtext)}</div>`
         : ""
