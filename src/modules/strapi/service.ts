@@ -8,6 +8,68 @@ export type StrapiModuleOptions = {
   strapiToken: string;
 };
 
+const QUICKBOOKS_LIST_ID_KEYS = [
+  "qbd_list_id",
+  "qbdListId",
+  "quickbooks_list_id",
+  "quickbooksListId",
+  "qb_list_id",
+  "qbListId",
+  "qbd_item_list_id",
+  "qbdItemListId",
+  "quickbooks_item_list_id",
+  "quickbooksItemListId",
+  "qb_item_list_id",
+  "qbItemListId",
+  "QuickBooksListId",
+  "ListID",
+];
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function textValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim() !== "") {
+    return value.trim();
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  return undefined;
+}
+
+function quickBooksListIdFromMetadata(metadata: unknown): string | undefined {
+  const record = objectRecord(metadata);
+
+  for (const key of QUICKBOOKS_LIST_ID_KEYS) {
+    const value = textValue(record[key]);
+    if (value) {
+      return value;
+    }
+  }
+
+  for (const namespace of ["qbd", "quickbooks", "qb"]) {
+    const nested = objectRecord(record[namespace]);
+    const value =
+      textValue(nested.list_id) ||
+      textValue(nested.item_list_id) ||
+      textValue(nested.item_id);
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
 export default class StrapiModuleService {
   private client: AxiosInstance;
   private logger: Logger;
@@ -144,11 +206,18 @@ export default class StrapiModuleService {
    */
   private mapToStrapiPayload(product: StoreProduct) {
     try {
+      const productQuickBooksListId = quickBooksListIdFromMetadata(
+        product.metadata
+      );
+
       return {
         medusa_product_id: product.id,
         Title: product.title,
         MedusaProduct: {
           ProductId: product.id,
+          ...(productQuickBooksListId
+            ? { QuickBooksListId: productQuickBooksListId }
+            : {}),
           Title: product.title,
           Description: product.description,
           Handle: product.handle,
@@ -156,8 +225,15 @@ export default class StrapiModuleService {
           Variants:
             product.variants?.map((variant: StoreProductVariant) => {
               const price = getPricesForVariant(variant) || null;
+              const variantQuickBooksListId =
+                quickBooksListIdFromMetadata(variant.metadata) ||
+                productQuickBooksListId;
+
               return {
                 VariantId: variant.id,
+                ...(variantQuickBooksListId
+                  ? { QuickBooksListId: variantQuickBooksListId }
+                  : {}),
                 Title: variant.title,
                 Price: {
                   CalculatedPriceNumber: price?.calculated_price_number ?? 0,
