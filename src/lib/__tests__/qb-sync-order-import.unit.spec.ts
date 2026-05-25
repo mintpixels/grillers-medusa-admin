@@ -79,4 +79,70 @@ describe("qb-sync order import subscriber", () => {
       subtotal: 169.8,
     })
   })
+
+  it("prefers Medusa raw line totals for multi-quantity orders", () => {
+    const order = normalizeOrderForQbSync({
+      id: "order_2",
+      total: 84.9,
+      subtotal: 84.9,
+      item_total: 169.8,
+      item_subtotal: 169.8,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          title: "Ground Beef",
+          quantity: 1,
+          detail: { quantity: 2 },
+          unit_price: 84.9,
+          total: 84.9,
+          subtotal: 84.9,
+          raw_quantity: { value: "2", precision: 20 },
+          raw_total: { value: "169.8", precision: 20 },
+          raw_subtotal: { value: "169.8", precision: 20 },
+        },
+      ],
+    })
+
+    expect(order.total).toBe(169.8)
+    expect(order.subtotal).toBe(169.8)
+    expect((order.items as any[])[0]).toMatchObject({
+      quantity: 2,
+      total: 169.8,
+      subtotal: 169.8,
+    })
+  })
+
+  it("keeps tax in the QuickBooks expected total when Medusa total is pre-tax", () => {
+    const order = normalizeOrderForQbSync({
+      id: "order_3",
+      total: 84.9,
+      subtotal: 84.9,
+      item_total: 91.47975,
+      item_subtotal: 84.9,
+      shipping_total: 0,
+      tax_total: 6.57975,
+      discount_total: 0,
+      items: [
+        {
+          title: "Ground Beef",
+          quantity: 1,
+          unit_price: 84.9,
+          total: 84.9,
+          subtotal: 84.9,
+          tax_total: 6.57975,
+          raw_total: { value: "91.47975", precision: 20 },
+          raw_subtotal: { value: "84.9", precision: 20 },
+        },
+      ],
+    })
+
+    expect(order.total).toBe(91.47975)
+    expect(order.subtotal).toBe(84.9)
+    expect((order.items as any[])[0]).toMatchObject({
+      total: 91.47975,
+      subtotal: 84.9,
+    })
+  })
 })

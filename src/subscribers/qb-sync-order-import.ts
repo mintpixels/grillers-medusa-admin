@@ -71,9 +71,15 @@ function firstNumeric(...values: unknown[]): number | null {
   return null
 }
 
-function hasPositiveValue(value: unknown): boolean {
-  const parsed = numeric(value)
-  return parsed !== null && parsed > 0
+function firstPositiveNumeric(...values: unknown[]): number | null {
+  for (const value of values) {
+    const parsed = numeric(value)
+    if (parsed !== null && parsed > 0) {
+      return parsed
+    }
+  }
+
+  return null
 }
 
 export function normalizeOrderForQbSync(
@@ -90,18 +96,34 @@ export function normalizeOrderForQbSync(
           item.detail && typeof item.detail === "object"
             ? (item.detail as Record<string, unknown>)
             : {}
-        const quantity = firstNumeric(item.quantity, detail.quantity) ?? 1
-        const computedLineTotal =
-          firstNumeric(item.unit_price, item.raw_unit_price) !== null
-            ? (firstNumeric(item.unit_price, item.raw_unit_price) as number) *
-              quantity
-            : null
-        const total = hasPositiveValue(item.total)
-          ? numeric(item.total)
-          : computedLineTotal ?? numeric(item.total)
-        const subtotal = hasPositiveValue(item.subtotal)
-          ? numeric(item.subtotal)
-          : computedLineTotal ?? numeric(item.subtotal)
+        const quantity =
+          firstNumeric(
+            item.raw_quantity,
+            detail.raw_quantity,
+            detail.quantity,
+            item.quantity
+          ) ?? 1
+        const unitPrice = firstNumeric(item.unit_price, item.raw_unit_price)
+        const computedLineSubtotal =
+          unitPrice !== null ? unitPrice * quantity : null
+        const subtotal =
+          firstPositiveNumeric(
+            item.raw_subtotal,
+            item.subtotal,
+            item.original_subtotal
+          ) ??
+          computedLineSubtotal ??
+          0
+        const total =
+          firstPositiveNumeric(
+            item.raw_total,
+            item.total,
+            item.original_total
+          ) ??
+          (computedLineSubtotal !== null
+            ? computedLineSubtotal + (numeric(item.tax_total) ?? 0)
+            : null) ??
+          subtotal
 
         return {
           ...item,
@@ -118,18 +140,32 @@ export function normalizeOrderForQbSync(
         return sum + (numeric((item as Record<string, unknown>).total) ?? 0)
       }, 0)
     : null
+  const itemSubtotal = Array.isArray(items)
+    ? items.reduce((sum, item) => {
+        if (!item || typeof item !== "object") return sum
+        return sum + (numeric((item as Record<string, unknown>).subtotal) ?? 0)
+      }, 0)
+    : null
 
   const shippingTotal = numeric(order.shipping_total) ?? 0
   const taxTotal = numeric(order.tax_total) ?? 0
   const discountTotal = numeric(order.discount_total) ?? 0
+  const grossItemTotal =
+    firstPositiveNumeric(order.item_total) ??
+    (itemTotal !== null && itemTotal > 0 ? itemTotal : null)
   const computedOrderTotal =
-    itemTotal !== null ? itemTotal + shippingTotal + taxTotal - discountTotal : null
-  const total = hasPositiveValue(order.total)
-    ? numeric(order.total)
-    : computedOrderTotal ?? numeric(order.total)
-  const subtotal = hasPositiveValue(order.subtotal)
-    ? numeric(order.subtotal)
-    : itemTotal ?? numeric(order.subtotal)
+    grossItemTotal !== null
+      ? grossItemTotal + shippingTotal - discountTotal
+      : null
+  const total =
+    computedOrderTotal !== null && computedOrderTotal > 0
+      ? computedOrderTotal
+      : firstNumeric(order.total, itemTotal, taxTotal)
+  const subtotal =
+    firstPositiveNumeric(order.item_subtotal, order.subtotal) ??
+    (itemSubtotal !== null && itemSubtotal > 0 ? itemSubtotal : null) ??
+    (itemTotal !== null && itemTotal > 0 ? itemTotal : null) ??
+    numeric(order.subtotal)
 
   return {
     ...order,
