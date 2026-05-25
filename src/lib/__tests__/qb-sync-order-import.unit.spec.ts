@@ -46,11 +46,14 @@ describe("qb-sync order import subscriber", () => {
         "items.variant.product.*",
         "shipping_address.*",
         "billing_address.*",
-        "+items.metadata",
-        "+items.variant.metadata",
-        "+items.variant.product.metadata",
+        "items.metadata",
+        "items.variant.metadata",
+        "items.variant.product.metadata",
       ])
     )
+    expect(ORDER_FIELDS).not.toContain("+items.metadata")
+    expect(ORDER_FIELDS).not.toContain("+items.variant.metadata")
+    expect(ORDER_FIELDS).not.toContain("+items.variant.product.metadata")
     expect(ORDER_FIELDS).not.toContain("*items")
     expect(ORDER_FIELDS).not.toContain("*shipping_address")
   })
