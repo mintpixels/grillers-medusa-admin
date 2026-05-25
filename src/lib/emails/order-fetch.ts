@@ -344,29 +344,37 @@ export const normalizeOrderForEmail = (
     ) ?? 1
     const unitPrice = firstNumeric(item.unit_price, item.raw_unit_price)
     const computedLineTotal = unitPrice !== null ? unitPrice * quantity : null
-    const lineTotal =
+    const lineSubtotal =
       firstPositiveNumeric(
-        item.total,
         item.subtotal,
-        item.item_total,
         item.item_subtotal,
-        item.original_total,
+        item.raw_subtotal,
+        item.original_subtotal,
         computedLineTotal
       ) ??
       firstNumeric(
-        item.total,
         item.subtotal,
-        item.item_total,
         item.item_subtotal,
-        item.original_total,
+        item.raw_subtotal,
+        item.original_subtotal,
         computedLineTotal
+      ) ??
+      firstPositiveNumeric(
+        item.total,
+        item.item_total,
+        item.raw_total
+      ) ??
+      firstNumeric(
+        item.total,
+        item.item_total,
+        item.raw_total
       ) ??
       0
     const effectiveUnitPrice =
       unitPrice !== null
         ? unitPrice
-        : quantity > 0 && lineTotal > 0
-          ? lineTotal / quantity
+        : quantity > 0 && lineSubtotal > 0
+          ? lineSubtotal / quantity
           : 0
     const displayTitle = displayTitleForItem(item)
     const sku = skuForItem(item)
@@ -385,7 +393,7 @@ export const normalizeOrderForEmail = (
       variant_title: variantTitleForItem(item, displayTitle),
       quantity,
       unit_price: effectiveUnitPrice,
-      line_total: lineTotal,
+      line_total: lineSubtotal,
       thumbnail,
     }
   })
@@ -401,19 +409,38 @@ export const normalizeOrderForEmail = (
   const shippingTotal =
     firstNumeric(order.shipping_total as MaybeMoney, order.shipping_subtotal as MaybeMoney) ??
     shippingFromMethods
-  const taxTotal =
-    firstNumeric(order.tax_total as MaybeMoney, order.shipping_tax_total as MaybeMoney) ?? 0
   const discountTotal = firstNumeric(order.discount_total as MaybeMoney) ?? 0
+  const explicitItemTotal = firstPositiveNumeric(order.item_total as MaybeMoney)
+  const explicitItemSubtotal = firstPositiveNumeric(
+    order.item_subtotal as MaybeMoney,
+    order.subtotal as MaybeMoney
+  )
+  const derivedTaxTotal =
+    explicitItemTotal !== null && explicitItemSubtotal !== null
+      ? Math.max(0, explicitItemTotal - explicitItemSubtotal)
+      : null
+  const explicitTaxTotal = firstNumeric(
+    order.tax_total as MaybeMoney,
+    order.shipping_tax_total as MaybeMoney
+  )
+  const taxTotal =
+    explicitTaxTotal !== null && explicitTaxTotal > 0
+      ? explicitTaxTotal
+      : derivedTaxTotal !== null && derivedTaxTotal > 0
+        ? derivedTaxTotal
+        : explicitTaxTotal ?? 0
   const subtotal =
     firstPositiveNumeric(
-      order.subtotal as MaybeMoney,
-      order.item_total as MaybeMoney,
-      order.item_subtotal as MaybeMoney
+      order.item_subtotal as MaybeMoney,
+      order.subtotal as MaybeMoney
     ) ??
     itemSubtotal
+  const computedTotal = subtotal + shippingTotal + taxTotal - discountTotal
   const total =
-    firstPositiveNumeric(order.total as MaybeMoney) ??
-    subtotal + shippingTotal + taxTotal - discountTotal
+    computedTotal > 0 &&
+    (taxTotal > 0 || shippingTotal > 0 || discountTotal > 0)
+      ? computedTotal
+      : firstPositiveNumeric(order.total as MaybeMoney) ?? computedTotal
 
   return {
     ...(order as OrderForEmail),

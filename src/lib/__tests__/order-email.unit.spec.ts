@@ -170,6 +170,50 @@ describe("order email rendering", () => {
     expect(order.total).toBe(157)
   })
 
+  it("shows the Stripe-authorized total when tax is present", () => {
+    const order = normalizeOrderForEmail({
+      id: "order_email_tax",
+      display_id: 43,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 84.9,
+      subtotal: 84.9,
+      item_total: 91.47975,
+      item_subtotal: 84.9,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "line_tax",
+          title: "Ground Beef 75/25 - 10 lb Tube",
+          quantity: 1,
+          unit_price: 84.9,
+          total: 91.47975,
+          subtotal: 84.9,
+          raw_total: { value: "91.47975", precision: 20 },
+          raw_subtotal: { value: "84.9", precision: 20 },
+        },
+      ],
+    })
+
+    expect(order.items?.[0]).toMatchObject({
+      line_total: 84.9,
+      unit_price: 84.9,
+    })
+    expect(order.tax_total).toBeCloseTo(6.57975)
+    expect(order.total).toBeCloseTo(91.47975)
+
+    const email = buildOrderPlacedEmail(order)
+    expect(email.html).toContain("Taxes (estimated)")
+    expect(email.html).toContain("$6.58")
+    expect(email.html).toContain("Total (authorized)")
+    expect(email.html).toContain("$91.48")
+    expect(email.html).toContain("Qty 1 &times; $84.90")
+    expect(email.text).toContain("Taxes (estimated): $6.58")
+    expect(email.text).toContain("Total (authorized): $91.48")
+  })
+
   it("hydrates Strapi titles before sending customer emails", async () => {
     const accountingTitle =
       "10 lb. TUBE Ground Beef (Alle) Institutional, (75/25) Uncooked, NOT Kosher for Passover @ $8.49/lb."
