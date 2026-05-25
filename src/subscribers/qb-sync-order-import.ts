@@ -1,4 +1,5 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { createHmac } from "node:crypto"
 
 export const ORDER_FIELDS = [
@@ -41,6 +42,8 @@ export const ORDER_FIELDS = [
 ]
 
 const IMPORT_TIMEOUT_MS = 15_000
+type QbdListIdFallbacks = Record<string, string>
+
 function numeric(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value
@@ -171,8 +174,43 @@ function itemQbdListId(item: Record<string, unknown>): string | null {
   )
 }
 
+function lookupKey(prefix: string, value: unknown): string | null {
+  const text = textValue(value)
+  return text ? `${prefix}:${text.toLowerCase()}` : null
+}
+
+function itemFallbackKeys(item: Record<string, unknown>): string[] {
+  const variant = objectRecord(item.variant)
+  const detail = objectRecord(item.detail)
+
+  return [
+    lookupKey("variant", item.variant_id),
+    lookupKey("variant", detail.variant_id),
+    lookupKey("variant", variant.id),
+    lookupKey("sku", item.variant_sku),
+    lookupKey("sku", item.sku),
+    lookupKey("sku", detail.sku),
+    lookupKey("sku", variant.sku),
+  ].filter((key): key is string => Boolean(key))
+}
+
+function fallbackQbdListId(
+  item: Record<string, unknown>,
+  fallbacks: QbdListIdFallbacks
+): string | null {
+  for (const key of itemFallbackKeys(item)) {
+    const value = textValue(fallbacks[key])
+    if (value) {
+      return value
+    }
+  }
+
+  return null
+}
+
 export function normalizeOrderForQbSync(
-  order: Record<string, unknown>
+  order: Record<string, unknown>,
+  qbdListIdFallbacks: QbdListIdFallbacks = {}
 ): Record<string, unknown> {
   const items = Array.isArray(order.items)
     ? order.items.map((rawItem) => {
@@ -186,7 +224,8 @@ export function normalizeOrderForQbSync(
             ? (item.detail as Record<string, unknown>)
             : {}
         const metadata = objectRecord(item.metadata)
-        const qbdListId = itemQbdListId(item)
+        const qbdListId =
+          itemQbdListId(item) || fallbackQbdListId(item, qbdListIdFallbacks)
         const quantity =
           firstNumeric(
             item.raw_quantity,
@@ -272,6 +311,84 @@ export function normalizeOrderForQbSync(
   }
 }
 
+export async function legacyQbdListIdFallbacksForOrder(
+  db: any,
+  order: Record<string, unknown>
+): Promise<QbdListIdFallbacks> {
+  const variantIds = new Set<string>()
+  const skus = new Set<string>()
+
+  if (Array.isArray(order.items)) {
+    for (const rawItem of order.items) {
+      if (!rawItem || typeof rawItem !== "object") {
+        continue
+      }
+
+      const item = rawItem as Record<string, unknown>
+      const variant = objectRecord(item.variant)
+      const detail = objectRecord(item.detail)
+
+      for (const value of [item.variant_id, detail.variant_id, variant.id]) {
+        const text = textValue(value)
+        if (text) {
+          variantIds.add(text)
+        }
+      }
+
+      for (const value of [
+        item.variant_sku,
+        item.sku,
+        detail.sku,
+        variant.sku,
+      ]) {
+        const text = textValue(value)
+        if (text) {
+          skus.add(text.toLowerCase())
+        }
+      }
+    }
+  }
+
+  if (!variantIds.size && !skus.size) {
+    return {}
+  }
+
+  const rows = await db("legacy_item_map")
+    .select(["qbd_item_list_id", "sku", "medusa_variant_id"])
+    .whereNull("deleted_at")
+    .andWhere((builder: any) => {
+      if (variantIds.size) {
+        builder.orWhereIn("medusa_variant_id", Array.from(variantIds))
+      }
+
+      if (skus.size) {
+        builder.orWhereIn(db.raw("lower(sku)"), Array.from(skus))
+      }
+    })
+    .orderBy("confidence", "desc")
+    .orderBy("updated_at", "desc")
+
+  const fallbacks: QbdListIdFallbacks = {}
+  for (const row of rows) {
+    const qbdListId = textValue(row.qbd_item_list_id)
+    if (!qbdListId) {
+      continue
+    }
+
+    const variantKey = lookupKey("variant", row.medusa_variant_id)
+    if (variantKey && !fallbacks[variantKey]) {
+      fallbacks[variantKey] = qbdListId
+    }
+
+    const skuKey = lookupKey("sku", row.sku)
+    if (skuKey && !fallbacks[skuKey]) {
+      fallbacks[skuKey] = qbdListId
+    }
+  }
+
+  return fallbacks
+}
+
 export function buildQbSyncSignature(
   body: string,
   timestamp: string,
@@ -325,6 +442,7 @@ export default async function qbSyncOrderImportHandler({
 }: SubscriberArgs<{ id: string }>) {
   const logger = container.resolve("logger")
   const query = container.resolve("query")
+  const db = container.resolve(ContainerRegistrationKeys.PG_CONNECTION)
   const endpoint = process.env.QB_SYNC_ORDER_IMPORT_URL
   const token = process.env.QB_SYNC_ORDER_IMPORT_TOKEN
 
@@ -351,7 +469,10 @@ export default async function qbSyncOrderImportHandler({
     const response = await postOrderToQbSync(
       endpoint,
       token,
-      normalizeOrderForQbSync(order)
+      normalizeOrderForQbSync(
+        order,
+        await legacyQbdListIdFallbacksForOrder(db, order)
+      )
     )
 
     if (!response.ok) {

@@ -1,6 +1,7 @@
 import {
   ORDER_FIELDS,
   buildQbSyncSignature,
+  legacyQbdListIdFallbacksForOrder,
   normalizeOrderForQbSync,
   postOrderToQbSync,
 } from "../../subscribers/qb-sync-order-import"
@@ -113,6 +114,85 @@ describe("qb-sync order import subscriber", () => {
     expect((order.items as any[])[0].metadata).toMatchObject({
       strapi_title: "Ground Beef",
       qbd_list_id: "800049D5-1779670076",
+    })
+  })
+
+  it("uses legacy item maps as a fallback when current product metadata is missing", () => {
+    const order = normalizeOrderForQbSync(
+      {
+        id: "order_legacy_map",
+        total: 25,
+        subtotal: 25,
+        shipping_total: 0,
+        tax_total: 0,
+        discount_total: 0,
+        items: [
+          {
+            title: "Renamed SKU Item",
+            quantity: 1,
+            unit_price: 25,
+            total: 25,
+            metadata: { strapi_title: "Renamed SKU Item" },
+            variant: {
+              id: "variant_legacy",
+              sku: "RM-91-TACHB",
+            },
+          },
+        ],
+      },
+      {
+        "variant:variant_legacy": "800007F7-1384114826",
+        "sku:rm-91-tachb": "WRONG-LOWER-PRIORITY",
+      }
+    )
+
+    expect((order.items as any[])[0].metadata).toMatchObject({
+      strapi_title: "Renamed SKU Item",
+      qbd_list_id: "800007F7-1384114826",
+    })
+  })
+
+  it("builds legacy item map fallbacks by variant id and SKU", async () => {
+    const whereNull = jest.fn().mockReturnThis()
+    const andWhere = jest.fn(function (callback) {
+      callback({
+        orWhereIn: jest.fn().mockReturnThis(),
+      })
+      return this
+    })
+    const orderBy = jest.fn().mockReturnThis()
+    const select = jest.fn().mockReturnThis()
+    const query: any = {
+      select,
+      whereNull,
+      andWhere,
+      orderBy,
+      then: (resolve: any) =>
+        resolve([
+          {
+            qbd_item_list_id: "800007F7-1384114826",
+            medusa_variant_id: "variant_legacy",
+            sku: "RM-91-TACHB",
+          },
+        ]),
+    }
+    const db: any = jest.fn(() => query)
+    db.raw = (value: string) => value
+
+    const fallbacks = await legacyQbdListIdFallbacksForOrder(db, {
+      items: [
+        {
+          variant: {
+            id: "variant_legacy",
+            sku: "RM-91-TACHB",
+          },
+        },
+      ],
+    })
+
+    expect(fallbacks).toMatchObject({
+      "variant:variant_legacy": "800007F7-1384114826",
+      "sku:rm-91-tachb": "800007F7-1384114826",
     })
   })
 
