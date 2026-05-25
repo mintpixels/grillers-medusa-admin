@@ -109,6 +109,17 @@ const variantTitleForItem = (
   const variant = objectValue(item.variant)
   const product = objectValue(item.product)
   const variantProduct = objectValue(variant.product)
+  const metadata = objectValue(item.metadata)
+  const hasCustomerFacingTitle = Boolean(
+    cleanText(metadata.strapi_title) ||
+      cleanText(metadata.display_title) ||
+      cleanText(metadata.customer_title)
+  )
+
+  if (hasCustomerFacingTitle) {
+    return null
+  }
+
   const title =
     cleanText(item.variant_title) ||
     cleanText(variant.title) ||
@@ -117,7 +128,9 @@ const variantTitleForItem = (
   const hiddenTitles = [
     displayTitle,
     item.title,
+    item.subtitle,
     item.product_title,
+    item.product_variant_title,
     product.title,
     variantProduct.title,
     "Default variant",
