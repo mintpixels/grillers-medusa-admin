@@ -101,12 +101,32 @@ const productIdForItem = (item: Record<string, any>): string | null => {
 const skuForItem = (item: Record<string, any>): string | null => {
   const variant = objectValue(item.variant)
   const detail = objectValue(item.detail)
+  const metadata = objectValue(item.metadata)
 
   return (
+    cleanText(metadata.sku) ||
+    cleanText(metadata.variant_sku) ||
+    cleanText(metadata.medusa_sku) ||
     cleanText(item.variant_sku) ||
     cleanText(item.sku) ||
     cleanText(detail.sku) ||
     cleanText(variant.sku)
+  )
+}
+
+const looksLikeAccountingTitle = (value: string | null): boolean => {
+  if (!value) {
+    return false
+  }
+
+  const title = value.toLowerCase()
+
+  return (
+    /\binstitutional\b/.test(title) ||
+    /\bnot kosher for passover\b/.test(title) ||
+    /\bfresh beef choice per lb\b/.test(title) ||
+    /@\s*\$?\d+(?:\.\d+)?\s*\/?\s*lb\.?/.test(title) ||
+    (title.length > 72 && /\b(per lb|uncooked|choice|alle)\b/.test(title))
   )
 }
 
@@ -253,7 +273,11 @@ const variantTitleForItem = (
     .map((value) => cleanText(value)?.toLowerCase())
     .filter(Boolean)
 
-  if (!title || hiddenTitles.includes(title.toLowerCase())) {
+  if (
+    !title ||
+    hiddenTitles.includes(title.toLowerCase()) ||
+    looksLikeAccountingTitle(title)
+  ) {
     return null
   }
 

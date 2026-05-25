@@ -90,6 +90,52 @@ describe("order email rendering", () => {
     expect(email.text).not.toContain("Institutional, (75/25)")
   })
 
+  it("uses metadata SKU as the email subtitle when variant titles are accounting titles", () => {
+    const accountingTitle =
+      "10 lb. TUBE Ground Beef (Alle) Institutional, (75/25) Uncooked, NOT Kosher for Passover @ $8.49/lb."
+    const order = normalizeOrderForEmail({
+      id: "order_email_metadata_sku",
+      display_id: 35,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 84.9,
+      subtotal: 84.9,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "line_metadata_sku",
+          title: "Ground Beef 75/25 - 10 lb Tube",
+          product_title: "Ground Beef 75/25 - 10 lb Tube",
+          variant_title: accountingTitle,
+          variant: {
+            title: accountingTitle,
+          },
+          metadata: {
+            sku: "1-00-12-0",
+          },
+          quantity: 1,
+          unit_price: 84.9,
+          total: 84.9,
+        },
+      ],
+    })
+
+    expect(order.items?.[0]).toMatchObject({
+      display_title: "Ground Beef 75/25 - 10 lb Tube",
+      sku: "1-00-12-0",
+      variant_title: null,
+    })
+
+    const email = buildOrderPlacedEmail(order)
+    expect(email.html).toContain("Ground Beef 75/25 - 10 lb Tube")
+    expect(email.html).toContain("SKU 1-00-12-0")
+    expect(email.html).not.toContain("Institutional, (75/25)")
+    expect(email.text).toContain("1 x Ground Beef 75/25 - 10 lb Tube (SKU 1-00-12-0)")
+    expect(email.text).not.toContain("Institutional, (75/25)")
+  })
+
   it("suppresses QuickBooks titles that arrive from expanded variant records", () => {
     const accountingTitle =
       "10 lb. TUBE Ground Beef (Alle) Institutional, (75/25) Uncooked, NOT Kosher for Passover @ $8.49/lb."
