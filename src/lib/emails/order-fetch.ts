@@ -132,7 +132,10 @@ const looksLikeAccountingTitle = (value: string | null): boolean => {
   return (
     /\binstitutional\b/.test(title) ||
     /\bnot kosher for passover\b/.test(title) ||
+    /\bno\s+msg\b/.test(title) ||
+    /\bnot\s+gluten\s+free\b/.test(title) ||
     /\bfresh beef choice per lb\b/.test(title) ||
+    /,\s*(?:with|in)\s+/.test(title) ||
     /@\s*\$?\d+(?:\.\d+)?\s*\/?\s*lb\.?/.test(title) ||
     (title.length > 72 && /\b(per lb|uncooked|choice|alle)\b/.test(title))
   )
@@ -150,6 +153,67 @@ const stripEmbeddedPrice = (value: string): string =>
     )
     .replace(/\s+@\s*$/g, "")
 
+const titleCaseLegacyWords = (value: string): string =>
+  value
+    .replace(/\b[A-Z]{3,}\b/g, (word) =>
+      ["USDA", "KFP", "OU", "MSG"].includes(word)
+        ? word
+        : word[0] + word.slice(1).toLowerCase()
+    )
+    .replace(/\bBnls\b/gi, "Boneless")
+    .replace(/\bLb\b/g, "lb")
+    .replace(/\bOz\b/g, "oz")
+
+const stripLegacyDescriptors = (value: string): string =>
+  value
+    .replace(/\s*\((?:alle)\)\s*/gi, " ")
+    .replace(/\bInstitutional\b\.?/gi, " ")
+    .replace(/\bUncooked\b\.?/gi, " ")
+    .replace(/\bNOT\s+Kosher\s+for\s+Passover\.?/gi, " ")
+    .replace(/\bNO\s+MSG\b\.?/gi, " ")
+    .replace(/\bNOT\s+Gluten\s+Free\.?/gi, " ")
+    .replace(/\bFresh\s+Beef\s+Choice\s+Per\s+LB\b\.?/gi, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+
+const shortenLegacyDescriptionTitle = (value: string): string => {
+  const commaIndex = value.indexOf(",")
+  if (commaIndex <= 3) {
+    return value
+  }
+
+  const head = value.slice(0, commaIndex).trim()
+  const tail = value.slice(commaIndex + 1).trim().toLowerCase()
+
+  if (
+    head.length >= 4 &&
+    (tail.startsWith("with ") ||
+      tail.startsWith("in ") ||
+      (value.length > 72 && !/^\(?\d{1,3}\s*\/\s*\d{1,3}\)?\b/.test(tail)))
+  ) {
+    return head
+  }
+
+  return value
+}
+
+const formatGroundBeefPackTitle = (value: string): string | null => {
+  const match = value.match(
+    /^(\d+(?:\.\d+)?)\s*lb\.?\s*(pack|tube)\s+ground\s+beef(?:\s*,?\s*\(?(\d{1,3}\s*\/\s*\d{1,3})\)?)?/i
+  )
+
+  if (!match?.[1] || !match?.[2] || !match?.[3]) {
+    return null
+  }
+
+  const amount = match[1]
+  const packageType =
+    match[2].toLowerCase() === "tube" ? "Tube" : "Pack"
+  const ratio = match[3].replace(/\s+/g, "")
+
+  return `Ground Beef ${ratio} - ${amount} lb ${packageType}`
+}
+
 const cleanLegacyEmailTitle = (value: string | null): string | null => {
   const text = cleanText(value)
   if (!text) {
@@ -165,16 +229,10 @@ const cleanLegacyEmailTitle = (value: string | null): string | null => {
     return text
   }
 
-  const stripped = stripEmbeddedPrice(text)
-    .replace(/\s*\((?:alle)\)\s*/gi, " ")
-    .replace(/\bInstitutional\b\.?/gi, " ")
-    .replace(/\bUncooked\b\.?/gi, " ")
-    .replace(/\bNOT\s+Kosher\s+for\s+Passover\.?/gi, " ")
-    .replace(/\bFresh\s+Beef\s+Choice\s+Per\s+LB\b\.?/gi, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim()
+  const stripped = stripLegacyDescriptors(stripEmbeddedPrice(text))
+  const shortened = shortenLegacyDescriptionTitle(stripped)
 
-  const segments = stripped
+  const segments = shortened
     .split(",")
     .map((segment) =>
       segment
@@ -195,14 +253,14 @@ const cleanLegacyEmailTitle = (value: string | null): string | null => {
       )
     })
 
-  const cleaned = (segments.join(", ") || stripped)
+  const joined = segments.join(", ") || shortened || stripped
+  const groundBeefTitle = formatGroundBeefPackTitle(joined)
+  if (groundBeefTitle) {
+    return groundBeefTitle
+  }
+
+  const cleaned = titleCaseLegacyWords(joined)
     .replace(/\blb\./gi, "lb")
-    .replace(/\b[A-Z]{3,}\b/g, (word) =>
-      ["USDA", "KFP", "OU"].includes(word)
-        ? word
-        : word[0] + word.slice(1).toLowerCase()
-    )
-    .replace(/\bBnls\b/gi, "Boneless")
     .replace(/\s{2,}/g, " ")
     .replace(/[\s,.;:-]+$/g, "")
     .trim()

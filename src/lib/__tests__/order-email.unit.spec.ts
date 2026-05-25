@@ -169,18 +169,18 @@ describe("order email rendering", () => {
     })
 
     expect(order.items?.[0]).toMatchObject({
-      display_title: "1 lb Pack Ground Beef, 85/15, Vacuum Pack",
+      display_title: "Ground Beef 85/15 - 1 lb Pack",
       sku: "1-00-12-1",
       variant_title: null,
     })
 
     const email = buildOrderPlacedEmail(order)
-    expect(email.html).toContain("1 lb Pack Ground Beef, 85/15, Vacuum Pack")
+    expect(email.html).toContain("Ground Beef 85/15 - 1 lb Pack")
     expect(email.html).toContain("SKU 1-00-12-1")
     expect(email.html).not.toContain("Uncooked")
     expect(email.html).not.toContain("NOT Kosher for Passover")
     expect(email.text).toContain(
-      "1 x 1 lb Pack Ground Beef, 85/15, Vacuum Pack (SKU 1-00-12-1)"
+      "1 x Ground Beef 85/15 - 1 lb Pack (SKU 1-00-12-1)"
     )
     expect(email.text).not.toContain("NOT Kosher for Passover")
   })
@@ -247,13 +247,72 @@ describe("order email rendering", () => {
 
     const email = buildOrderCanceledEmail({ order, reason: "Test cancellation" })
     expect(email.html).toContain("/images/logos/logo-horizontal.png")
-    expect(email.html).toContain("1 lb Pack Ground Beef, 85/15, Vacuum Pack")
+    expect(email.html).toContain("Ground Beef 85/15 - 1 lb Pack")
     expect(email.html).toContain("SKU 1-00-12-1")
     expect(email.html).not.toContain("NOT Kosher for Passover")
     expect(email.html).not.toContain("Uncooked")
     expect(email.text).toContain(
-      "1 x 1 lb Pack Ground Beef, 85/15, Vacuum Pack (SKU 1-00-12-1)"
+      "1 x Ground Beef 85/15 - 1 lb Pack (SKU 1-00-12-1)"
     )
+  })
+
+  it("collapses prepared-food legacy import titles before rendering emails", () => {
+    const order = normalizeOrderForEmail({
+      id: "order_email_prepared_food_titles",
+      display_id: 41,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 50.98,
+      subtotal: 50.98,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "line_soup",
+          title:
+            "CHICKEN Soup, with Chicken Pieces and Vegetables, in a Quart-size Microwaveable Container, NO MSG, Gluten Free, Not Kosher for Passover.",
+          product_title:
+            "CHICKEN Soup, with Chicken Pieces and Vegetables, in a Quart-size Microwaveable Container, NO MSG, Gluten Free, Not Kosher for Passover.",
+          metadata: { sku: "10-01-11-0" },
+          quantity: 1,
+          unit_price: 15,
+          total: 15,
+        },
+        {
+          id: "line_pies",
+          title:
+            "Chicken and Mushroom POCKET PIES (5 per box) NOT Kosher for Passover. NO MSG, NOT Gluten Free.",
+          product_title:
+            "Chicken and Mushroom POCKET PIES (5 per box) NOT Kosher for Passover. NO MSG, NOT Gluten Free.",
+          metadata: { sku: "10-08-11-1" },
+          quantity: 2,
+          unit_price: 17.99,
+          total: 35.98,
+        },
+      ],
+    })
+
+    expect(order.items?.[0]).toMatchObject({
+      display_title: "Chicken Soup",
+      sku: "10-01-11-0",
+      variant_title: null,
+    })
+    expect(order.items?.[1]).toMatchObject({
+      display_title: "Chicken and Mushroom Pocket Pies (5 per box)",
+      sku: "10-08-11-1",
+      variant_title: null,
+    })
+
+    const email = buildOrderPlacedEmail(order)
+    expect(email.html).toContain("Chicken Soup")
+    expect(email.html).toContain("Chicken and Mushroom Pocket Pies (5 per box)")
+    expect(email.html).toContain("SKU 10-01-11-0")
+    expect(email.html).toContain("SKU 10-08-11-1")
+    expect(email.html).not.toContain("Quart-size Microwaveable Container")
+    expect(email.html).not.toContain("NO MSG")
+    expect(email.html).not.toContain("NOT Gluten Free")
+    expect(email.html).not.toContain("Not Kosher for Passover")
   })
 
   it("preserves useful packaging parentheses when removing legacy Passover text", () => {
