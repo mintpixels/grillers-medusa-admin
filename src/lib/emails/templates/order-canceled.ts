@@ -44,7 +44,7 @@ export const buildOrderCanceledEmail = ({
     "Items:",
     ...(order.items?.map(
       (i) =>
-        `  ${i.quantity} x ${i.title} — ${formatMoney((i.unit_price || 0) * (i.quantity || 0), currency)}`
+        `  ${i.quantity} x ${i.title}${i.sku ? ` (SKU ${i.sku})` : ""} — ${formatMoney((i.unit_price || 0) * (i.quantity || 0), currency)}`
     ) || []),
     "",
     `Need help? ${SUPPORT_EMAIL}`,

@@ -137,7 +137,7 @@ export const buildOrderPlacedEmail = (order: OrderForEmail) => {
     "Items:",
     ...(order.items?.map(
       (i) =>
-        `  ${formatQuantity(i.quantity)} x ${i.display_title || i.product_title || i.title} — ${formatMoney(
+        `  ${formatQuantity(i.quantity)} x ${i.display_title || i.product_title || i.title}${i.sku ? ` (SKU ${i.sku})` : ""} — ${formatMoney(
           i.line_total ?? (i.unit_price || 0) * (i.quantity || 0),
           currency
         )}`

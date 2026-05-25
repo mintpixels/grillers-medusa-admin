@@ -1,4 +1,4 @@
-import { normalizeOrderForEmail } from "../emails/order-fetch"
+import { fetchOrderForEmail, normalizeOrderForEmail } from "../emails/order-fetch"
 import { buildOrderPlacedEmail } from "../emails/templates/order-placed"
 
 describe("order email rendering", () => {
@@ -63,6 +63,9 @@ describe("order email rendering", () => {
           title: accountingTitle,
           product_title: accountingTitle,
           variant_title: accountingTitle,
+          variant: {
+            sku: "1-00-12-0",
+          },
           metadata: {
             strapi_title: "Ground Beef 75/25 - 10 lb Tube",
           },
@@ -76,11 +79,13 @@ describe("order email rendering", () => {
     expect(order.items?.[0]).toMatchObject({
       display_title: "Ground Beef 75/25 - 10 lb Tube",
       source_title: accountingTitle,
+      sku: "1-00-12-0",
       variant_title: null,
     })
 
     const email = buildOrderPlacedEmail(order)
     expect(email.html).toContain("Ground Beef 75/25 - 10 lb Tube")
+    expect(email.html).toContain("SKU 1-00-12-0")
     expect(email.html).not.toContain("Institutional, (75/25)")
     expect(email.text).not.toContain("Institutional, (75/25)")
   })
@@ -163,5 +168,67 @@ describe("order email rendering", () => {
       variant_title: "8-10 lb",
     })
     expect(order.total).toBe(157)
+  })
+
+  it("hydrates Strapi titles before sending customer emails", async () => {
+    const accountingTitle =
+      "10 lb. TUBE Ground Beef (Alle) Institutional, (75/25) Uncooked, NOT Kosher for Passover @ $8.49/lb."
+    const graph = jest.fn(async () => ({
+      data: [
+        {
+          id: "order_email_strapi",
+          display_id: 42,
+          email: "customer@example.com",
+          currency_code: "usd",
+          total: 84.9,
+          subtotal: 84.9,
+          shipping_total: 0,
+          tax_total: 0,
+          discount_total: 0,
+          items: [
+            {
+              id: "line_strapi",
+              title: accountingTitle,
+              product_title: accountingTitle,
+              variant: {
+                sku: "1-00-12-0",
+                product: {
+                  id: "prod_ground_beef",
+                  title: accountingTitle,
+                },
+              },
+              quantity: 1,
+              unit_price: 84.9,
+              total: 84.9,
+            },
+          ],
+        },
+      ],
+    }))
+    const findProductByMedusaId = jest.fn(async () => ({
+      Title: "Kosher Alle Ground Beef 75/25 Tube · 10 lb",
+    }))
+    const container = {
+      resolve: (key: string) => {
+        if (key === "query") return { graph }
+        if (key === "strapi") return { findProductByMedusaId }
+        if (key === "logger") return { warn: jest.fn() }
+        throw new Error(`Unknown dependency ${key}`)
+      },
+    }
+
+    const order = await fetchOrderForEmail(container, "order_email_strapi")
+    const email = buildOrderPlacedEmail(order!)
+
+    expect(findProductByMedusaId).toHaveBeenCalledWith("prod_ground_beef")
+    expect(order?.items?.[0]).toMatchObject({
+      title: "Kosher Alle Ground Beef 75/25 Tube · 10 lb",
+      sku: "1-00-12-0",
+      variant_title: null,
+    })
+    expect(email.html).toContain("Kosher Alle Ground Beef 75/25 Tube · 10 lb")
+    expect(email.html).toContain("SKU 1-00-12-0")
+    expect(email.html).not.toContain("Institutional, (75/25)")
+    expect(email.text).not.toContain("Institutional, (75/25)")
   })
 })

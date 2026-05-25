@@ -61,6 +61,7 @@ type LineItem = {
   display_title?: string | null
   product_title?: string | null
   variant_title?: string | null
+  sku?: string | null
   quantity?: number | null
   unit_price?: number | null
   line_total?: number | null
@@ -93,8 +94,11 @@ export const renderItemRows = (
         item.product_title ||
         item.title ||
         "Griller's Pride item"
-      const variant = item.variant_title
-        ? `<div style="color:#6F665B;font-size:13px;font-weight:600;line-height:1.35;margin-top:2px;">${escapeHtml(item.variant_title)}</div>`
+      const subtext = item.sku
+        ? `SKU ${item.sku}`
+        : item.variant_title
+      const subtitle = subtext
+        ? `<div style="color:#6F665B;font-size:13px;font-weight:600;line-height:1.35;margin-top:2px;">${escapeHtml(subtext)}</div>`
         : ""
       const thumb = item.thumbnail
         ? `<img src="${escapeHtml(item.thumbnail)}" width="58" height="58" alt="" style="display:block;border-radius:6px;object-fit:cover;border:1px solid #E4DED2;background:#F7F3EA;"/>`
@@ -104,7 +108,7 @@ export const renderItemRows = (
           <td valign="top" style="padding:16px 0;border-bottom:1px solid #E8E2D7;width:74px;">${thumb}</td>
           <td valign="top" style="padding:16px 12px;border-bottom:1px solid #E8E2D7;">
             <div style="font-weight:700;color:#17201A;font-size:15px;line-height:1.35;">${escapeHtml(title)}</div>
-            ${variant}
+            ${subtitle}
             <div style="color:#6F665B;font-size:13px;margin-top:5px;">Qty ${formatQuantity(qty)} &times; ${formatMoney(unit, currency)}</div>
           </td>
           <td valign="top" style="padding:16px 0;border-bottom:1px solid #E8E2D7;text-align:right;font-weight:700;color:#17201A;font-size:15px;white-space:nowrap;">${lineTotal}</td>

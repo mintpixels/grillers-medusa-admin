@@ -1,3 +1,6 @@
+import { STRAPI_MODULE } from "../../modules/strapi"
+import StrapiModuleService from "../../modules/strapi/service"
+
 type Container = { resolve: (key: string) => any }
 
 const ORDER_FIELDS = [
@@ -82,6 +85,118 @@ const cleanText = (value: unknown): string | null => {
 const objectValue = (value: unknown): Record<string, any> =>
   value && typeof value === "object" ? (value as Record<string, any>) : {}
 
+const productIdForItem = (item: Record<string, any>): string | null => {
+  const variant = objectValue(item.variant)
+  const product = objectValue(item.product)
+  const variantProduct = objectValue(variant.product)
+
+  return (
+    cleanText(item.product_id) ||
+    cleanText(product.id) ||
+    cleanText(variant.product_id) ||
+    cleanText(variantProduct.id)
+  )
+}
+
+const skuForItem = (item: Record<string, any>): string | null => {
+  const variant = objectValue(item.variant)
+  const detail = objectValue(item.detail)
+
+  return (
+    cleanText(item.variant_sku) ||
+    cleanText(item.sku) ||
+    cleanText(detail.sku) ||
+    cleanText(variant.sku)
+  )
+}
+
+const strapiTitleFromProduct = (product: Record<string, any>): string | null => {
+  const attributes = objectValue(product.attributes)
+  const medusaProduct = objectValue(product.MedusaProduct)
+  const attributesMedusaProduct = objectValue(attributes.MedusaProduct)
+
+  return (
+    cleanText(product.Title) ||
+    cleanText(attributes.Title) ||
+    cleanText(medusaProduct.Title) ||
+    cleanText(attributesMedusaProduct.Title)
+  )
+}
+
+const hydrateStrapiTitles = async (
+  container: Container,
+  order: Record<string, unknown>
+): Promise<Record<string, unknown>> => {
+  const rawItems = Array.isArray(order.items) ? order.items : []
+  const productIds = Array.from(
+    new Set(
+      rawItems
+        .map((rawItem) => productIdForItem(objectValue(rawItem)))
+        .filter((id): id is string => Boolean(id))
+    )
+  )
+
+  if (!productIds.length) {
+    return order
+  }
+
+  let strapiSvc: StrapiModuleService
+  try {
+    strapiSvc = container.resolve(STRAPI_MODULE) as StrapiModuleService
+  } catch {
+    return order
+  }
+
+  const logger = (() => {
+    try {
+      return container.resolve("logger")
+    } catch {
+      return null
+    }
+  })()
+
+  const titles = new Map<string, string>()
+  for (const productId of productIds) {
+    try {
+      const product = await strapiSvc.findProductByMedusaId(productId)
+      const title = product ? strapiTitleFromProduct(objectValue(product)) : null
+      if (title) {
+        titles.set(productId, title)
+      }
+    } catch (err) {
+      logger?.warn?.(
+        `[order-email] failed to load Strapi title for product=${productId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    }
+  }
+
+  if (!titles.size) {
+    return order
+  }
+
+  return {
+    ...order,
+    items: rawItems.map((rawItem) => {
+      const item = objectValue(rawItem)
+      const productId = productIdForItem(item)
+      const strapiTitle = productId ? titles.get(productId) : null
+      if (!strapiTitle) {
+        return rawItem
+      }
+
+      return {
+        ...item,
+        metadata: {
+          ...objectValue(item.metadata),
+          strapi_title: strapiTitle,
+        },
+      }
+    }),
+  }
+}
+
 const displayTitleForItem = (item: Record<string, any>): string => {
   const variant = objectValue(item.variant)
   const product = objectValue(item.product)
@@ -161,6 +276,7 @@ export type OrderForEmail = {
     title?: string
     display_title?: string
     source_title?: string | null
+    sku?: string | null
     quantity?: number
     unit_price?: number
     line_total?: number
@@ -208,7 +324,7 @@ export const fetchOrderForEmail = async (
     filters: { id: orderId },
   })
   const order = orders?.[0] as Record<string, unknown> | undefined
-  return order ? normalizeOrderForEmail(order) : null
+  return order ? normalizeOrderForEmail(await hydrateStrapiTitles(container, order)) : null
 }
 
 export const normalizeOrderForEmail = (
@@ -253,6 +369,7 @@ export const normalizeOrderForEmail = (
           ? lineTotal / quantity
           : 0
     const displayTitle = displayTitleForItem(item)
+    const sku = skuForItem(item)
     const thumbnail =
       cleanText(item.thumbnail) ||
       cleanText(variantProduct.thumbnail) ||
@@ -264,6 +381,7 @@ export const normalizeOrderForEmail = (
       title: displayTitle,
       display_title: displayTitle,
       source_title: cleanText(item.title),
+      sku,
       variant_title: variantTitleForItem(item, displayTitle),
       quantity,
       unit_price: effectiveUnitPrice,

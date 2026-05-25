@@ -68,7 +68,7 @@ export const buildOrderShippedEmail = ({
     trackingUrl ? `Track: ${trackingUrl}` : "",
     "",
     "Items shipped:",
-    ...(order.items?.map((i) => `  ${i.quantity} x ${i.title}`) || []),
+    ...(order.items?.map((i) => `  ${i.quantity} x ${i.title}${i.sku ? ` (SKU ${i.sku})` : ""}`) || []),
     "",
     `View order: ${orderUrl}`,
   ])
