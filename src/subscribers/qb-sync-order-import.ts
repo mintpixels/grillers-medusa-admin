@@ -25,9 +25,12 @@ export const ORDER_FIELDS = [
   "shipping_address.*",
   "billing_address.*",
   "items.*",
+  "+items.metadata",
   "items.detail.*",
   "items.variant.*",
+  "+items.variant.metadata",
   "items.variant.product.*",
+  "+items.variant.product.metadata",
   "shipping_methods.*",
   "payment_collections.id",
   "payment_collections.status",
@@ -82,6 +85,92 @@ function firstPositiveNumeric(...values: unknown[]): number | null {
   return null
 }
 
+const QBD_LIST_ID_KEYS = [
+  "qbd_list_id",
+  "qbdListId",
+  "QbdListId",
+  "quickbooks_list_id",
+  "quickbooksListId",
+  "QuickBooksListId",
+  "qb_list_id",
+  "qbListId",
+  "QbListId",
+  "qbd_item_list_id",
+  "qbdItemListId",
+  "QbdItemListId",
+  "quickbooks_item_list_id",
+  "quickbooksItemListId",
+  "QuickBooksItemListId",
+  "qb_item_list_id",
+  "qbItemListId",
+  "QbItemListId",
+  "qbd_item_id",
+  "qbdItemId",
+  "QbdItemId",
+  "quickbooks_item_id",
+  "quickbooksItemId",
+  "QuickBooksItemId",
+  "qb_item_id",
+  "qbItemId",
+  "QbItemId",
+]
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+
+  return value as Record<string, unknown>
+}
+
+function textValue(value: unknown): string | null {
+  if (typeof value === "string" && value.trim() !== "") {
+    return value.trim()
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value)
+  }
+
+  return null
+}
+
+function metadataListId(metadata: unknown): string | null {
+  const record = objectRecord(metadata)
+  for (const key of QBD_LIST_ID_KEYS) {
+    const value = textValue(record[key])
+    if (value) {
+      return value
+    }
+  }
+
+  for (const namespace of ["qbd", "quickbooks", "qb"]) {
+    const nested = objectRecord(record[namespace])
+    const value =
+      textValue(nested.list_id) ||
+      textValue(nested.item_list_id) ||
+      textValue(nested.item_id)
+    if (value) {
+      return value
+    }
+  }
+
+  return null
+}
+
+function itemQbdListId(item: Record<string, unknown>): string | null {
+  const variant = objectRecord(item.variant)
+  const product = objectRecord(item.product)
+  const variantProduct = objectRecord(variant.product)
+
+  return (
+    metadataListId(item.metadata) ||
+    metadataListId(variant.metadata) ||
+    metadataListId(product.metadata) ||
+    metadataListId(variantProduct.metadata)
+  )
+}
+
 export function normalizeOrderForQbSync(
   order: Record<string, unknown>
 ): Record<string, unknown> {
@@ -96,6 +185,8 @@ export function normalizeOrderForQbSync(
           item.detail && typeof item.detail === "object"
             ? (item.detail as Record<string, unknown>)
             : {}
+        const metadata = objectRecord(item.metadata)
+        const qbdListId = itemQbdListId(item)
         const quantity =
           firstNumeric(
             item.raw_quantity,
@@ -127,6 +218,12 @@ export function normalizeOrderForQbSync(
 
         return {
           ...item,
+          metadata: qbdListId
+            ? {
+                ...metadata,
+                qbd_list_id: qbdListId,
+              }
+            : item.metadata,
           quantity,
           subtotal,
           total,

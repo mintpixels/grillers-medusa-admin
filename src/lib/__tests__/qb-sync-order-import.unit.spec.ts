@@ -45,6 +45,9 @@ describe("qb-sync order import subscriber", () => {
         "items.variant.product.*",
         "shipping_address.*",
         "billing_address.*",
+        "+items.metadata",
+        "+items.variant.metadata",
+        "+items.variant.product.metadata",
       ])
     )
     expect(ORDER_FIELDS).not.toContain("*items")
@@ -77,6 +80,39 @@ describe("qb-sync order import subscriber", () => {
       quantity: 2,
       total: 169.8,
       subtotal: 169.8,
+    })
+  })
+
+  it("copies QuickBooks list id metadata onto order lines for sync matching", () => {
+    const order = normalizeOrderForQbSync({
+      id: "order_qbd_list_id",
+      total: 25,
+      subtotal: 25,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          title: "Ground Beef",
+          quantity: 1,
+          unit_price: 25,
+          total: 25,
+          metadata: { strapi_title: "Ground Beef" },
+          variant: {
+            sku: "MEDUSA-SKU",
+            product: {
+              metadata: {
+                qbd_list_id: "800049D5-1779670076",
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    expect((order.items as any[])[0].metadata).toMatchObject({
+      strapi_title: "Ground Beef",
+      qbd_list_id: "800049D5-1779670076",
     })
   })
 
