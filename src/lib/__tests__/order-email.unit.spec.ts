@@ -136,6 +136,53 @@ describe("order email rendering", () => {
     expect(email.text).not.toContain("Institutional, (75/25)")
   })
 
+  it("cleans legacy catalog titles before rendering customer emails", () => {
+    const legacyTitle =
+      "1 lb. Pack Ground Beef, 85/15, Uncooked, Vacuum Pack. NOT Kosher for Passover."
+    const order = normalizeOrderForEmail({
+      id: "order_email_legacy_title",
+      display_id: 36,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 8.49,
+      subtotal: 8.49,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "line_legacy_title",
+          title: legacyTitle,
+          product_title: legacyTitle,
+          variant_title: legacyTitle,
+          metadata: {
+            strapi_title: legacyTitle,
+            sku: "1-00-12-1",
+          },
+          quantity: 1,
+          unit_price: 8.49,
+          total: 8.49,
+        },
+      ],
+    })
+
+    expect(order.items?.[0]).toMatchObject({
+      display_title: "1 lb Pack Ground Beef, 85/15, Vacuum Pack",
+      sku: "1-00-12-1",
+      variant_title: null,
+    })
+
+    const email = buildOrderPlacedEmail(order)
+    expect(email.html).toContain("1 lb Pack Ground Beef, 85/15, Vacuum Pack")
+    expect(email.html).toContain("SKU 1-00-12-1")
+    expect(email.html).not.toContain("Uncooked")
+    expect(email.html).not.toContain("NOT Kosher for Passover")
+    expect(email.text).toContain(
+      "1 x 1 lb Pack Ground Beef, 85/15, Vacuum Pack (SKU 1-00-12-1)"
+    )
+    expect(email.text).not.toContain("NOT Kosher for Passover")
+  })
+
   it("suppresses QuickBooks titles that arrive from expanded variant records", () => {
     const accountingTitle =
       "10 lb. TUBE Ground Beef (Alle) Institutional, (75/25) Uncooked, NOT Kosher for Passover @ $8.49/lb."

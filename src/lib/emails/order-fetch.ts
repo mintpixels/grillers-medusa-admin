@@ -130,6 +130,78 @@ const looksLikeAccountingTitle = (value: string | null): boolean => {
   )
 }
 
+const stripEmbeddedPrice = (value: string): string =>
+  value
+    .replace(
+      /\s*@\s*\$?\d+(?:\.\d+)?\s*\/?\s*(?:lb|lbs|oz|kg|g|each|ea)\.?/gi,
+      ""
+    )
+    .replace(
+      /\s*\$\s?\d+(?:\.\d+)?\s*\/\s*(?:lb|lbs|oz|kg|g|each|ea)\.?/gi,
+      ""
+    )
+    .replace(/\s+@\s*$/g, "")
+
+const cleanLegacyEmailTitle = (value: string | null): string | null => {
+  const text = cleanText(value)
+  if (!text) {
+    return null
+  }
+
+  const shouldClean =
+    looksLikeAccountingTitle(text) ||
+    /\$\s?\d+(?:\.\d+)?\s*\/\s*(?:lb|lbs|oz|kg|g|each|ea)\.?/i.test(text) ||
+    /\s*@\s*\$?\d+(?:\.\d+)?\s*\/?\s*(?:lb|lbs|oz|kg|g|each|ea)\.?/i.test(text)
+
+  if (!shouldClean) {
+    return text
+  }
+
+  const stripped = stripEmbeddedPrice(text)
+    .replace(/\s*\((?:alle)\)\s*/gi, " ")
+    .replace(/\bInstitutional\b\.?/gi, " ")
+    .replace(/\bUncooked\b\.?/gi, " ")
+    .replace(/\bNOT\s+Kosher\s+for\s+Passover\.?/gi, " ")
+    .replace(/\bFresh\s+Beef\s+Choice\s+Per\s+LB\b\.?/gi, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+
+  const segments = stripped
+    .split(",")
+    .map((segment) =>
+      segment
+        .replace(/^[\s,.;:()/-]+|[\s,.;:()/-]+$/g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim()
+    )
+    .filter((segment) => {
+      if (!segment) {
+        return false
+      }
+
+      const lower = segment.toLowerCase()
+      return (
+        lower !== "uncooked" &&
+        lower !== "institutional" &&
+        lower !== "not kosher for passover"
+      )
+    })
+
+  const cleaned = (segments.join(", ") || stripped)
+    .replace(/\blb\./gi, "lb")
+    .replace(/\b[A-Z]{3,}\b/g, (word) =>
+      ["USDA", "KFP", "OU"].includes(word)
+        ? word
+        : word[0] + word.slice(1).toLowerCase()
+    )
+    .replace(/\bBnls\b/gi, "Boneless")
+    .replace(/\s{2,}/g, " ")
+    .replace(/[\s,.;:-]+$/g, "")
+    .trim()
+
+  return cleaned || text
+}
+
 const strapiTitleFromProduct = (product: Record<string, any>): string | null => {
   const attributes = objectValue(product.attributes)
   const medusaProduct = objectValue(product.MedusaProduct)
@@ -223,7 +295,7 @@ const displayTitleForItem = (item: Record<string, any>): string => {
   const variantProduct = objectValue(variant.product)
   const metadata = objectValue(item.metadata)
 
-  return (
+  const title =
     cleanText(metadata.strapi_title) ||
     cleanText(metadata.display_title) ||
     cleanText(metadata.customer_title) ||
@@ -233,8 +305,9 @@ const displayTitleForItem = (item: Record<string, any>): string => {
     cleanText(product.title) ||
     cleanText(variant.title) ||
     cleanText(item.title) ||
-    "Griller's Pride item"
-  )
+    null
+
+  return cleanLegacyEmailTitle(title) || "Griller's Pride item"
 }
 
 const variantTitleForItem = (
