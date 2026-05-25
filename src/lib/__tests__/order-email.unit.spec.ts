@@ -214,6 +214,49 @@ describe("order email rendering", () => {
     expect(email.text).toContain("Total (authorized): $91.48")
   })
 
+  it("uses the payment authorization amount when event-time order totals are pre-tax", () => {
+    const order = normalizeOrderForEmail({
+      id: "order_email_payment_total",
+      display_id: 44,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 84.9,
+      subtotal: 84.9,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      payment_collections: [
+        {
+          payments: [
+            {
+              provider_id: "pp_stripe_stripe",
+              amount: 91.47975,
+            },
+          ],
+        },
+      ],
+      items: [
+        {
+          id: "line_payment_total",
+          title: "Ground Beef 75/25 - 10 lb Tube",
+          quantity: 1,
+          unit_price: 84.9,
+          total: 84.9,
+          subtotal: 84.9,
+        },
+      ],
+    })
+
+    expect(order.tax_total).toBeCloseTo(6.57975)
+    expect(order.total).toBeCloseTo(91.47975)
+
+    const email = buildOrderPlacedEmail(order)
+    expect(email.html).toContain("$6.58")
+    expect(email.html).toContain("$91.48")
+    expect(email.text).toContain("Taxes (estimated): $6.58")
+    expect(email.text).toContain("Total (authorized): $91.48")
+  })
+
   it("hydrates Strapi titles before sending customer emails", async () => {
     const accountingTitle =
       "10 lb. TUBE Ground Beef (Alle) Institutional, (75/25) Uncooked, NOT Kosher for Passover @ $8.49/lb."

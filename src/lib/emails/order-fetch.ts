@@ -310,7 +310,9 @@ export type OrderForEmail = {
     phone?: string | null
   } | null
   shipping_methods?: Array<{ name?: string; amount?: number }>
-  payment_collections?: Array<{ payments?: Array<{ provider_id?: string }> }>
+  payment_collections?: Array<{
+    payments?: Array<{ provider_id?: string; amount?: number | string }>
+  }>
 }
 
 export const fetchOrderForEmail = async (
@@ -410,6 +412,17 @@ export const normalizeOrderForEmail = (
     firstNumeric(order.shipping_total as MaybeMoney, order.shipping_subtotal as MaybeMoney) ??
     shippingFromMethods
   const discountTotal = firstNumeric(order.discount_total as MaybeMoney) ?? 0
+  const paymentTotal = firstPositiveNumeric(
+    ...(Array.isArray(order.payment_collections)
+      ? order.payment_collections.flatMap((collection) =>
+          Array.isArray(objectValue(collection).payments)
+            ? objectValue(collection).payments.map(
+                (payment: Record<string, unknown>) => payment.amount as MaybeMoney
+              )
+            : []
+        )
+      : [])
+  )
   const explicitItemTotal = firstPositiveNumeric(order.item_total as MaybeMoney)
   const explicitItemSubtotal = firstPositiveNumeric(
     order.item_subtotal as MaybeMoney,
@@ -435,12 +448,23 @@ export const normalizeOrderForEmail = (
       order.subtotal as MaybeMoney
     ) ??
     itemSubtotal
-  const computedTotal = subtotal + shippingTotal + taxTotal - discountTotal
+  const paymentDerivedTax =
+    paymentTotal !== null
+      ? Math.max(0, paymentTotal - subtotal - shippingTotal + discountTotal)
+      : null
+  const resolvedTaxTotal =
+    taxTotal > 0
+      ? taxTotal
+      : paymentDerivedTax !== null && paymentDerivedTax > 0
+        ? paymentDerivedTax
+        : taxTotal
+  const computedTotal = subtotal + shippingTotal + resolvedTaxTotal - discountTotal
   const total =
-    computedTotal > 0 &&
-    (taxTotal > 0 || shippingTotal > 0 || discountTotal > 0)
+    paymentTotal ??
+    (computedTotal > 0 &&
+    (resolvedTaxTotal > 0 || shippingTotal > 0 || discountTotal > 0)
       ? computedTotal
-      : firstPositiveNumeric(order.total as MaybeMoney) ?? computedTotal
+      : firstPositiveNumeric(order.total as MaybeMoney) ?? computedTotal)
 
   return {
     ...(order as OrderForEmail),
@@ -449,7 +473,7 @@ export const normalizeOrderForEmail = (
     subtotal,
     total,
     shipping_total: shippingTotal,
-    tax_total: taxTotal,
+    tax_total: resolvedTaxTotal,
     discount_total: discountTotal,
   }
 }
