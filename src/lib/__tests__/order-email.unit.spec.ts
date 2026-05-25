@@ -490,6 +490,62 @@ describe("order email rendering", () => {
     expect(email.text).toContain("Total (authorized): $91.48")
   })
 
+  it("subtracts shipping method amount before deriving tax from payment total", () => {
+    const order = normalizeOrderForEmail({
+      id: "order_email_shipping_method_total",
+      display_id: 45,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 50.98,
+      subtotal: 50.98,
+      discount_total: 0,
+      shipping_methods: [
+        {
+          name: "Scheduled Delivery",
+          amount: 40,
+        },
+      ],
+      payment_collections: [
+        {
+          payments: [
+            {
+              provider_id: "pp_stripe_stripe",
+              amount: 94.93095,
+            },
+          ],
+        },
+      ],
+      items: [
+        {
+          id: "line_shipping_method_total",
+          title: "Chicken Soup",
+          quantity: 1,
+          unit_price: 15,
+          subtotal: 15,
+        },
+        {
+          id: "line_shipping_method_total_2",
+          title: "Pocket Pies",
+          quantity: 2,
+          unit_price: 17.99,
+          subtotal: 35.98,
+        },
+      ],
+    })
+
+    expect(order.subtotal).toBeCloseTo(50.98)
+    expect(order.shipping_total).toBeCloseTo(40)
+    expect(order.tax_total).toBeCloseTo(3.95095)
+    expect(order.total).toBeCloseTo(94.93095)
+
+    const email = buildOrderPlacedEmail(order)
+    expect(email.text).toContain("Subtotal: $50.98")
+    expect(email.text).toContain("Shipping: $40.00")
+    expect(email.text).toContain("Taxes (estimated): $3.95")
+    expect(email.text).toContain("Total (authorized): $94.93")
+    expect(email.text).not.toContain("Taxes (estimated): $43.95")
+  })
+
   it("hydrates Strapi titles before sending customer emails", async () => {
     const accountingTitle =
       "10 lb. TUBE Ground Beef (Alle) Institutional, (75/25) Uncooked, NOT Kosher for Passover @ $8.49/lb."

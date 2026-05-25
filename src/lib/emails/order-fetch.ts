@@ -26,6 +26,14 @@ const ORDER_FIELDS = [
   "shipping_address.*",
   "billing_address.*",
   "shipping_methods.*",
+  "shipping_methods.amount",
+  "shipping_methods.raw_amount",
+  "shipping_methods.total",
+  "shipping_methods.raw_total",
+  "shipping_methods.subtotal",
+  "shipping_methods.raw_subtotal",
+  "shipping_methods.tax_total",
+  "shipping_methods.raw_tax_total",
   "payment_collections.payments.provider_id",
   "payment_collections.payments.amount",
   "payment_collections.payments.currency_code",
@@ -502,7 +510,20 @@ export const normalizeOrderForEmail = (
     ? order.shipping_methods
     : []
   const shippingFromMethods = shippingMethods.reduce(
-    (sum, method) => sum + (numeric(objectValue(method).amount) ?? 0),
+    (sum, method) => {
+      const candidate = objectValue(method)
+      return (
+        sum +
+        (firstNumeric(
+          candidate.amount,
+          candidate.raw_amount,
+          candidate.total,
+          candidate.raw_total,
+          candidate.subtotal,
+          candidate.raw_subtotal
+        ) ?? 0)
+      )
+    },
     0
   )
   const shippingTotal =
@@ -550,11 +571,13 @@ export const normalizeOrderForEmail = (
       ? Math.max(0, paymentTotal - subtotal - shippingTotal + discountTotal)
       : null
   const resolvedTaxTotal =
-    taxTotal > 0
-      ? taxTotal
-      : paymentDerivedTax !== null && paymentDerivedTax > 0
-        ? paymentDerivedTax
-        : taxTotal
+    paymentDerivedTax !== null && paymentTotal !== null
+      ? Math.max(0, paymentDerivedTax)
+      : taxTotal > 0
+        ? taxTotal
+        : paymentDerivedTax !== null && paymentDerivedTax > 0
+          ? paymentDerivedTax
+          : taxTotal
   const computedTotal = subtotal + shippingTotal + resolvedTaxTotal - discountTotal
   const total =
     paymentTotal ??
