@@ -15,7 +15,7 @@
   "scripts": {
     "build": "medusa build",
     "seed": "medusa exec ./src/scripts/seed.ts",
-    "email:preview": "tsx src/scripts/preview-emails.ts",
+    "email:preview": "ts-node --transpile-only src/scripts/preview-emails.ts",
     "recover:production-backend": "node src/scripts/recover-production-backend.mjs",
     "smoke:production-backend": "node src/scripts/smoke-production-backend.mjs",
     "start": "medusa start",
