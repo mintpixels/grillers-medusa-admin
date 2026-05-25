@@ -1,5 +1,7 @@
 import { fetchOrderForEmail, normalizeOrderForEmail } from "../emails/order-fetch"
 import { buildOrderPlacedEmail } from "../emails/templates/order-placed"
+import { buildOrderCanceledEmail } from "../emails/templates/order-canceled"
+import { buildRefundIssuedEmail } from "../emails/templates/refund-issued"
 
 describe("order email rendering", () => {
   it("uses customer-facing line metadata titles instead of source accounting titles", () => {
@@ -181,6 +183,101 @@ describe("order email rendering", () => {
       "1 x 1 lb Pack Ground Beef, 85/15, Vacuum Pack (SKU 1-00-12-1)"
     )
     expect(email.text).not.toContain("NOT Kosher for Passover")
+  })
+
+  it("uses the website logo and aligned status strip in order emails", () => {
+    const order = normalizeOrderForEmail({
+      id: "order_email_branding",
+      display_id: 37,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 10.69,
+      subtotal: 10.69,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "line_branding",
+          title: "Ground Beef 85/15 - 1 lb Pack",
+          metadata: { sku: "1-00-12-1" },
+          quantity: 1,
+          unit_price: 10.69,
+          total: 10.69,
+        },
+      ],
+    })
+
+    const email = buildOrderPlacedEmail(order)
+    expect(email.html).toContain("/images/logos/logo-horizontal.png")
+    expect(email.html).toContain('alt="Griller\'s Pride"')
+    expect(email.html).toContain("vertical-align:top")
+    expect(email.html).toContain("Butcher review")
+  })
+
+  it("renders canceled emails with customer titles, SKU subtext, and brand logo", () => {
+    const legacyTitle =
+      "1 lb. Pack Ground Beef, 85/15, Uncooked, Vacuum Pack. NOT Kosher for Passover."
+    const order = normalizeOrderForEmail({
+      id: "order_email_canceled_title",
+      display_id: 38,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 10.69,
+      subtotal: 10.69,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "line_canceled_title",
+          title: legacyTitle,
+          product_title: legacyTitle,
+          variant_title: legacyTitle,
+          metadata: {
+            strapi_title: legacyTitle,
+            sku: "1-00-12-1",
+          },
+          quantity: 1,
+          unit_price: 10.69,
+          total: 10.69,
+        },
+      ],
+    })
+
+    const email = buildOrderCanceledEmail({ order, reason: "Test cancellation" })
+    expect(email.html).toContain("/images/logos/logo-horizontal.png")
+    expect(email.html).toContain("1 lb Pack Ground Beef, 85/15, Vacuum Pack")
+    expect(email.html).toContain("SKU 1-00-12-1")
+    expect(email.html).not.toContain("NOT Kosher for Passover")
+    expect(email.html).not.toContain("Uncooked")
+    expect(email.text).toContain(
+      "1 x 1 lb Pack Ground Beef, 85/15, Vacuum Pack (SKU 1-00-12-1)"
+    )
+  })
+
+  it("renders refund emails with the shared website logo", () => {
+    const order = normalizeOrderForEmail({
+      id: "order_email_refund_logo",
+      display_id: 40,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 10.69,
+      subtotal: 10.69,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [],
+    })
+
+    const email = buildRefundIssuedEmail({
+      order,
+      refundAmount: 5,
+      reason: "Test refund",
+    })
+    expect(email.html).toContain("/images/logos/logo-horizontal.png")
+    expect(email.html).toContain("Refund of $5.00")
+    expect(email.text).toContain("Refund issued: $5.00")
   })
 
   it("suppresses QuickBooks titles that arrive from expanded variant records", () => {

@@ -77,17 +77,25 @@ export const buildOrderPlacedEmail = (order: OrderForEmail) => {
           <div style="font-size:14px;line-height:1.55;color:#6F665B;margin-top:8px;">Your card is authorized for ${orderTotal}. Final catch-weight items are weighed before fulfillment, and we will email if the final total changes.</div>
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:18px;">
             <tr>
-              <td align="center" style="width:33.33%;padding:0 4px;">
+              <td align="center" valign="top" style="width:33.33%;padding:0 4px;vertical-align:top;">
                 <div style="height:6px;background:#0B5A43;border-radius:4px;"></div>
-                <div style="font-size:11px;color:#17201A;font-weight:700;margin-top:8px;">Received</div>
               </td>
-              <td align="center" style="width:33.33%;padding:0 4px;">
+              <td align="center" valign="top" style="width:33.33%;padding:0 4px;vertical-align:top;">
                 <div style="height:6px;background:#CBA86F;border-radius:4px;"></div>
-                <div style="font-size:11px;color:#17201A;font-weight:700;margin-top:8px;">Butcher review</div>
               </td>
-              <td align="center" style="width:33.33%;padding:0 4px;">
+              <td align="center" valign="top" style="width:33.33%;padding:0 4px;vertical-align:top;">
                 <div style="height:6px;background:#E4DED2;border-radius:4px;"></div>
-                <div style="font-size:11px;color:#6F665B;font-weight:700;margin-top:8px;">${escapeHtml(stepThree)}</div>
+              </td>
+            </tr>
+            <tr>
+              <td align="center" valign="top" style="width:33.33%;padding:8px 4px 0 4px;vertical-align:top;">
+                <div style="font-size:11px;color:#17201A;font-weight:700;line-height:1.25;">Received</div>
+              </td>
+              <td align="center" valign="top" style="width:33.33%;padding:8px 4px 0 4px;vertical-align:top;">
+                <div style="font-size:11px;color:#17201A;font-weight:700;line-height:1.25;">Butcher review</div>
+              </td>
+              <td align="center" valign="top" style="width:33.33%;padding:8px 4px 0 4px;vertical-align:top;">
+                <div style="font-size:11px;color:#6F665B;font-weight:700;line-height:1.25;">${escapeHtml(stepThree)}</div>
               </td>
             </tr>
           </table>

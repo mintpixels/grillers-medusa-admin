@@ -8,6 +8,12 @@ export const SUPPORT_EMAIL =
 
 export const SUPPORT_PHONE = process.env.SUPPORT_PHONE || "(770) 454-8108"
 
+const STOREFRONT_ASSET_BASE = STOREFRONT_URL.replace(/\/+$/, "")
+
+export const BRAND_LOGO_URL =
+  process.env.EMAIL_LOGO_URL ||
+  `${STOREFRONT_ASSET_BASE}/images/logos/logo-horizontal.png`
+
 type LayoutInput = {
   preheader?: string
   eyebrow?: string
@@ -66,8 +72,9 @@ export const renderEmail = ({
       @media only screen and (max-width:620px){
         .email-container{width:100% !important;}
         .email-padding{padding:24px 20px !important;}
-        .email-hero{padding:32px 20px !important;}
+        .email-hero{padding:24px 20px !important;}
         .email-hero h1{font-size:24px !important;}
+        .brand-logo{width:220px !important;height:auto !important;}
         .stack-col{display:block !important;width:100% !important;padding:0 0 20px 0 !important;border-left:none !important;border-top:1px solid ${BRAND.line} !important;padding-top:20px !important;}
         .stack-col-first{padding-bottom:20px !important;border-top:none !important;}
       }
@@ -81,9 +88,11 @@ export const renderEmail = ({
         <td align="center" style="padding:32px 16px;">
           <table role="presentation" class="email-container" width="600" cellpadding="0" cellspacing="0" border="0" style="background:${BRAND.white};border-radius:8px;overflow:hidden;max-width:600px;width:100%;border:1px solid ${BRAND.line};">
             <tr>
-              <td class="email-hero" style="background:${BRAND.black};padding:30px 40px;">
-                <div style="font-family:Georgia,'Times New Roman',serif;font-size:19px;letter-spacing:0;color:${BRAND.white};font-weight:700;">Griller's Pride</div>
-                <div style="font-size:11px;letter-spacing:0;color:${BRAND.gold};text-transform:uppercase;margin-top:5px;">Premium Kosher Meats</div>
+              <td class="email-hero" align="center" style="background:${BRAND.white};padding:26px 40px;border-bottom:1px solid ${BRAND.line};text-align:center;">
+                <a href="${escapeHtml(STOREFRONT_URL)}" style="display:inline-block;text-decoration:none;">
+                  <img class="brand-logo" src="${escapeHtml(BRAND_LOGO_URL)}" width="256" height="24" alt="Griller's Pride" style="display:block;width:256px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;margin:0 auto;"/>
+                </a>
+                <div style="font-size:11px;letter-spacing:0;color:${BRAND.gold};text-transform:uppercase;margin-top:10px;font-weight:700;">Premium Kosher Meats</div>
               </td>
             </tr>
             ${

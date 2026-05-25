@@ -46,6 +46,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const amount = numericAmount(body.amount)
   const paymentModule = req.scope.resolve(Modules.PAYMENT)
   const orderModule = req.scope.resolve(Modules.ORDER)
+  const eventBus = req.scope.resolve(Modules.EVENT_BUS)
   const query = req.scope.resolve("query")
 
   const before = await paymentModule.retrievePayment(paymentId, {
@@ -93,6 +94,20 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         reference_id: refund.id,
       })
     }
+  }
+
+  if (refund?.id) {
+    await eventBus.emit({
+      name: "payment.refunded",
+      data: {
+        id: payment.id,
+        payment_id: payment.id,
+        refund_id: refund.id,
+        order_id: orderId,
+        amount: refundAmount(refund, amount),
+        reason: body.note,
+      },
+    })
   }
 
   res.status(200).json({ payment })

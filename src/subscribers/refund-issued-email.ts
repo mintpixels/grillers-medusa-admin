@@ -5,9 +5,23 @@ import { buildRefundIssuedEmail } from "../lib/emails/templates/refund-issued"
 
 type RefundEventData = {
   id: string
+  payment_id?: string
+  refund_id?: string
   order_id?: string
   amount?: number | string
   reason?: string
+  note?: string
+}
+
+const amountFromRefund = (
+  refund: Record<string, any>
+): number | string | undefined => {
+  const raw = refund.raw_amount
+  if (raw && typeof raw === "object" && "value" in raw) {
+    return raw.value
+  }
+
+  return raw ?? refund.amount
 }
 
 export default async function refundIssuedEmailHandler({
@@ -19,18 +33,67 @@ export default async function refundIssuedEmailHandler({
   const query = container.resolve("query")
 
   try {
+    let paymentId = data.payment_id || data.id
+    let refundId = data.refund_id
     let orderId = data.order_id
-    let refundAmount = data.amount
+    let resolvedRefundAmount = data.amount
+    let reason = data.reason || data.note
 
-    if (!orderId || refundAmount === undefined) {
+    if (!orderId || resolvedRefundAmount === undefined || !refundId) {
+      const { data: payments } = await query.graph({
+        entity: "payment",
+        fields: [
+          "id",
+          "payment_collection_id",
+          "refunds.id",
+          "refunds.amount",
+          "refunds.raw_amount",
+          "refunds.note",
+        ],
+        filters: { id: paymentId },
+      })
+      const payment = payments?.[0] as any
+      if (payment) {
+        const refunds = Array.isArray(payment.refunds) ? payment.refunds : []
+        const refund =
+          (refundId && refunds.find((candidate: any) => candidate.id === refundId)) ||
+          refunds[refunds.length - 1]
+
+        refundId = refundId || refund?.id
+        resolvedRefundAmount =
+          resolvedRefundAmount ?? (refund ? amountFromRefund(refund) : undefined)
+        reason = reason || refund?.note
+
+        if (payment.payment_collection_id && !orderId) {
+          const { data: orderPCs } = await query.graph({
+            entity: "order_payment_collection",
+            fields: ["order_id"],
+            filters: { payment_collection_id: payment.payment_collection_id },
+          })
+          orderId = orderPCs?.[0]?.order_id
+        }
+      }
+    }
+
+    if ((!orderId || resolvedRefundAmount === undefined) && refundId) {
       const { data: refunds } = await query.graph({
         entity: "refund",
-        fields: ["id", "amount", "payment.payment_collection_id", "payment.payment_collection.cart_id"],
-        filters: { id: data.id },
+        fields: [
+          "id",
+          "amount",
+          "raw_amount",
+          "note",
+          "payment.id",
+          "payment.payment_collection_id",
+          "payment.payment_collection.cart_id",
+        ],
+        filters: { id: refundId },
       })
       const refund = refunds?.[0] as any
       if (refund) {
-        refundAmount = refundAmount ?? refund.amount
+        paymentId = paymentId || refund.payment?.id
+        resolvedRefundAmount = resolvedRefundAmount ?? amountFromRefund(refund)
+        reason = reason || refund.note
         const paymentCollectionId = refund.payment?.payment_collection_id
         if (paymentCollectionId && !orderId) {
           const { data: orderPCs } = await query.graph({
@@ -44,7 +107,9 @@ export default async function refundIssuedEmailHandler({
     }
 
     if (!orderId) {
-      logger.warn(`[refund-issued-email] could not resolve order_id for refund ${data.id}`)
+      logger.warn(
+        `[refund-issued-email] could not resolve order_id for payment=${paymentId} refund=${refundId || "unknown"}`
+      )
       return
     }
 
@@ -53,12 +118,12 @@ export default async function refundIssuedEmailHandler({
 
     const { subject, html, text } = buildRefundIssuedEmail({
       order,
-      refundAmount: refundAmount ?? 0,
-      reason: data.reason,
+      refundAmount: resolvedRefundAmount ?? 0,
+      reason,
     })
 
     logger.info(
-      `[refund-issued-email] sending to=${order.email} order=${order.id} amount=${refundAmount}`
+      `[refund-issued-email] sending to=${order.email} order=${order.id} amount=${resolvedRefundAmount}`
     )
 
     await notificationModule.createNotifications({
@@ -69,7 +134,7 @@ export default async function refundIssuedEmailHandler({
       data: {
         order_id: order.id,
         display_id: order.display_id,
-        refund_amount: refundAmount,
+        refund_amount: resolvedRefundAmount,
       },
     })
   } catch (err) {
@@ -80,5 +145,5 @@ export default async function refundIssuedEmailHandler({
 }
 
 export const config: SubscriberConfig = {
-  event: "refund.created",
+  event: "payment.refunded",
 }
