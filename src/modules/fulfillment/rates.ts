@@ -28,6 +28,10 @@ export function lineItemQualifiesForFreeDelivery(item: LineItemLike): boolean {
 }
 
 export function lineItemSubtotalCents(item: LineItemLike): number {
+  return Math.round(lineItemSubtotalAmount(item) * 100)
+}
+
+export function lineItemSubtotalAmount(item: LineItemLike): number {
   const direct = item.subtotal ?? item.total
   if (typeof direct === "number" && Number.isFinite(direct)) {
     return Math.max(0, direct)
@@ -35,6 +39,16 @@ export function lineItemSubtotalCents(item: LineItemLike): number {
   const unit = typeof item.unit_price === "number" ? item.unit_price : 0
   const quantity = typeof item.quantity === "number" ? item.quantity : 0
   return Math.max(0, unit * quantity)
+}
+
+export function eligibleSubtotalAmount(items: LineItemLike[] = []): number {
+  return items.reduce(
+    (sum, item) =>
+      lineItemQualifiesForFreeDelivery(item)
+        ? sum + lineItemSubtotalAmount(item)
+        : sum,
+    0
+  )
 }
 
 export function eligibleSubtotalCents(items: LineItemLike[] = []): number {

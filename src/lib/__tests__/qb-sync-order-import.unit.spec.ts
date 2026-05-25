@@ -5,6 +5,7 @@ import {
   normalizeOrderForQbSync,
   postOrderToQbSync,
 } from "../../subscribers/qb-sync-order-import"
+import { config as canceledOrderImportConfig } from "../../subscribers/qb-sync-order-canceled-import"
 
 describe("qb-sync order import subscriber", () => {
   it("posts order payloads with the shared sync token", async () => {
@@ -56,6 +57,10 @@ describe("qb-sync order import subscriber", () => {
     expect(ORDER_FIELDS).not.toContain("+items.variant.product.metadata")
     expect(ORDER_FIELDS).not.toContain("*items")
     expect(ORDER_FIELDS).not.toContain("*shipping_address")
+  })
+
+  it("registers a cancellation subscriber so canceled orders refresh the sync app", () => {
+    expect(canceledOrderImportConfig.event).toBe("order.canceled")
   })
 
   it("normalizes Medusa order line totals when graph payloads omit computed item fields", () => {
@@ -263,5 +268,37 @@ describe("qb-sync order import subscriber", () => {
       total: 91.47975,
       subtotal: 84.9,
     })
+  })
+
+  it("includes shipping in the sync order total", () => {
+    const order = normalizeOrderForQbSync({
+      id: "order_shipping_total",
+      total: 40.97,
+      subtotal: 40.97,
+      item_total: 40.97,
+      item_subtotal: 40.97,
+      shipping_total: 40,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          title: "Ground Beef",
+          quantity: 2,
+          unit_price: 11.49,
+          total: 22.98,
+          subtotal: 22.98,
+        },
+        {
+          title: "Pocket Pies",
+          quantity: 1,
+          unit_price: 17.99,
+          total: 17.99,
+          subtotal: 17.99,
+        },
+      ],
+    })
+
+    expect(order.total).toBe(80.97)
+    expect(order.subtotal).toBe(40.97)
   })
 })

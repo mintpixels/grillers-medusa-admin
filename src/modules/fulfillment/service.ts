@@ -19,6 +19,7 @@ import StrapiModuleService from "../strapi/service";
 import { STRAPI_MODULE } from "../strapi";
 import {
   atlantaDeliveryRateCents,
+  eligibleSubtotalAmount,
   eligibleSubtotalCents,
   type AtlantaDeliveryZoneRate,
 } from "./rates";
@@ -90,7 +91,8 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         const serviceCode: string | any = optionData?.service_code;
         const items = Array.isArray(optionData?.items) ? optionData.items : [];
 
-        const total = eligibleSubtotalCents(items);
+        const eligibleSubtotal = eligibleSubtotalAmount(items);
+        const eligibleSubtotalInCents = eligibleSubtotalCents(items);
 
         if (serviceCode == "ATLANTA_DELIVERY" && zip) {
           try {
@@ -114,7 +116,9 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
                 (await response.json())?.data?.[0]
               );
               if (zone) {
-                return atlantaDeliveryRateCents(zone, total);
+                return (
+                  atlantaDeliveryRateCents(zone, eligibleSubtotalInCents) / 100
+                );
               }
             }
           } catch (error) {
@@ -179,7 +183,7 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
 
           let matchedTier: any = tierSet[0];
           for (const tier of tierSet) {
-            if (tier.BreakpointPrice <= total) {
+            if (tier.BreakpointPrice <= eligibleSubtotal) {
               matchedTier = tier;
             }
           }
@@ -188,9 +192,9 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
             serviceCode === "GROUND" || serviceCode === "OVERNIGHT";
 
           if (zoneIsPercent) {
-            price = (matchedTier.ShippingRate / 100) * total;
+            price = (matchedTier.ShippingRate / 100) * eligibleSubtotal;
           } else if (isUPSTier && matchedTier.BreakpointPrice > 0) {
-            price = (matchedTier.ShippingRate / 100) * total;
+            price = (matchedTier.ShippingRate / 100) * eligibleSubtotal;
           } else {
             price = matchedTier.ShippingRate;
           }

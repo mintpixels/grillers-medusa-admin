@@ -1,5 +1,6 @@
 import {
   atlantaDeliveryRateCents,
+  eligibleSubtotalAmount,
   eligibleSubtotalCents,
   lineItemQualifiesForFreeDelivery,
 } from "../rates"
@@ -16,10 +17,21 @@ describe("fulfillment rates", () => {
 
   it("calculates checkout rate tiers from eligible subtotal only", () => {
     expect(
-      eligibleSubtotalCents([
-        { unit_price: 10000, quantity: 2, metadata: {} },
+      eligibleSubtotalAmount([
+        { unit_price: 100, quantity: 2, metadata: {} },
         {
-          unit_price: 10000,
+          unit_price: 100,
+          quantity: 1,
+          metadata: { free_delivery_eligible: false },
+        },
+      ])
+    ).toBe(200)
+
+    expect(
+      eligibleSubtotalCents([
+        { unit_price: 100, quantity: 2, metadata: {} },
+        {
+          unit_price: 100,
           quantity: 1,
           metadata: { free_delivery_eligible: false },
         },

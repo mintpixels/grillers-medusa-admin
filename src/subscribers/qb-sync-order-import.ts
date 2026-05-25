@@ -436,10 +436,15 @@ export async function postOrderToQbSync(
   }
 }
 
-export default async function qbSyncOrderImportHandler({
-  event: { data },
+export async function importOrderToQbSync({
+  orderId,
   container,
-}: SubscriberArgs<{ id: string }>) {
+  source = "order.placed",
+}: {
+  orderId: string
+  container: SubscriberArgs<{ id: string }>["container"]
+  source?: string
+}) {
   const logger = container.resolve("logger")
   const query = container.resolve("query")
   const db = container.resolve(ContainerRegistrationKeys.PG_CONNECTION)
@@ -448,7 +453,7 @@ export default async function qbSyncOrderImportHandler({
 
   if (!endpoint || !token) {
     logger.warn(
-      `[qb-sync-order-import] QB_SYNC_ORDER_IMPORT_URL or QB_SYNC_ORDER_IMPORT_TOKEN missing; skipped order=${data.id}`
+      `[qb-sync-order-import] QB_SYNC_ORDER_IMPORT_URL or QB_SYNC_ORDER_IMPORT_TOKEN missing; skipped order=${orderId} source=${source}`
     )
     return
   }
@@ -457,12 +462,12 @@ export default async function qbSyncOrderImportHandler({
     const { data: orders } = await query.graph({
       entity: "order",
       fields: ORDER_FIELDS,
-      filters: { id: data.id },
+      filters: { id: orderId },
     })
 
     const order = orders?.[0] as Record<string, unknown> | undefined
     if (!order) {
-      logger.warn(`[qb-sync-order-import] order not found id=${data.id}`)
+      logger.warn(`[qb-sync-order-import] order not found id=${orderId} source=${source}`)
       return
     }
 
@@ -478,18 +483,29 @@ export default async function qbSyncOrderImportHandler({
     if (!response.ok) {
       const body = await response.text().catch(() => "")
       logger.error(
-        `[qb-sync-order-import] import failed order=${data.id} status=${response.status} body=${body.slice(0, 500)}`
+        `[qb-sync-order-import] import failed order=${orderId} source=${source} status=${response.status} body=${body.slice(0, 500)}`
       )
       return
     }
 
-    logger.info(`[qb-sync-order-import] imported order=${data.id}`)
+    logger.info(`[qb-sync-order-import] imported order=${orderId} source=${source}`)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     logger.error(
-      `[qb-sync-order-import] failed for order ${data.id}: ${message}`
+      `[qb-sync-order-import] failed for order ${orderId} source=${source}: ${message}`
     )
   }
+}
+
+export default async function qbSyncOrderImportHandler({
+  event: { data },
+  container,
+}: SubscriberArgs<{ id: string }>) {
+  await importOrderToQbSync({
+    orderId: data.id,
+    container,
+    source: "order.placed",
+  })
 }
 
 export const config: SubscriberConfig = {
