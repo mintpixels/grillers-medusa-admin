@@ -36,6 +36,7 @@ type FlowStep =
 
 const now = () => new Date()
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID()}`
+const jsonb = (value: unknown) => JSON.stringify(value ?? {})
 
 const PREBUILT_SEGMENTS = [
   {
@@ -469,6 +470,7 @@ export async function seedCommunicationDefaults(db: KnexLike) {
     if (existing) {
       await db("gp_segment").where("id", existing.id).update({
         ...segment,
+        query_definition: jsonb(segment.query_definition),
         status: "active",
         updated_at: now(),
       })
@@ -476,6 +478,7 @@ export async function seedCommunicationDefaults(db: KnexLike) {
       await db("gp_segment").insert({
         id: id("gpseg"),
         ...segment,
+        query_definition: jsonb(segment.query_definition),
         status: "active",
         cached_count: 0,
         created_at: now(),
@@ -494,8 +497,8 @@ export async function seedCommunicationDefaults(db: KnexLike) {
       name: flow.name,
       description: flow.description,
       trigger_event: flow.trigger_event || null,
-      trigger_conditions: flow.trigger_conditions || {},
-      steps: flow.steps,
+      trigger_conditions: jsonb(flow.trigger_conditions || {}),
+      steps: jsonb(flow.steps),
       status: "active",
       message_stream: flow.message_stream,
       message_purpose:

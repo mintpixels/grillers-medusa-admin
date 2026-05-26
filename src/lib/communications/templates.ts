@@ -4,6 +4,7 @@ type KnexLike = any
 
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID()}`
 const now = () => new Date()
+const jsonb = (value: unknown) => JSON.stringify(value ?? {})
 
 type TemplateRecord = {
   key: string
@@ -232,13 +233,13 @@ export async function seedEmailTemplates(db: KnexLike) {
       message_stream: template.stream,
       message_purpose: templatePurpose(template),
       consent_required: templateConsentRequired(template),
-      variables: template.variables,
-      preview_model: template.preview_model || {},
+      variables: jsonb(template.variables),
+      preview_model: jsonb(template.preview_model || {}),
       status: "active",
-      metadata: {
+      metadata: jsonb({
         managed_by: "communications-platform",
         customer_safe_catalog_required: true,
-      },
+      }),
       updated_at: now(),
     }
 
