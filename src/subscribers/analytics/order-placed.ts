@@ -3,7 +3,7 @@ import {
   experimentContextFromItem,
   experimentContextFromItems,
   experimentIdentityFromItems,
-} from "./experiment-context"
+} from "../../lib/analytics/experiment-context"
 
 export default async function orderPlacedHandler({
   event: { data },

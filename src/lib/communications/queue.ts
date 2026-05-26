@@ -64,7 +64,7 @@ async function delivery(
         created_at: now,
         updated_at: now,
       })
-      .onConflict(["event_id", "target"])
+      .onConflict(db.raw('("event_id", "target") where "deleted_at" is null'))
       .merge({
         status,
         attempts: db.raw("gp_event_delivery.attempts + 1"),

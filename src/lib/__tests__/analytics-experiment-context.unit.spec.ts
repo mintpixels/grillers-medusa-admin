@@ -2,7 +2,7 @@ import {
   experimentContextFromItem,
   experimentContextFromItems,
   experimentIdentityFromItems,
-} from "../../subscribers/analytics/experiment-context"
+} from "../analytics/experiment-context"
 
 describe("experiment analytics context", () => {
   it("normalizes experiment context from line-item metadata", () => {

@@ -121,7 +121,10 @@ export async function attributeOrderFromEvent(
     updated_at: now(),
   }
 
-  await db("gp_attribution").insert(row).onConflict(["order_id", "attribution_type"]).ignore()
+  await db("gp_attribution")
+    .insert(row)
+    .onConflict(db.raw('("order_id", "attribution_type") where "deleted_at" is null'))
+    .ignore()
 
   if (row.campaign_id) {
     const campaign = await db("gp_campaign")

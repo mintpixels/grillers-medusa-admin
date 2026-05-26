@@ -378,7 +378,7 @@ export async function recordCommunicationEvent(
 
   await db("gp_communication_event")
     .insert(row)
-    .onConflict("event_id")
+    .onConflict(db.raw('("event_id") where "deleted_at" is null'))
     .ignore()
 
   try {

@@ -53,7 +53,7 @@ async function delivery(
   try {
     await db("gp_event_delivery")
       .insert(row)
-      .onConflict(["event_id", "target"])
+      .onConflict(db.raw('("event_id", "target") where "deleted_at" is null'))
       .merge({
         status,
         attempts: db.raw("gp_event_delivery.attempts + 1"),
