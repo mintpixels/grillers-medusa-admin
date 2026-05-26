@@ -13,6 +13,9 @@ console.log("[PM-LOAD] postmark notification service module loaded at boot")
 type PostmarkOptions = {
   api_token: string
   from: string
+  transactional_stream?: string
+  lifecycle_stream?: string
+  broadcast_stream?: string
 }
 
 export class PostmarkNotificationService extends AbstractNotificationProviderService {
@@ -26,6 +29,9 @@ export class PostmarkNotificationService extends AbstractNotificationProviderSer
     this.config_ = {
       api_token: options.api_token,
       from: options.from,
+      transactional_stream: options.transactional_stream,
+      lifecycle_stream: options.lifecycle_stream,
+      broadcast_stream: options.broadcast_stream,
     }
     this.logger_ = logger
   }
@@ -45,26 +51,53 @@ export class PostmarkNotificationService extends AbstractNotificationProviderSer
     }
 
     const from = notification.from?.trim() || this.config_.from
+    const data = ((notification as any).data || {}) as Record<string, any>
+    const metadata = data.metadata || {}
+    const templateAlias = data.template_alias || data.TemplateAlias
+    const templateModel = data.template_model || data.TemplateModel || {}
+    const messageStream =
+      data.message_stream ||
+      data.MessageStream ||
+      this.config_.transactional_stream ||
+      "outbound"
+    const tag = data.tag || data.Tag
 
     this.logger_.info(
-      `[notification-postmark] POST api.postmarkapp.com from=${from} to=${notification.to} subject="${notification.content?.subject}"`
+      `[notification-postmark] POST api.postmarkapp.com from=${from} to=${notification.to} stream=${messageStream} subject="${notification.content?.subject}"`
     )
 
-    const res = await fetch("https://api.postmarkapp.com/email", {
+    const endpoint = templateAlias
+      ? "https://api.postmarkapp.com/email/withTemplate"
+      : "https://api.postmarkapp.com/email"
+    const payload = templateAlias
+      ? {
+          From: from,
+          To: notification.to,
+          TemplateAlias: templateAlias,
+          TemplateModel: templateModel,
+          MessageStream: messageStream,
+          ...(tag ? { Tag: tag } : {}),
+          ...(Object.keys(metadata).length ? { Metadata: metadata } : {}),
+        }
+      : {
+          From: from,
+          To: notification.to,
+          Subject: notification.content?.subject,
+          HtmlBody: notification.content?.html,
+          TextBody: notification.content?.text,
+          MessageStream: messageStream,
+          ...(tag ? { Tag: tag } : {}),
+          ...(Object.keys(metadata).length ? { Metadata: metadata } : {}),
+        }
+
+    const res = await fetch(endpoint, {
       method: "POST",
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
         "X-Postmark-Server-Token": this.config_.api_token,
       },
-      body: JSON.stringify({
-        From: from,
-        To: notification.to,
-        Subject: notification.content?.subject,
-        HtmlBody: notification.content?.html,
-        TextBody: notification.content?.text,
-        MessageStream: "outbound",
-      }),
+      body: JSON.stringify(payload),
     })
 
     if (!res.ok) {

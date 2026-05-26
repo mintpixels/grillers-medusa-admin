@@ -115,6 +115,8 @@ const PRODUCT_CUSTOMER_COPY_FIELDS = [
 
 const VARIANT_CUSTOMER_COPY_FIELDS = ["Title"];
 
+const DESTRUCTIVE_SYNC_ENABLED_VALUES = new Set(["1", "true", "yes", "y"]);
+
 function objectRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -344,6 +346,13 @@ function quickBooksListIdFromMetadata(metadata: unknown): string | undefined {
   return undefined;
 }
 
+function destructiveStrapiSyncEnabled(): boolean {
+  const value = process.env.STRAPI_ALLOW_DESTRUCTIVE_SYNC;
+  return typeof value === "string"
+    ? DESTRUCTIVE_SYNC_ENABLED_VALUES.has(value.trim().toLowerCase())
+    : false;
+}
+
 export default class StrapiModuleService {
   private client: AxiosInstance;
   private logger: Logger;
@@ -422,7 +431,7 @@ export default class StrapiModuleService {
     );
 
     try {
-      const existing = await this.findProductById(strapiId);
+      const existing = await this.findProductById(strapiId, { required: true });
       const payload = this.mapToStrapiPayload(product, existing);
       const response: AxiosResponse<any> = await this.client.put(
         `/api/products/${strapiId}`,
@@ -441,7 +450,10 @@ export default class StrapiModuleService {
     }
   }
 
-  private async findProductById(strapiId: string) {
+  private async findProductById(
+    strapiId: string,
+    options: { required?: boolean } = {}
+  ) {
     try {
       const response: AxiosResponse<any> = await this.client.get(
         `/api/products/${strapiId}`,
@@ -454,9 +466,13 @@ export default class StrapiModuleService {
 
       return response.data?.data || null;
     } catch (error) {
-      this.logger.warn(
-        `Strapi: could not read existing product ${strapiId}; preserving only Medusa metadata fields`
-      );
+      const message =
+        `Strapi: could not read existing product ${strapiId}; refusing to update because customer copy, media, categorization, SEO, and merchandising fields must be preserved`;
+      if (options.required) {
+        this.logger.error(message, error);
+        throw error;
+      }
+      this.logger.warn(message);
       return null;
     }
   }
@@ -465,6 +481,19 @@ export default class StrapiModuleService {
    * Delete a Strapi product entry by ID
    */
   public async deleteProduct(strapiId: string): Promise<AxiosResponse<null>> {
+    if (!destructiveStrapiSyncEnabled()) {
+      const message =
+        `Strapi: refusing to delete product ${strapiId}; set STRAPI_ALLOW_DESTRUCTIVE_SYNC=true only after a verified Strapi backup and cutover plan`;
+      this.logger.warn(message);
+      return {
+        data: null,
+        status: 202,
+        statusText: "Skipped by Strapi destructive-sync guard",
+        headers: {},
+        config: {},
+      } as AxiosResponse<null>;
+    }
+
     this.logger.info(`Strapi: deleting product ${strapiId}`);
 
     try {

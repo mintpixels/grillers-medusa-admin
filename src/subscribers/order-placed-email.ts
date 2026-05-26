@@ -1,14 +1,13 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
-import { Modules } from "@medusajs/framework/utils"
 import { fetchOrderForEmail } from "../lib/emails/order-fetch"
 import { buildOrderPlacedEmail } from "../lib/emails/templates/order-placed"
+import { sendTrackedEmail } from "../lib/communications/core"
 
 export default async function orderPlacedEmailHandler({
   event: { data },
   container,
 }: SubscriberArgs<{ id: string }>) {
   const logger = container.resolve("logger")
-  const notificationModule = container.resolve(Modules.NOTIFICATION)
 
   try {
     const order = await fetchOrderForEmail(container, data.id)
@@ -28,12 +27,18 @@ export default async function orderPlacedEmailHandler({
       `[order-placed-email] sending confirmation to=${order.email} order=${order.id}`
     )
 
-    await notificationModule.createNotifications({
+    await sendTrackedEmail(container, {
       to: order.email,
-      channel: "email",
-      template: "order-placed",
-      content: { subject, html, text },
-      data: {
+      stream: "transactional",
+      purpose: "transactional",
+      template_key: "order-placed",
+      subject,
+      html,
+      text,
+      topic: "order_updates",
+      idempotency_key: `order-placed:${order.id}`,
+      order_id: order.id,
+      metadata: {
         order_id: order.id,
         display_id: order.display_id,
         email: order.email,

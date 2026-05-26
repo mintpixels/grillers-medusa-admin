@@ -1,4 +1,8 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
+import {
+  experimentContextFromItem,
+  experimentContextFromItems,
+} from "./experiment-context"
 
 export default async function cartUpdatedHandler({
   event: { data },
@@ -17,6 +21,7 @@ export default async function cartUpdatedHandler({
         "total",
         "currency_code",
         "items.*",
+        "+items.metadata",
         "items.variant.*",
         "items.variant.product.*",
       ],
@@ -26,6 +31,7 @@ export default async function cartUpdatedHandler({
     const cart = carts?.[0] as any
     if (!cart) return
     const customerId = cart.customer_id || undefined
+    const experimentContext = experimentContextFromItems(cart.items)
 
     await analyticsService.track({
       event: "cart_updated",
@@ -35,6 +41,7 @@ export default async function cartUpdatedHandler({
         value: cart.total ?? 0,
         currency: cart.currency_code,
         customer_id: customerId,
+        experiment_context: experimentContext,
         item_count: cart.items?.length || 0,
         items: cart.items?.map((item: any) => ({
           item_id: item.variant?.product_id || item.id,
@@ -44,6 +51,7 @@ export default async function cartUpdatedHandler({
           quantity: item.quantity,
           kosher_type: item.variant?.product?.metadata?.kosher_type,
           cut_type: item.variant?.product?.metadata?.cut_type,
+          experiment_context: experimentContextFromItem(item),
         })),
       },
     })

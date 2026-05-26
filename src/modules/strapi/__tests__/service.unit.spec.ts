@@ -16,6 +16,7 @@ function service() {
 describe("StrapiModuleService", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.STRAPI_ALLOW_DESTRUCTIVE_SYNC;
   });
 
   it("maps QuickBooks ListID metadata onto Strapi product and variant fields", () => {
@@ -250,5 +251,55 @@ describe("StrapiModuleService", () => {
       ReplenishmentLeadDays: 14,
       SafetyStockQuantity: 4,
     });
+  });
+
+  it("refuses to update Strapi when the existing record cannot be read", async () => {
+    const svc = service();
+    const get = jest.fn().mockRejectedValue(new Error("Strapi unavailable"));
+    const put = jest.fn();
+    svc.client = { get, put };
+
+    await expect(
+      svc.updateProduct("strapi_doc_1", {
+        id: "prod_1",
+        title: "QuickBooks fallback title",
+        description: "QuickBooks fallback description",
+        handle: "quickbooks-fallback-title",
+        status: "published",
+        metadata: {},
+        variants: [],
+      })
+    ).rejects.toThrow("Strapi unavailable");
+
+    expect(put).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining("refusing to update"),
+      expect.any(Error)
+    );
+  });
+
+  it("does not delete Strapi products unless destructive sync is explicitly enabled", async () => {
+    const svc = service();
+    const del = jest.fn();
+    svc.client = { delete: del };
+
+    const response = await svc.deleteProduct("strapi_doc_1");
+
+    expect(del).not.toHaveBeenCalled();
+    expect(response.status).toBe(202);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("STRAPI_ALLOW_DESTRUCTIVE_SYNC=true")
+    );
+  });
+
+  it("allows Strapi product deletion only behind the destructive sync switch", async () => {
+    process.env.STRAPI_ALLOW_DESTRUCTIVE_SYNC = "true";
+    const svc = service();
+    const del = jest.fn().mockResolvedValue({ data: null, status: 200 });
+    svc.client = { delete: del };
+
+    await svc.deleteProduct("strapi_doc_1");
+
+    expect(del).toHaveBeenCalledWith("/api/products/strapi_doc_1");
   });
 });

@@ -1,0 +1,960 @@
+import crypto from "crypto"
+import type { MedusaContainer } from "@medusajs/framework/types"
+import {
+  ContainerRegistrationKeys,
+  Modules,
+} from "@medusajs/framework/utils"
+
+type KnexLike = any
+
+export type CommunicationStream = "transactional" | "lifecycle" | "broadcast"
+export type CommunicationPurpose =
+  | "transactional"
+  | "service"
+  | "marketing_1to1"
+  | "broadcast"
+
+export type CommunicationEventInput = {
+  event_name: string
+  event_id?: string
+  source?: string
+  profile_id?: string | null
+  medusa_customer_id?: string | null
+  anonymous_id?: string | null
+  session_id?: string | null
+  cart_id?: string | null
+  order_id?: string | null
+  email?: string | null
+  customer_type?: string | null
+  route_market?: string | null
+  campaign_id?: string | null
+  flow_id?: string | null
+  template_key?: string | null
+  message_id?: string | null
+  occurred_at?: Date | string
+  properties?: Record<string, any> | null
+  context?: Record<string, any> | null
+}
+
+export type CustomerProfileInput = {
+  medusa_customer_id?: string | null
+  email?: string | null
+  phone?: string | null
+  first_name?: string | null
+  last_name?: string | null
+  customer_type?: string | null
+  route_market?: string | null
+  email_consent?: boolean
+  preferences?: Record<string, any> | null
+  metadata?: Record<string, any> | null
+}
+
+export type SendTrackedEmailInput = {
+  to: string
+  subject: string
+  html: string
+  text?: string
+  stream: CommunicationStream
+  purpose?: CommunicationPurpose
+  template_key: string
+  topic?: string | null
+  idempotency_key?: string | null
+  profile_id?: string | null
+  medusa_customer_id?: string | null
+  order_id?: string | null
+  cart_id?: string | null
+  campaign_id?: string | null
+  flow_id?: string | null
+  flow_key?: string | null
+  flow_enrollment_id?: string | null
+  postmark_template_alias?: string | null
+  template_model?: Record<string, any> | null
+  metadata?: Record<string, any> | null
+}
+
+export const DEFAULT_NEWSLETTER_PREFERENCES = {
+  promotions: true,
+  new_products: true,
+  recipes: true,
+  holiday_reminders: true,
+  back_in_stock: true,
+  product_education: true,
+}
+
+export const MARKETING_SUPPRESSION_SCOPES = [
+  "marketing",
+  "lifecycle",
+  "broadcast",
+  "marketing_1to1",
+]
+
+const tableId = (prefix: string) => `${prefix}_${crypto.randomUUID()}`
+
+export function normalizeEmail(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+}
+
+export function newPreferenceToken(): string {
+  return crypto.randomBytes(24).toString("base64url")
+}
+
+function asDate(value?: Date | string): Date {
+  if (!value) return new Date()
+  const date = value instanceof Date ? value : new Date(value)
+  return Number.isNaN(date.getTime()) ? new Date() : date
+}
+
+function jsonObject(value: unknown): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, any>)
+    : {}
+}
+
+function resolveDb(container: MedusaContainer): KnexLike {
+  return container.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+}
+
+function postmarkStream(stream: CommunicationStream): string {
+  if (stream === "broadcast") {
+    return process.env.POSTMARK_BROADCAST_STREAM || "broadcast"
+  }
+  if (stream === "lifecycle") {
+    return process.env.POSTMARK_LIFECYCLE_STREAM || "broadcast"
+  }
+  return process.env.POSTMARK_TRANSACTIONAL_STREAM || "outbound"
+}
+
+function inferredPurpose(
+  stream: CommunicationStream,
+  templateKey?: string | null
+): CommunicationPurpose {
+  if (stream === "broadcast") return "broadcast"
+  if (templateKey?.startsWith("cart-abandoned")) return "marketing_1to1"
+  if (stream === "lifecycle") return "marketing_1to1"
+  return "transactional"
+}
+
+function requiresMarketingConsent(purpose: CommunicationPurpose): boolean {
+  return purpose === "marketing_1to1" || purpose === "broadcast"
+}
+
+function marketingPreferenceAllows(
+  profile: Record<string, any> | null,
+  topic?: string | null
+): boolean {
+  if (!topic) return true
+  const preferences = jsonObject(profile?.preferences)
+  if (preferences[topic] === false) return false
+  if (topic === "cart_recovery" && preferences.promotions === false) return false
+  return true
+}
+
+function experimentContextFrom(...values: unknown[]): Record<string, any> | null {
+  for (const value of values) {
+    const object = jsonObject(value)
+    const direct = jsonObject(object.experiment_context)
+    if (Object.keys(direct).length) return direct
+    const nested = jsonObject(jsonObject(object.context).experiment_context)
+    if (Object.keys(nested).length) return nested
+  }
+  return null
+}
+
+export async function upsertCustomerProfile(
+  db: KnexLike,
+  input: CustomerProfileInput
+): Promise<Record<string, any> | null> {
+  const emailLower = normalizeEmail(input.email)
+  const now = new Date()
+
+  let existing: Record<string, any> | null = null
+  if (input.medusa_customer_id) {
+    existing = await db("gp_customer_profile")
+      .whereNull("deleted_at")
+      .where("medusa_customer_id", input.medusa_customer_id)
+      .first()
+  }
+  if (!existing && emailLower) {
+    existing = await db("gp_customer_profile")
+      .whereNull("deleted_at")
+      .where("email_lower", emailLower)
+      .first()
+  }
+
+  const preferences = {
+    ...DEFAULT_NEWSLETTER_PREFERENCES,
+    ...jsonObject(existing?.preferences),
+    ...jsonObject(input.preferences),
+  }
+
+  if (existing) {
+    const patch = {
+      medusa_customer_id:
+        input.medusa_customer_id || existing.medusa_customer_id || null,
+      email: input.email || existing.email || null,
+      email_lower: emailLower || existing.email_lower || null,
+      phone: input.phone || existing.phone || null,
+      first_name: input.first_name || existing.first_name || null,
+      last_name: input.last_name || existing.last_name || null,
+      customer_type: input.customer_type || existing.customer_type || "dtc",
+      route_market: input.route_market || existing.route_market || "unknown",
+      email_consent:
+        input.email_consent === undefined
+          ? existing.email_consent
+          : input.email_consent,
+      email_consent_at:
+        input.email_consent && !existing.email_consent_at
+          ? now
+          : existing.email_consent_at,
+      preferences,
+      preference_token: existing.preference_token || newPreferenceToken(),
+      last_active_at: now,
+      metadata: {
+        ...jsonObject(existing.metadata),
+        ...jsonObject(input.metadata),
+      },
+      updated_at: now,
+    }
+    await db("gp_customer_profile").where("id", existing.id).update(patch)
+    return { ...existing, ...patch }
+  }
+
+  if (!emailLower && !input.medusa_customer_id) return null
+
+  const row = {
+    id: tableId("gpcprof"),
+    medusa_customer_id: input.medusa_customer_id || null,
+    email: input.email || null,
+    email_lower: emailLower || null,
+    phone: input.phone || null,
+    first_name: input.first_name || null,
+    last_name: input.last_name || null,
+    customer_type: input.customer_type || "dtc",
+    route_market: input.route_market || "unknown",
+    lifecycle_stage: "lead",
+    email_consent: Boolean(input.email_consent),
+    email_consent_at: input.email_consent ? now : null,
+    preferences,
+    preference_token: newPreferenceToken(),
+    last_active_at: now,
+    metadata: input.metadata || {},
+    created_at: now,
+    updated_at: now,
+  }
+  await db("gp_customer_profile").insert(row)
+  return row
+}
+
+export async function recordIdentity(
+  db: KnexLike,
+  profileId: string,
+  input: {
+    anonymous_id?: string | null
+    session_id?: string | null
+    cart_id?: string | null
+    medusa_customer_id?: string | null
+    email?: string | null
+    metadata?: Record<string, any> | null
+  }
+): Promise<void> {
+  const now = new Date()
+  const emailLower = normalizeEmail(input.email)
+  const selectors: Array<Record<string, string>> = []
+  if (input.anonymous_id) selectors.push({ anonymous_id: input.anonymous_id })
+  if (input.cart_id) selectors.push({ cart_id: input.cart_id })
+  if (input.medusa_customer_id) {
+    selectors.push({ medusa_customer_id: input.medusa_customer_id })
+  }
+
+  if (!selectors.length) return
+
+  for (const selector of selectors) {
+    const existing = await db("gp_identity_map")
+      .whereNull("deleted_at")
+      .where(selector)
+      .first()
+    const patch = {
+      profile_id: profileId,
+      anonymous_id: input.anonymous_id || existing?.anonymous_id || null,
+      session_id: input.session_id || existing?.session_id || null,
+      cart_id: input.cart_id || existing?.cart_id || null,
+      medusa_customer_id:
+        input.medusa_customer_id || existing?.medusa_customer_id || null,
+      email_lower: emailLower || existing?.email_lower || null,
+      last_seen_at: now,
+      metadata: {
+        ...jsonObject(existing?.metadata),
+        ...jsonObject(input.metadata),
+      },
+      updated_at: now,
+    }
+    if (existing) {
+      await db("gp_identity_map").where("id", existing.id).update(patch)
+    } else {
+      await db("gp_identity_map").insert({
+        id: tableId("gpidmap"),
+        first_seen_at: now,
+        created_at: now,
+        ...patch,
+      })
+    }
+  }
+}
+
+export async function recordCommunicationEvent(
+  db: KnexLike,
+  input: CommunicationEventInput
+): Promise<Record<string, any>> {
+  const now = new Date()
+  const eventId = input.event_id || crypto.randomUUID()
+  const experimentContext = experimentContextFrom(input.context, input.properties)
+  const context = {
+    ...(input.context || {}),
+    ...(experimentContext ? { experiment_context: experimentContext } : {}),
+  }
+  const existingEvent = await db("gp_communication_event")
+    .whereNull("deleted_at")
+    .where("event_id", eventId)
+    .first()
+  if (existingEvent) return existingEvent
+
+  const emailLower = normalizeEmail(input.email)
+  let profile = null as Record<string, any> | null
+
+  if (input.profile_id) {
+    profile = await db("gp_customer_profile")
+      .whereNull("deleted_at")
+      .where("id", input.profile_id)
+      .first()
+  }
+  if (!profile && (emailLower || input.medusa_customer_id)) {
+    profile = await upsertCustomerProfile(db, {
+      email: input.email || undefined,
+      medusa_customer_id: input.medusa_customer_id || undefined,
+      customer_type: input.customer_type || undefined,
+      route_market: input.route_market || undefined,
+    })
+  }
+
+  if (profile) {
+    await recordIdentity(db, profile.id, {
+      anonymous_id: input.anonymous_id,
+      session_id: input.session_id,
+      cart_id: input.cart_id,
+      medusa_customer_id: input.medusa_customer_id,
+      email: input.email,
+    })
+  }
+
+  const row = {
+    id: tableId("gpcevt"),
+    event_id: eventId,
+    event_name: input.event_name,
+    source: input.source || "medusa-server",
+    profile_id: input.profile_id || profile?.id || null,
+    medusa_customer_id:
+      input.medusa_customer_id || profile?.medusa_customer_id || null,
+    anonymous_id: input.anonymous_id || null,
+    session_id: input.session_id || null,
+    cart_id: input.cart_id || null,
+    order_id: input.order_id || null,
+    email: input.email || profile?.email || null,
+    email_lower: emailLower || profile?.email_lower || null,
+    customer_type: input.customer_type || profile?.customer_type || "unknown",
+    route_market: input.route_market || profile?.route_market || "unknown",
+    campaign_id: input.campaign_id || null,
+    flow_id: input.flow_id || null,
+    template_key: input.template_key || null,
+    message_id: input.message_id || null,
+    occurred_at: asDate(input.occurred_at),
+    received_at: now,
+    properties: input.properties || {},
+    context,
+    created_at: now,
+    updated_at: now,
+  }
+
+  await db("gp_communication_event")
+    .insert(row)
+    .onConflict("event_id")
+    .ignore()
+
+  try {
+    const { writeEventDestinations } = await import("./destinations.js")
+    await writeEventDestinations(db, row)
+  } catch {
+    // External delivery must never block event ingestion.
+  }
+
+  try {
+    const { enqueueCommunicationEvent } = await import("./queue.js")
+    const queued = await enqueueCommunicationEvent(db, row)
+    if (!queued) {
+      const { syncCartLifecycleFromEvent } = await import("./cart-lifecycle.js")
+      const { attributeOrderFromEvent } = await import("./attribution.js")
+      await syncCartLifecycleFromEvent(db, row)
+      await attributeOrderFromEvent(db, row)
+      if (!String(row.event_name || "").startsWith("email_")) {
+        const { evaluateFlowsForEvent } = await import("./flows.js")
+        await evaluateFlowsForEvent(db, row)
+      }
+    }
+  } catch {
+    // Automation side effects must never block event ingestion.
+  }
+
+  return row
+}
+
+async function hasSuppression(
+  db: KnexLike,
+  emailLower: string,
+  purpose: CommunicationPurpose,
+  topic?: string | null
+): Promise<boolean> {
+  if (!emailLower) return true
+  const scopes =
+    purpose === "transactional" || purpose === "service"
+      ? ["global", "hard_bounce", "complaint"]
+      : [
+          "global",
+          "marketing",
+          "lifecycle",
+          "broadcast",
+          "marketing_1to1",
+          "hard_bounce",
+          "complaint",
+        ]
+  const rows = await db("gp_suppression_preference")
+    .whereNull("deleted_at")
+    .whereNull("resubscribed_at")
+    .where("email_lower", emailLower)
+    .whereIn("scope", scopes)
+  return rows.some(
+    (row: Record<string, any>) => !row.topic || !topic || row.topic === topic
+  )
+}
+
+export async function recordSuppression(
+  db: KnexLike,
+  input: {
+    email: string
+    scope: string
+    topic?: string | null
+    reason: string
+    source?: string | null
+    metadata?: Record<string, any> | null
+  }
+): Promise<Record<string, any> | null> {
+  const emailLower = normalizeEmail(input.email)
+  if (!emailLower) return null
+  const now = new Date()
+  const existing = await db("gp_suppression_preference")
+    .whereNull("deleted_at")
+    .whereNull("resubscribed_at")
+    .where("email_lower", emailLower)
+    .where("scope", input.scope)
+    .whereRaw("coalesce(topic, '') = ?", [input.topic || ""])
+    .first()
+
+  if (existing) {
+    const patch = {
+      reason: input.reason,
+      source: input.source || existing.source,
+      unsubscribed_at: existing.unsubscribed_at || now,
+      metadata: {
+        ...jsonObject(existing.metadata),
+        ...jsonObject(input.metadata),
+      },
+      updated_at: now,
+    }
+    await db("gp_suppression_preference").where("id", existing.id).update(patch)
+    return { ...existing, ...patch }
+  }
+
+  const row = {
+    id: tableId("gpsupp"),
+    email: input.email,
+    email_lower: emailLower,
+    scope: input.scope,
+    topic: input.topic || null,
+    reason: input.reason,
+    source: input.source || null,
+    unsubscribed_at: now,
+    metadata: input.metadata || {},
+    created_at: now,
+    updated_at: now,
+  }
+  await db("gp_suppression_preference").insert(row)
+  return row
+}
+
+export async function sendTrackedEmail(
+  container: MedusaContainer,
+  input: SendTrackedEmailInput
+): Promise<{ ok: boolean; skipped?: boolean; messageId?: string; error?: string }> {
+  const db = resolveDb(container)
+  const logger = container.resolve("logger")
+  const notification = container.resolve(Modules.NOTIFICATION)
+  const emailLower = normalizeEmail(input.to)
+  const now = new Date()
+  const purpose = input.purpose || inferredPurpose(input.stream, input.template_key)
+  const experimentContext = experimentContextFrom(
+    input.metadata,
+    input.template_model
+  )
+  const profile = await upsertCustomerProfile(db, {
+    email: input.to,
+    medusa_customer_id: input.medusa_customer_id || undefined,
+  })
+
+  if (!emailLower) {
+    return { ok: false, error: "missing_recipient" }
+  }
+
+  if (
+    requiresMarketingConsent(purpose) &&
+    (!profile?.email_consent || !profile?.email_consent_at)
+  ) {
+    await recordCommunicationEvent(db, {
+      event_name: "email_suppressed",
+      email: input.to,
+      profile_id: profile?.id,
+      template_key: input.template_key,
+      order_id: input.order_id,
+      cart_id: input.cart_id,
+      campaign_id: input.campaign_id,
+      flow_id: input.flow_id,
+      properties: {
+        stream: input.stream,
+        purpose,
+        topic: input.topic,
+        reason: "missing_marketing_consent",
+      },
+      context: experimentContext ? { experiment_context: experimentContext } : {},
+    })
+    return { ok: true, skipped: true }
+  }
+
+  if (
+    requiresMarketingConsent(purpose) &&
+    !marketingPreferenceAllows(profile, input.topic)
+  ) {
+    await recordCommunicationEvent(db, {
+      event_name: "email_suppressed",
+      email: input.to,
+      profile_id: profile?.id,
+      template_key: input.template_key,
+      order_id: input.order_id,
+      cart_id: input.cart_id,
+      campaign_id: input.campaign_id,
+      flow_id: input.flow_id,
+      properties: {
+        stream: input.stream,
+        purpose,
+        topic: input.topic,
+        reason: "topic_preference",
+      },
+      context: experimentContext ? { experiment_context: experimentContext } : {},
+    })
+    return { ok: true, skipped: true }
+  }
+
+  if (await hasSuppression(db, emailLower, purpose, input.topic)) {
+    await recordCommunicationEvent(db, {
+      event_name: "email_suppressed",
+      email: input.to,
+      profile_id: profile?.id,
+      template_key: input.template_key,
+      order_id: input.order_id,
+      cart_id: input.cart_id,
+      campaign_id: input.campaign_id,
+      flow_id: input.flow_id,
+      properties: {
+        stream: input.stream,
+        purpose,
+        topic: input.topic,
+        reason: "suppression",
+      },
+      context: experimentContext ? { experiment_context: experimentContext } : {},
+    })
+    return { ok: true, skipped: true }
+  }
+
+  const idempotencyKey =
+    input.idempotency_key ||
+    [
+      input.stream,
+      input.template_key,
+      emailLower,
+      input.order_id || input.cart_id || input.campaign_id || input.flow_enrollment_id || "",
+    ].join(":")
+
+  const existing = await db("gp_message_log")
+    .whereNull("deleted_at")
+    .where("idempotency_key", idempotencyKey)
+    .first()
+
+  if (existing && ["queued", "sent", "delivered"].includes(existing.status)) {
+    return {
+      ok: true,
+      skipped: true,
+      messageId: existing.postmark_message_id || undefined,
+    }
+  }
+
+  const messageRow = {
+    id: tableId("gpmsg"),
+    idempotency_key: idempotencyKey,
+    profile_id: input.profile_id || profile?.id || null,
+    medusa_customer_id:
+      input.medusa_customer_id || profile?.medusa_customer_id || null,
+    email: input.to,
+    email_lower: emailLower,
+    channel: "email",
+    message_stream: input.stream,
+    message_purpose: purpose,
+    topic: input.topic || null,
+    template_key: input.template_key,
+    flow_id: input.flow_id || null,
+    flow_key: input.flow_key || null,
+    flow_enrollment_id: input.flow_enrollment_id || null,
+    campaign_id: input.campaign_id || null,
+    order_id: input.order_id || null,
+    cart_id: input.cart_id || null,
+    subject: input.subject,
+    status: "queued",
+    postmark_template_alias: input.postmark_template_alias || null,
+    template_model: input.template_model || {},
+    experiment_context: experimentContext,
+    metadata: {
+      ...(input.metadata || {}),
+      purpose,
+      ...(experimentContext ? { experiment_context: experimentContext } : {}),
+    },
+    queued_at: now,
+    created_at: now,
+    updated_at: now,
+  }
+
+  await db("gp_message_log").insert(messageRow)
+
+  try {
+    const result = await notification.createNotifications({
+      to: input.to,
+      channel: "email",
+      template: input.template_key,
+      content: {
+        subject: input.subject,
+        html: input.html,
+        text: input.text,
+      },
+      data: {
+        message_stream: postmarkStream(input.stream),
+        tag: input.template_key,
+        template_alias: input.postmark_template_alias || null,
+        template_model: input.template_model || {},
+        metadata: {
+          message_log_id: messageRow.id,
+          template_key: input.template_key,
+          stream: input.stream,
+          purpose,
+          order_id: input.order_id || "",
+          cart_id: input.cart_id || "",
+          campaign_id: input.campaign_id || "",
+          flow_id: input.flow_id || "",
+          ...(input.metadata || {}),
+        },
+      },
+    })
+
+    const resultRecord = Array.isArray(result) ? result[0] : result
+    const messageId =
+      resultRecord?.provider_id ||
+      resultRecord?.id ||
+      resultRecord?.external_id ||
+      resultRecord?.data?.id ||
+      null
+
+    await db("gp_message_log")
+      .where("id", messageRow.id)
+      .update({
+        status: "sent",
+        postmark_message_id: messageId,
+        provider_response: resultRecord || {},
+        sent_at: new Date(),
+        updated_at: new Date(),
+      })
+
+    await recordCommunicationEvent(db, {
+      event_name: "email_sent",
+      email: input.to,
+      profile_id: messageRow.profile_id,
+      medusa_customer_id: messageRow.medusa_customer_id,
+      order_id: input.order_id,
+      cart_id: input.cart_id,
+      campaign_id: input.campaign_id,
+      flow_id: input.flow_id,
+      template_key: input.template_key,
+      message_id: messageRow.id,
+      properties: {
+        postmark_message_id: messageId,
+        stream: input.stream,
+        purpose,
+        topic: input.topic,
+        subject: input.subject,
+      },
+      context: experimentContext ? { experiment_context: experimentContext } : {},
+    })
+
+    return { ok: true, messageId: messageId || undefined }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    logger.error(`[communications] email send failed: ${error}`)
+    await db("gp_message_log")
+      .where("id", messageRow.id)
+      .update({
+        status: "failed",
+        failed_at: new Date(),
+        error_message: error,
+        updated_at: new Date(),
+      })
+    await recordCommunicationEvent(db, {
+      event_name: "email_failed",
+      email: input.to,
+      profile_id: messageRow.profile_id,
+      order_id: input.order_id,
+      cart_id: input.cart_id,
+      campaign_id: input.campaign_id,
+      flow_id: input.flow_id,
+      template_key: input.template_key,
+      message_id: messageRow.id,
+      properties: { stream: input.stream, error },
+      context: experimentContext ? { experiment_context: experimentContext } : {},
+    })
+    return { ok: false, error }
+  }
+}
+
+export function preferenceUrl(token: string): string {
+  const base = (
+    process.env.STOREFRONT_URL ||
+    process.env.NEXT_PUBLIC_BASE_URL ||
+    "https://grillerspride.com"
+  ).replace(/\/+$/, "")
+  return `${base}/us/email-preferences?t=${encodeURIComponent(token)}`
+}
+
+export function verifyServiceApiKey(headers: Record<string, any>): boolean {
+  const expected = [
+    process.env.COMMUNICATIONS_PUBLIC_API_KEY,
+    process.env.COMMUNICATIONS_API_KEY,
+    process.env.NEWSLETTER_API_KEY,
+  ].filter(Boolean)
+  if (!expected.length) return true
+  const provided =
+    headers["x-api-key"] ||
+    headers["X-API-Key"] ||
+    headers.authorization?.replace(/^Bearer\s+/i, "")
+  return expected.includes(provided)
+}
+
+export async function subscribeProfile(
+  container: MedusaContainer,
+  input: {
+    email: string
+    source?: string | null
+    source_url?: string | null
+    consent_version?: string | null
+    preferences?: Record<string, any> | null
+    ip?: string | null
+    user_agent?: string | null
+  }
+): Promise<Record<string, any> | null> {
+  const db = resolveDb(container)
+  const profile = await upsertCustomerProfile(db, {
+    email: input.email,
+    email_consent: true,
+    preferences: input.preferences || DEFAULT_NEWSLETTER_PREFERENCES,
+    metadata: {
+      newsletter_source: input.source || null,
+      source_url: input.source_url || null,
+      consent_version: input.consent_version || "v1-2026-05",
+      ip: input.ip || null,
+      user_agent: input.user_agent || null,
+    },
+  })
+  if (!profile) return null
+
+  await db("gp_suppression_preference")
+    .whereNull("deleted_at")
+    .where("email_lower", normalizeEmail(input.email))
+    .whereIn("scope", MARKETING_SUPPRESSION_SCOPES)
+    .whereNull("resubscribed_at")
+    .update({ resubscribed_at: new Date(), updated_at: new Date() })
+
+  await recordCommunicationEvent(db, {
+    event_name: "email_signup",
+    email: input.email,
+    profile_id: profile.id,
+    source: "storefront",
+    properties: {
+      source: input.source || null,
+      consent_version: input.consent_version || "v1-2026-05",
+    },
+    context: {
+      ip: input.ip || null,
+      user_agent: input.user_agent || null,
+      source_url: input.source_url || null,
+    },
+  })
+
+  return profile
+}
+
+export async function requestPreferencesLink(
+  container: MedusaContainer,
+  email: string
+): Promise<void> {
+  const db = resolveDb(container)
+  const emailLower = normalizeEmail(email)
+  if (!emailLower) return
+  const profile = await upsertCustomerProfile(db, { email })
+  if (!profile?.preference_token) return
+
+  const { buildPreferencesLinkEmail } = await import(
+    "../emails/templates/preferences-link.js"
+  )
+  const emailContent = buildPreferencesLinkEmail({
+    email,
+    preferencesUrl: preferenceUrl(profile.preference_token),
+  })
+  await sendTrackedEmail(container, {
+    to: email,
+    stream: "transactional",
+    purpose: "service",
+    template_key: "preferences-link",
+    subject: emailContent.subject,
+    html: emailContent.html,
+    text: emailContent.text,
+    topic: "preferences",
+    idempotency_key: `preferences-link:${emailLower}:${Math.floor(Date.now() / 60000)}`,
+    profile_id: profile.id,
+  })
+}
+
+export async function updatePostmarkMessageState(
+  db: KnexLike,
+  payload: Record<string, any>
+): Promise<Record<string, any> | null> {
+  const messageId = payload.MessageID || payload.MessageId || payload.MessageID__c
+  const recordType = String(payload.RecordType || payload.Type || "").toLowerCase()
+  const email = payload.Recipient || payload.Email || payload.email
+  const now = payload.ReceivedAt ? asDate(payload.ReceivedAt) : new Date()
+  const patch: Record<string, any> = { updated_at: new Date() }
+
+  if (recordType.includes("delivery")) {
+    patch.status = "delivered"
+    patch.delivered_at = now
+  } else if (recordType.includes("open")) {
+    patch.opened_at = now
+  } else if (recordType.includes("click")) {
+    patch.clicked_at = now
+  } else if (recordType.includes("bounce")) {
+    patch.status = "bounced"
+    patch.bounced_at = now
+  } else if (recordType.includes("spam")) {
+    patch.status = "complained"
+    patch.complained_at = now
+  } else if (recordType.includes("subscription")) {
+    patch.unsubscribed_at = now
+  }
+
+  let message = null as Record<string, any> | null
+  if (messageId) {
+    message = await db("gp_message_log")
+      .whereNull("deleted_at")
+      .where("postmark_message_id", messageId)
+      .first()
+    if (message) {
+      await db("gp_message_log").where("id", message.id).update(patch)
+    }
+  }
+
+  if (recordType.includes("click")) {
+    await db("gp_link_click").insert({
+      id: tableId("gpclk"),
+      message_log_id: message?.id || null,
+      postmark_message_id: messageId || null,
+      profile_id: message?.profile_id || null,
+      email_lower: normalizeEmail(email || message?.email),
+      campaign_id: message?.campaign_id || null,
+      flow_id: message?.flow_id || null,
+      template_key: message?.template_key || null,
+      url: payload.OriginalLink || payload.Url || payload.URL || "",
+      clicked_at: now,
+      user_agent: payload.UserAgent || null,
+      ip: payload.IP || null,
+      metadata: payload,
+      created_at: new Date(),
+      updated_at: new Date(),
+    })
+  }
+
+  if (recordType.includes("bounce")) {
+    await recordSuppression(db, {
+      email: email || message?.email,
+      scope: "hard_bounce",
+      reason: "postmark_bounce",
+      source: "postmark_webhook",
+      metadata: payload,
+    })
+  }
+  if (recordType.includes("spam")) {
+    await recordSuppression(db, {
+      email: email || message?.email,
+      scope: "complaint",
+      reason: "postmark_spam_complaint",
+      source: "postmark_webhook",
+      metadata: payload,
+    })
+  }
+  if (recordType.includes("subscription")) {
+    await recordSuppression(db, {
+      email: email || message?.email,
+      scope: "marketing",
+      reason: "postmark_unsubscribe",
+      source: "postmark_webhook",
+      metadata: payload,
+    })
+  }
+
+  const canonicalEventName = recordType.includes("delivery")
+    ? "email_delivered"
+    : recordType.includes("open")
+      ? "email_opened"
+      : recordType.includes("click")
+        ? "email_clicked"
+        : recordType.includes("bounce")
+          ? "email_bounced"
+          : recordType.includes("spam")
+            ? "email_spam_complaint"
+            : recordType.includes("subscription")
+              ? "email_unsubscribed"
+              : `email_${recordType || "webhook"}`
+
+  await recordCommunicationEvent(db, {
+    event_name: canonicalEventName,
+    email: email || message?.email,
+    profile_id: message?.profile_id || null,
+    campaign_id: message?.campaign_id || null,
+    flow_id: message?.flow_id || null,
+    template_key: message?.template_key || null,
+    message_id: message?.id || null,
+    properties: payload,
+  })
+
+  return message
+}

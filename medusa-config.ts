@@ -95,6 +95,12 @@ module.exports = defineConfig({
               channels: ["email"],
               api_token: process.env.POSTMARK_API_TOKEN,
               from: process.env.POSTMARK_FROM,
+              transactional_stream:
+                process.env.POSTMARK_TRANSACTIONAL_STREAM || "outbound",
+              lifecycle_stream:
+                process.env.POSTMARK_LIFECYCLE_STREAM || "broadcast",
+              broadcast_stream:
+                process.env.POSTMARK_BROADCAST_STREAM || "broadcast",
             },
           },
         ],
@@ -138,6 +144,9 @@ module.exports = defineConfig({
     },
     {
       resolve: "./src/modules/gp-inventory-allocation",
+    },
+    {
+      resolve: "./src/modules/gp-communications",
     },
     {
       resolve: "@medusajs/medusa/analytics",

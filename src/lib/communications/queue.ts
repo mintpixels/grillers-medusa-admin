@@ -1,0 +1,213 @@
+import crypto from "crypto"
+import type { MedusaContainer } from "@medusajs/framework/types"
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { Queue, Worker, type Job } from "bullmq"
+import IORedis from "ioredis"
+
+type KnexLike = any
+
+const QUEUE_PREFIX = process.env.COMMUNICATIONS_QUEUE_PREFIX || "gp-communications"
+const id = (prefix: string) => `${prefix}_${crypto.randomUUID()}`
+
+function redisUrl() {
+  return process.env.REDIS_URL || process.env.COMMUNICATIONS_REDIS_URL || ""
+}
+
+function redisConnection() {
+  const url = redisUrl()
+  if (!url) return null
+  return new IORedis(url, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+  })
+}
+
+export function queuesConfigured() {
+  return Boolean(redisUrl())
+}
+
+function queue(name: string) {
+  const connection = redisConnection()
+  if (!connection) return null
+  return new Queue(`${QUEUE_PREFIX}-${name}`, {
+    connection: connection as any,
+    defaultJobOptions: {
+      attempts: 5,
+      backoff: { type: "exponential", delay: 60_000 },
+      removeOnComplete: 5000,
+      removeOnFail: 5000,
+    },
+  })
+}
+
+async function delivery(
+  db: KnexLike,
+  event: Record<string, any>,
+  status: "delivered" | "failed" | "skipped",
+  metadata: Record<string, any> = {},
+  error?: string
+) {
+  const now = new Date()
+  try {
+    await db("gp_event_delivery")
+      .insert({
+        id: id("gpedlv"),
+        event_id: event.event_id,
+        event_name: event.event_name,
+        target: "bullmq",
+        status,
+        attempts: 1,
+        last_attempt_at: now,
+        delivered_at: status === "delivered" ? now : null,
+        error_message: error || null,
+        metadata,
+        created_at: now,
+        updated_at: now,
+      })
+      .onConflict(["event_id", "target"])
+      .merge({
+        status,
+        attempts: db.raw("gp_event_delivery.attempts + 1"),
+        last_attempt_at: now,
+        delivered_at: status === "delivered" ? now : null,
+        error_message: error || null,
+        metadata,
+        updated_at: now,
+      })
+  } catch {
+    // Queue delivery bookkeeping is non-critical.
+  }
+}
+
+export async function enqueueCommunicationEvent(
+  db: KnexLike,
+  event: Record<string, any>
+) {
+  const eventQueue = queue("events")
+  if (!eventQueue) {
+    await delivery(db, event, "skipped", { reason: "redis_not_configured" })
+    return false
+  }
+  try {
+    await eventQueue.add("communication-event", event, {
+      jobId: event.event_id,
+    })
+    await delivery(db, event, "delivered", { queue: eventQueue.name })
+    await eventQueue.close()
+    return true
+  } catch (err) {
+    await delivery(
+      db,
+      event,
+      "failed",
+      {},
+      err instanceof Error ? err.message : String(err)
+    )
+    await eventQueue.close().catch(() => undefined)
+    return false
+  }
+}
+
+export async function enqueueFlowRun(input: Record<string, any> = {}) {
+  const flowQueue = queue("flows")
+  if (!flowQueue) return false
+  await flowQueue.add("flow-run", input, {
+    jobId: input.job_id || `flow-run:${Date.now()}`,
+    delay: Number(input.delay_ms || 0),
+  })
+  await flowQueue.close()
+  return true
+}
+
+export async function enqueueCampaignSend(
+  campaignId: string,
+  input: Record<string, any> = {}
+) {
+  const campaignQueue = queue("campaigns")
+  if (!campaignQueue) return false
+  await campaignQueue.add(
+    "campaign-send",
+    { campaign_id: campaignId, ...input },
+    {
+      jobId: input.test_email
+        ? `campaign-test:${campaignId}:${input.test_email}:${Date.now()}`
+        : `campaign:${campaignId}`,
+      delay: Number(input.delay_ms || 0),
+    }
+  )
+  await campaignQueue.close()
+  return true
+}
+
+async function processEventJob(container: MedusaContainer, job: Job) {
+  const event = job.data || {}
+  const { evaluateFlowsForEvent } = await import("./flows.js")
+  const { syncCartLifecycleFromEvent } = await import("./cart-lifecycle.js")
+  const { attributeOrderFromEvent } = await import("./attribution.js")
+  const db = container.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+  await syncCartLifecycleFromEvent(db, event)
+  await attributeOrderFromEvent(db, event)
+  if (!String(event.event_name || "").startsWith("email_")) {
+    await evaluateFlowsForEvent(db, event)
+  }
+}
+
+async function processFlowJob(container: MedusaContainer) {
+  const { runDueFlowEnrollments } = await import("./flows.js")
+  return runDueFlowEnrollments(container, 100)
+}
+
+async function processCampaignJob(container: MedusaContainer, job: Job) {
+  const { sendCampaign } = await import("./admin.js")
+  return sendCampaign(container, job.data.campaign_id, job.data || {})
+}
+
+export function startCommunicationWorkers(container: MedusaContainer) {
+  const connection = redisConnection()
+  if (!connection) return []
+  const logger = container.resolve("logger")
+
+  const workers = [
+    new Worker(
+      `${QUEUE_PREFIX}-events`,
+      (job) => processEventJob(container, job),
+      { connection: connection as any, concurrency: Number(process.env.COMMUNICATIONS_EVENT_WORKERS || 4) }
+    ),
+    new Worker(
+      `${QUEUE_PREFIX}-flows`,
+      () => processFlowJob(container),
+      { connection: connection as any, concurrency: 1 }
+    ),
+    new Worker(
+      `${QUEUE_PREFIX}-campaigns`,
+      (job) => processCampaignJob(container, job),
+      { connection: connection as any, concurrency: Number(process.env.COMMUNICATIONS_CAMPAIGN_WORKERS || 1) }
+    ),
+  ]
+
+  for (const worker of workers) {
+    worker.on("failed", (job, err) => {
+      logger.error(
+        `[communications-worker] ${worker.name} job=${job?.id} failed: ${err.message}`
+      )
+    })
+  }
+
+  return workers
+}
+
+export async function communicationQueueHealth() {
+  if (!queuesConfigured()) {
+    return { configured: false, queues: [] }
+  }
+  const names = ["events", "flows", "campaigns"]
+  const rows: Array<{ name: string; counts: Record<string, number> }> = []
+  for (const name of names) {
+    const q = queue(name)
+    if (!q) continue
+    const counts = await q.getJobCounts("waiting", "delayed", "active", "failed")
+    rows.push({ name: q.name, counts })
+    await q.close()
+  }
+  return { configured: true, queues: rows }
+}

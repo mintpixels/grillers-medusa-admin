@@ -1,7 +1,7 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
-import { Modules } from "@medusajs/framework/utils"
 import { fetchOrderForEmail } from "../lib/emails/order-fetch"
 import { buildOrderShippedEmail } from "../lib/emails/templates/order-shipped"
+import { sendTrackedEmail } from "../lib/communications/core"
 
 type ShipmentEventData = {
   id: string
@@ -16,7 +16,6 @@ export default async function orderShippedEmailHandler({
   container,
 }: SubscriberArgs<ShipmentEventData>) {
   const logger = container.resolve("logger")
-  const notificationModule = container.resolve(Modules.NOTIFICATION)
   const query = container.resolve("query")
 
   try {
@@ -74,12 +73,18 @@ export default async function orderShippedEmailHandler({
       `[order-shipped-email] sending to=${order.email} order=${order.id} tracking=${trackingNumber || "n/a"}`
     )
 
-    await notificationModule.createNotifications({
+    await sendTrackedEmail(container, {
       to: order.email,
-      channel: "email",
-      template: "order-shipped",
-      content: { subject, html, text },
-      data: {
+      stream: "transactional",
+      purpose: "transactional",
+      template_key: "order-shipped",
+      subject,
+      html,
+      text,
+      topic: "order_updates",
+      idempotency_key: `order-shipped:${order.id}:${trackingNumber || data.id}`,
+      order_id: order.id,
+      metadata: {
         order_id: order.id,
         display_id: order.display_id,
         tracking_number: trackingNumber,

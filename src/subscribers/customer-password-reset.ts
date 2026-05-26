@@ -1,6 +1,6 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework";
-import { Modules } from "@medusajs/framework/utils";
 import { buildPasswordResetEmail } from "../lib/emails/templates/password-reset";
+import { sendTrackedEmail } from "../lib/communications/core";
 
 console.log("[CPR-LOAD] customer-password-reset subscriber module loaded at boot");
 
@@ -23,20 +23,23 @@ export default async function customerPasswordResetHandler({
     return;
   }
 
-  const notificationModule = container.resolve(Modules.NOTIFICATION);
-
   const { subject, html, text } = buildPasswordResetEmail({
     email: entity_id,
     token,
   });
 
   try {
-    await notificationModule.createNotifications({
+    await sendTrackedEmail(container, {
       to: entity_id,
-      channel: "email",
-      template: "customer-password-reset",
-      content: { subject, html, text },
-      data: { email: entity_id },
+      stream: "transactional",
+      purpose: "transactional",
+      template_key: "customer-password-reset",
+      subject,
+      html,
+      text,
+      topic: "account",
+      idempotency_key: `customer-password-reset:${entity_id}:${token}`,
+      metadata: { email: entity_id },
     });
     logger.info(
       `[customer-password-reset] sent reset email to=${entity_id}`

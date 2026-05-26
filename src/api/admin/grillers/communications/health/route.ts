@@ -1,0 +1,55 @@
+import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { communicationQueueHealth } from "../../../../../lib/communications/queue"
+
+export async function GET(req: MedusaRequest, res: MedusaResponse) {
+  const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+  const monthStart = new Date()
+  monthStart.setUTCDate(1)
+  monthStart.setUTCHours(0, 0, 0, 0)
+  const postmarkMonthlyLimit = Number(process.env.POSTMARK_MONTHLY_LIMIT || 100)
+  const [queue, delivery, failures, monthlyMessages, monthlyByPurpose] =
+    await Promise.all([
+    communicationQueueHealth(),
+    db("gp_event_delivery")
+      .whereNull("deleted_at")
+      .select("target", "status")
+      .count({ count: "*" })
+      .groupBy("target", "status"),
+    db("gp_message_log")
+      .whereNull("deleted_at")
+      .whereIn("status", ["failed", "bounced", "complained"])
+      .select("id", "email", "subject", "status", "error_message", "created_at")
+      .orderBy("created_at", "desc")
+      .limit(25),
+    db("gp_message_log")
+      .whereNull("deleted_at")
+      .where("created_at", ">=", monthStart)
+      .count({ count: "*" })
+      .first(),
+    db("gp_message_log")
+      .whereNull("deleted_at")
+      .where("created_at", ">=", monthStart)
+      .select("message_purpose")
+      .count({ count: "*" })
+      .groupBy("message_purpose"),
+  ])
+
+  const sentThisMonth = Number(monthlyMessages?.count || 0)
+  const usageRatio =
+    postmarkMonthlyLimit > 0 ? sentThisMonth / postmarkMonthlyLimit : null
+
+  res.status(200).json({
+    queue,
+    delivery,
+    failures,
+    postmark_usage: {
+      month_start: monthStart.toISOString(),
+      sent_or_queued_this_month: sentThisMonth,
+      configured_monthly_limit: postmarkMonthlyLimit,
+      usage_ratio: usageRatio,
+      warning: usageRatio !== null && usageRatio >= 0.8,
+      by_purpose: monthlyByPurpose,
+    },
+  })
+}

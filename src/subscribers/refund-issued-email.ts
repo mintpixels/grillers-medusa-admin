@@ -1,7 +1,7 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
-import { Modules } from "@medusajs/framework/utils"
 import { fetchOrderForEmail } from "../lib/emails/order-fetch"
 import { buildRefundIssuedEmail } from "../lib/emails/templates/refund-issued"
+import { sendTrackedEmail } from "../lib/communications/core"
 
 type RefundEventData = {
   id: string
@@ -29,7 +29,6 @@ export default async function refundIssuedEmailHandler({
   container,
 }: SubscriberArgs<RefundEventData>) {
   const logger = container.resolve("logger")
-  const notificationModule = container.resolve(Modules.NOTIFICATION)
   const query = container.resolve("query")
 
   try {
@@ -126,12 +125,18 @@ export default async function refundIssuedEmailHandler({
       `[refund-issued-email] sending to=${order.email} order=${order.id} amount=${resolvedRefundAmount}`
     )
 
-    await notificationModule.createNotifications({
+    await sendTrackedEmail(container, {
       to: order.email,
-      channel: "email",
-      template: "refund-issued",
-      content: { subject, html, text },
-      data: {
+      stream: "transactional",
+      purpose: "transactional",
+      template_key: "refund-issued",
+      subject,
+      html,
+      text,
+      topic: "order_updates",
+      idempotency_key: `refund-issued:${refundId || paymentId}:${order.id}`,
+      order_id: order.id,
+      metadata: {
         order_id: order.id,
         display_id: order.display_id,
         refund_amount: resolvedRefundAmount,

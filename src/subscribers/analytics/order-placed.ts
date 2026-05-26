@@ -1,4 +1,8 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
+import {
+  experimentContextFromItem,
+  experimentContextFromItems,
+} from "./experiment-context"
 
 export default async function orderPlacedHandler({
   event: { data },
@@ -23,6 +27,7 @@ export default async function orderPlacedHandler({
         "shipping_total",
         "discount_total",
         "items.*",
+        "+items.metadata",
         "items.variant.*",
         "items.variant.product.*",
         "shipping_methods.*",
@@ -36,6 +41,7 @@ export default async function orderPlacedHandler({
     const customerId = order.customer_id || undefined
 
     const coupon = (order as any).promotions?.[0]?.code
+    const experimentContext = experimentContextFromItems(order.items)
 
     await analyticsService.track({
       event: "order_completed",
@@ -52,6 +58,7 @@ export default async function orderPlacedHandler({
         coupon,
         email: order.email,
         customer_id: customerId,
+        experiment_context: experimentContext,
         shipping_tier: order.shipping_methods?.[0]?.name,
         payment_method:
           order.payment_collections?.[0]?.payments?.[0]?.provider_id,
@@ -67,6 +74,7 @@ export default async function orderPlacedHandler({
             item.variant?.product?.metadata?.holiday_association,
           is_catch_weight:
             item.variant?.product?.metadata?.is_catch_weight,
+          experiment_context: experimentContextFromItem(item),
         })),
       },
     })
