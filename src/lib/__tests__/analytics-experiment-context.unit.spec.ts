@@ -1,7 +1,8 @@
 import {
   experimentContextFromItem,
   experimentContextFromItems,
-} from "../experiment-context"
+  experimentIdentityFromItems,
+} from "../../subscribers/analytics/experiment-context"
 
 describe("experiment analytics context", () => {
   it("normalizes experiment context from line-item metadata", () => {
@@ -12,6 +13,12 @@ describe("experiment analytics context", () => {
             homepage_shopping_flow_v1: {
               variant_key: "products_earlier",
               assignment_id: "a1",
+              surface: "homepage",
+              impact: "revenue",
+              route_market: "us",
+              customer_type: "guest",
+              anonymous_id: "anon-1",
+              session_id: "session-1",
             },
             malformed: {
               variant_key: "control",
@@ -23,6 +30,12 @@ describe("experiment analytics context", () => {
       homepage_shopping_flow_v1: {
         variant_key: "products_earlier",
         assignment_id: "a1",
+        surface: "homepage",
+        impact: "revenue",
+        route_market: "us",
+        customer_type: "guest",
+        anonymous_id: "anon-1",
+        session_id: "session-1",
       },
     })
   })
@@ -65,5 +78,31 @@ describe("experiment analytics context", () => {
 
   it("returns undefined when there is no valid context", () => {
     expect(experimentContextFromItems([{ metadata: {} }])).toBeUndefined()
+  })
+
+  it("lifts event identity from experiment line metadata", () => {
+    expect(
+      experimentIdentityFromItems([
+        {
+          metadata: {
+            experiment_context: {
+              homepage_shopping_flow_v1: {
+                variant_key: "products_earlier",
+                assignment_id: "a1",
+                anonymous_id: "anon-1",
+                session_id: "session-1",
+                route_market: "us",
+                customer_type: "guest",
+              },
+            },
+          },
+        },
+      ])
+    ).toEqual({
+      anonymous_id: "anon-1",
+      session_id: "session-1",
+      route_market: "us",
+      customer_type: "guest",
+    })
   })
 })

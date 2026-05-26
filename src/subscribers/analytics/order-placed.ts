@@ -2,6 +2,7 @@ import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import {
   experimentContextFromItem,
   experimentContextFromItems,
+  experimentIdentityFromItems,
 } from "./experiment-context"
 
 export default async function orderPlacedHandler({
@@ -42,11 +43,13 @@ export default async function orderPlacedHandler({
 
     const coupon = (order as any).promotions?.[0]?.code
     const experimentContext = experimentContextFromItems(order.items)
+    const experimentIdentity = experimentIdentityFromItems(order.items)
 
     await analyticsService.track({
       event: "order_completed",
       actor_id: customerId,
       properties: {
+        ...experimentIdentity,
         transaction_id: order.id,
         display_id: (order as any).display_id,
         value: order.total,

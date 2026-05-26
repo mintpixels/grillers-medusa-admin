@@ -2,6 +2,7 @@ import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import {
   experimentContextFromItem,
   experimentContextFromItems,
+  experimentIdentityFromItems,
 } from "./experiment-context"
 
 export default async function cartUpdatedHandler({
@@ -32,11 +33,13 @@ export default async function cartUpdatedHandler({
     if (!cart) return
     const customerId = cart.customer_id || undefined
     const experimentContext = experimentContextFromItems(cart.items)
+    const experimentIdentity = experimentIdentityFromItems(cart.items)
 
     await analyticsService.track({
       event: "cart_updated",
       actor_id: customerId,
       properties: {
+        ...experimentIdentity,
         cart_id: cart.id,
         value: cart.total ?? 0,
         currency: cart.currency_code,
