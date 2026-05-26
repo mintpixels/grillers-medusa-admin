@@ -107,6 +107,14 @@ const VARIANT_POLICY_FIELDS = [
   "AlternativeVariantIds",
 ];
 
+const PRODUCT_CUSTOMER_COPY_FIELDS = [
+  "Title",
+  "Description",
+  "ShortDescription",
+];
+
+const VARIANT_CUSTOMER_COPY_FIELDS = ["Title"];
+
 function objectRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -252,6 +260,16 @@ function preserveExistingFields(
     }
     return acc;
   }, {} as Record<string, unknown>);
+}
+
+function existingOrFallback<T>(
+  existing: Record<string, unknown>,
+  fieldName: string,
+  fallback: T
+): T | unknown {
+  return existing[fieldName] !== undefined && existing[fieldName] !== null
+    ? existing[fieldName]
+    : fallback;
 }
 
 function metadataPolicyFields(
@@ -498,11 +516,16 @@ export default class StrapiModuleService {
         ...preserveExistingFields(existingProduct, PRODUCT_POLICY_FIELDS),
         ...metadataPolicyFields(product.metadata),
       };
+      const productCustomerCopyFields = preserveExistingFields(
+        existingProduct,
+        PRODUCT_CUSTOMER_COPY_FIELDS
+      );
 
       return {
         medusa_product_id: product.id,
-        Title: product.title,
+        Title: existingOrFallback(strapiFields(existing), "Title", product.title),
         MedusaProduct: {
+          ...existingProduct,
           ProductId: product.id,
           ...(productQuickBooksListId
             ? { QuickBooksListId: productQuickBooksListId }
@@ -514,8 +537,19 @@ export default class StrapiModuleService {
             ? { AvailabilityLifecycle: productAvailabilityLifecycle }
             : {}),
           ...productPolicyFields,
-          Title: product.title,
-          Description: product.description,
+          Title: existingOrFallback(
+            productCustomerCopyFields,
+            "Title",
+            product.title
+          ),
+          Description: existingOrFallback(
+            productCustomerCopyFields,
+            "Description",
+            product.description
+          ),
+          ...("ShortDescription" in productCustomerCopyFields
+            ? { ShortDescription: productCustomerCopyFields.ShortDescription }
+            : {}),
           Handle: product.handle,
           Status: product.status,
           Variants:
@@ -538,8 +572,13 @@ export default class StrapiModuleService {
                 ...preserveExistingFields(existingVariant, VARIANT_POLICY_FIELDS),
                 ...metadataPolicyFields(variant.metadata),
               };
+              const variantCustomerCopyFields = preserveExistingFields(
+                existingVariant,
+                VARIANT_CUSTOMER_COPY_FIELDS
+              );
 
               return {
+                ...existingVariant,
                 VariantId: variant.id,
                 ...(variantQuickBooksListId
                   ? { QuickBooksListId: variantQuickBooksListId }
@@ -551,7 +590,11 @@ export default class StrapiModuleService {
                   ? { AvailabilityLifecycle: variantAvailabilityLifecycle }
                   : {}),
                 ...variantPolicyFields,
-                Title: variant.title,
+                Title: existingOrFallback(
+                  variantCustomerCopyFields,
+                  "Title",
+                  variant.title
+                ),
                 Price: {
                   CalculatedPriceNumber: price?.calculated_price_number ?? 0,
                   OriginalPriceNumber: price?.original_price_number ?? 0,

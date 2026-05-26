@@ -169,6 +169,58 @@ describe("StrapiModuleService", () => {
     });
   });
 
+  it("preserves existing Strapi customer copy when Medusa titles came from QuickBooks", () => {
+    const payload = service().mapToStrapiPayload(
+      {
+        id: "prod_1",
+        title: "10 lb. TUBE Ground Beef (Alle) Institutional, (75/25) Uncooked, NOT Kosher for Passover @ $8.49/lb.",
+        description: "Accounting item description from QuickBooks.",
+        handle: "ground-beef-75-25-10-lb-tube",
+        status: "published",
+        metadata: { qbd_list_id: "QB-PRODUCT" },
+        variants: [
+          {
+            id: "variant_1",
+            title: "10 lb. TUBE Ground Beef (Alle) Institutional, (75/25) Uncooked, NOT Kosher for Passover @ $8.49/lb.",
+            sku: "10-15-03-1",
+            metadata: { qbd_list_id: "QB-VARIANT" },
+          },
+        ],
+      },
+      {
+        Title: "Ground Beef 75/25 - 10 lb Tube",
+        MedusaProduct: {
+          Title: "Ground Beef 75/25 - 10 lb Tube",
+          Description: "Freshly ground beef packed in a convenient 10 lb tube.",
+          ShortDescription: "A kitchen staple for burgers, meatballs, and chili.",
+          Variants: [
+            {
+              VariantId: "variant_1",
+              Title: "10 lb Tube",
+            },
+          ],
+        },
+      }
+    );
+
+    expect(payload.Title).toBe("Ground Beef 75/25 - 10 lb Tube");
+    expect(payload.MedusaProduct.Title).toBe(
+      "Ground Beef 75/25 - 10 lb Tube"
+    );
+    expect(payload.MedusaProduct.Description).toBe(
+      "Freshly ground beef packed in a convenient 10 lb tube."
+    );
+    expect(payload.MedusaProduct.ShortDescription).toBe(
+      "A kitchen staple for burgers, meatballs, and chili."
+    );
+    expect(payload.MedusaProduct.Variants[0]).toMatchObject({
+      VariantId: "variant_1",
+      Title: "10 lb Tube",
+      QuickBooksListId: "QB-VARIANT",
+      Sku: "10-15-03-1",
+    });
+  });
+
   it("lets Medusa metadata override preserved allocation policy fields", () => {
     const payload = service().mapToStrapiPayload(
       {
