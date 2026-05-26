@@ -1,10 +1,16 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
-import { Modules } from "@medusajs/framework/utils"
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import { releaseAllocationLineQuantities } from "../../../../../../lib/inventory-allocation"
 
 type RefundBody = {
   amount?: number | string
   note?: string
   refund_reason_id?: string
+  allocation_releases?: Array<{
+    order_id?: string
+    line_item_id?: string
+    quantity?: number | string
+  }>
 }
 
 const numericAmount = (value: unknown): number | undefined => {
@@ -48,6 +54,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const orderModule = req.scope.resolve(Modules.ORDER)
   const eventBus = req.scope.resolve(Modules.EVENT_BUS)
   const query = req.scope.resolve("query")
+  const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
 
   const before = await paymentModule.retrievePayment(paymentId, {
     select: ["id", "payment_collection_id", "currency_code"],
@@ -107,6 +114,29 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         amount: refundAmount(refund, amount),
         reason: body.note,
       },
+    })
+  }
+
+  const allocationLines = (body.allocation_releases || [])
+    .filter((line) => line.line_item_id)
+    .map((line) => ({
+      line_item_id: line.line_item_id!,
+      quantity: numericAmount(line.quantity) || 0,
+    }))
+    .filter((line) => line.quantity > 0)
+  const allocationOrderId =
+    (body.allocation_releases || []).find((line) => line.order_id)?.order_id ||
+    orderId
+
+  if (allocationOrderId && allocationLines.length) {
+    await releaseAllocationLineQuantities({
+      db,
+      orderId: allocationOrderId,
+      lines: allocationLines,
+      reason: "released_refund",
+      actorType: "staff",
+      actorId: (req as any).auth_context?.actor_id,
+      note: body.note || null,
     })
   }
 

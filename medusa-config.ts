@@ -137,6 +137,9 @@ module.exports = defineConfig({
       resolve: "./src/modules/legacy-order-history",
     },
     {
+      resolve: "./src/modules/gp-inventory-allocation",
+    },
+    {
       resolve: "@medusajs/medusa/analytics",
       options: {
         providers: [

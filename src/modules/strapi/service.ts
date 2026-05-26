@@ -25,6 +25,88 @@ const QUICKBOOKS_LIST_ID_KEYS = [
   "ListID",
 ];
 
+const WAITLIST_ENABLED_KEYS = [
+  "waitlist_enabled",
+  "waitlistEnabled",
+  "WaitlistEnabled",
+];
+
+const AVAILABILITY_LIFECYCLE_KEYS = [
+  "availability_lifecycle",
+  "availabilityLifecycle",
+  "AvailabilityLifecycle",
+];
+
+const VALID_AVAILABILITY_LIFECYCLES = new Set([
+  "active",
+  "seasonal_inactive",
+  "discontinued",
+  "internal_only",
+]);
+
+const FUTURE_ORDER_ELIGIBLE_KEYS = [
+  "future_order_eligible",
+  "futureOrderEligible",
+  "FutureOrderEligible",
+];
+
+const REPLENISHMENT_LEAD_DAYS_KEYS = [
+  "replenishment_lead_days",
+  "replenishmentLeadDays",
+  "ReplenishmentLeadDays",
+];
+
+const SAFETY_STOCK_QUANTITY_KEYS = [
+  "safety_stock_quantity",
+  "safetyStockQuantity",
+  "SafetyStockQuantity",
+];
+
+const UNAVAILABLE_MESSAGE_KEYS = [
+  "unavailable_message",
+  "unavailableMessage",
+  "UnavailableMessage",
+];
+
+const EXPECTED_AVAILABILITY_COPY_KEYS = [
+  "expected_availability_copy",
+  "expectedAvailabilityCopy",
+  "ExpectedAvailabilityCopy",
+];
+
+const SUBSTITUTION_GROUP_KEYS = [
+  "substitution_group",
+  "substitutionGroup",
+  "SubstitutionGroup",
+];
+
+const ALTERNATIVE_VARIANT_IDS_KEYS = [
+  "alternative_variant_ids",
+  "alternativeVariantIds",
+  "AlternativeVariantIds",
+];
+
+const PRODUCT_POLICY_FIELDS = [
+  "FutureOrderEligible",
+  "ReplenishmentLeadDays",
+  "SafetyStockQuantity",
+  "UnavailableMessage",
+  "ExpectedAvailabilityCopy",
+  "SubstitutionGroup",
+  "AlternativeVariantIds",
+  "AlternativeProducts",
+];
+
+const VARIANT_POLICY_FIELDS = [
+  "FutureOrderEligible",
+  "ReplenishmentLeadDays",
+  "SafetyStockQuantity",
+  "UnavailableMessage",
+  "ExpectedAvailabilityCopy",
+  "SubstitutionGroup",
+  "AlternativeVariantIds",
+];
+
 function objectRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -43,6 +125,180 @@ function textValue(value: unknown): string | undefined {
   }
 
   return undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value !== 0;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "y"].includes(normalized)) {
+      return true;
+    }
+
+    if (["false", "0", "no", "n"].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return undefined;
+}
+
+function booleanFromMetadata(
+  metadata: unknown,
+  keys: string[]
+): boolean | undefined {
+  const record = objectRecord(metadata);
+
+  for (const key of keys) {
+    const value = booleanValue(record[key]);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function numberFromMetadata(
+  metadata: unknown,
+  keys: string[]
+): number | undefined {
+  const record = objectRecord(metadata);
+
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function textFromMetadata(
+  metadata: unknown,
+  keys: string[]
+): string | undefined {
+  const record = objectRecord(metadata);
+
+  for (const key of keys) {
+    const value = textValue(record[key]);
+    if (value) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function availabilityLifecycleFromMetadata(
+  metadata: unknown
+): string | undefined {
+  const record = objectRecord(metadata);
+
+  for (const key of AVAILABILITY_LIFECYCLE_KEYS) {
+    const value = textValue(record[key])?.toLowerCase();
+    if (value && VALID_AVAILABILITY_LIFECYCLES.has(value)) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function strapiFields(entry: any): Record<string, unknown> {
+  const attributes = objectRecord(entry?.attributes);
+  return Object.keys(attributes).length ? attributes : objectRecord(entry);
+}
+
+function existingMedusaProduct(entry: any): Record<string, unknown> {
+  return objectRecord(strapiFields(entry).MedusaProduct);
+}
+
+function existingVariantById(
+  existingProduct: Record<string, unknown>,
+  variantId: string
+): Record<string, unknown> {
+  const variants = Array.isArray(existingProduct.Variants)
+    ? existingProduct.Variants
+    : [];
+  return (
+    variants.find(
+      (variant) => objectRecord(variant).VariantId === variantId
+    ) || {}
+  ) as Record<string, unknown>;
+}
+
+function preserveExistingFields(
+  existing: Record<string, unknown>,
+  fieldNames: string[]
+): Record<string, unknown> {
+  return fieldNames.reduce((acc, field) => {
+    if (existing[field] !== undefined && existing[field] !== null) {
+      acc[field] = existing[field];
+    }
+    return acc;
+  }, {} as Record<string, unknown>);
+}
+
+function metadataPolicyFields(
+  metadata: unknown
+): Record<string, unknown> {
+  const futureOrderEligible = booleanFromMetadata(
+    metadata,
+    FUTURE_ORDER_ELIGIBLE_KEYS
+  );
+  const replenishmentLeadDays = numberFromMetadata(
+    metadata,
+    REPLENISHMENT_LEAD_DAYS_KEYS
+  );
+  const safetyStockQuantity = numberFromMetadata(
+    metadata,
+    SAFETY_STOCK_QUANTITY_KEYS
+  );
+  const unavailableMessage = textFromMetadata(metadata, UNAVAILABLE_MESSAGE_KEYS);
+  const expectedAvailabilityCopy = textFromMetadata(
+    metadata,
+    EXPECTED_AVAILABILITY_COPY_KEYS
+  );
+  const substitutionGroup = textFromMetadata(metadata, SUBSTITUTION_GROUP_KEYS);
+  const alternativeVariantIds = textFromMetadata(
+    metadata,
+    ALTERNATIVE_VARIANT_IDS_KEYS
+  );
+
+  return {
+    ...(futureOrderEligible !== undefined
+      ? { FutureOrderEligible: futureOrderEligible }
+      : {}),
+    ...(replenishmentLeadDays !== undefined
+      ? { ReplenishmentLeadDays: replenishmentLeadDays }
+      : {}),
+    ...(safetyStockQuantity !== undefined
+      ? { SafetyStockQuantity: safetyStockQuantity }
+      : {}),
+    ...(unavailableMessage ? { UnavailableMessage: unavailableMessage } : {}),
+    ...(expectedAvailabilityCopy
+      ? { ExpectedAvailabilityCopy: expectedAvailabilityCopy }
+      : {}),
+    ...(substitutionGroup ? { SubstitutionGroup: substitutionGroup } : {}),
+    ...(alternativeVariantIds
+      ? { AlternativeVariantIds: alternativeVariantIds }
+      : {}),
+  };
 }
 
 function quickBooksListIdFromMetadata(metadata: unknown): string | undefined {
@@ -148,7 +404,8 @@ export default class StrapiModuleService {
     );
 
     try {
-      const payload = this.mapToStrapiPayload(product);
+      const existing = await this.findProductById(strapiId);
+      const payload = this.mapToStrapiPayload(product, existing);
       const response: AxiosResponse<any> = await this.client.put(
         `/api/products/${strapiId}`,
         {
@@ -163,6 +420,26 @@ export default class StrapiModuleService {
         error
       );
       throw error;
+    }
+  }
+
+  private async findProductById(strapiId: string) {
+    try {
+      const response: AxiosResponse<any> = await this.client.get(
+        `/api/products/${strapiId}`,
+        {
+          params: {
+            "populate[MedusaProduct][populate]": "Variants,AlternativeProducts",
+          },
+        }
+      );
+
+      return response.data?.data || null;
+    } catch (error) {
+      this.logger.warn(
+        `Strapi: could not read existing product ${strapiId}; preserving only Medusa metadata fields`
+      );
+      return null;
     }
   }
 
@@ -204,11 +481,23 @@ export default class StrapiModuleService {
   /**
    * Convert a Medusa product into the shape expected by Strapi
    */
-  private mapToStrapiPayload(product: StoreProduct) {
+  private mapToStrapiPayload(product: StoreProduct, existing?: any) {
     try {
+      const existingProduct = existingMedusaProduct(existing);
       const productQuickBooksListId = quickBooksListIdFromMetadata(
         product.metadata
       );
+      const productWaitlistEnabled = booleanFromMetadata(
+        product.metadata,
+        WAITLIST_ENABLED_KEYS
+      );
+      const productAvailabilityLifecycle = availabilityLifecycleFromMetadata(
+        product.metadata
+      );
+      const productPolicyFields = {
+        ...preserveExistingFields(existingProduct, PRODUCT_POLICY_FIELDS),
+        ...metadataPolicyFields(product.metadata),
+      };
 
       return {
         medusa_product_id: product.id,
@@ -218,6 +507,13 @@ export default class StrapiModuleService {
           ...(productQuickBooksListId
             ? { QuickBooksListId: productQuickBooksListId }
             : {}),
+          ...(productWaitlistEnabled !== undefined
+            ? { WaitlistEnabled: productWaitlistEnabled }
+            : {}),
+          ...(productAvailabilityLifecycle
+            ? { AvailabilityLifecycle: productAvailabilityLifecycle }
+            : {}),
+          ...productPolicyFields,
           Title: product.title,
           Description: product.description,
           Handle: product.handle,
@@ -228,12 +524,33 @@ export default class StrapiModuleService {
               const variantQuickBooksListId =
                 quickBooksListIdFromMetadata(variant.metadata) ||
                 productQuickBooksListId;
+              const variantWaitlistEnabled =
+                booleanFromMetadata(variant.metadata, WAITLIST_ENABLED_KEYS) ??
+                productWaitlistEnabled;
+              const variantAvailabilityLifecycle =
+                availabilityLifecycleFromMetadata(variant.metadata) ||
+                productAvailabilityLifecycle;
+              const existingVariant = existingVariantById(
+                existingProduct,
+                variant.id
+              );
+              const variantPolicyFields = {
+                ...preserveExistingFields(existingVariant, VARIANT_POLICY_FIELDS),
+                ...metadataPolicyFields(variant.metadata),
+              };
 
               return {
                 VariantId: variant.id,
                 ...(variantQuickBooksListId
                   ? { QuickBooksListId: variantQuickBooksListId }
                   : {}),
+                ...(variantWaitlistEnabled !== undefined
+                  ? { WaitlistEnabled: variantWaitlistEnabled }
+                  : {}),
+                ...(variantAvailabilityLifecycle
+                  ? { AvailabilityLifecycle: variantAvailabilityLifecycle }
+                  : {}),
+                ...variantPolicyFields,
                 Title: variant.title,
                 Price: {
                   CalculatedPriceNumber: price?.calculated_price_number ?? 0,

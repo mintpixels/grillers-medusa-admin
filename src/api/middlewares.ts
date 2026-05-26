@@ -41,5 +41,10 @@ export default defineMiddlewares({
       method: ["POST"],
       middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
     },
+    {
+      matcher: "/admin/grillers/inventory*",
+      method: ["GET", "POST"],
+      middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
+    },
   ],
 })
