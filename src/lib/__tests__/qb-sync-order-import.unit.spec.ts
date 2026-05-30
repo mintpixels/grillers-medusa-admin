@@ -6,6 +6,7 @@ import {
   postOrderToQbSync,
 } from "../../subscribers/qb-sync-order-import"
 import { config as canceledOrderImportConfig } from "../../subscribers/qb-sync-order-canceled-import"
+import { config as refundedPaymentImportConfig } from "../../subscribers/qb-sync-payment-refunded-import"
 
 describe("qb-sync order import subscriber", () => {
   it("posts order payloads with the shared sync token", async () => {
@@ -61,6 +62,10 @@ describe("qb-sync order import subscriber", () => {
 
   it("registers a cancellation subscriber so canceled orders refresh the sync app", () => {
     expect(canceledOrderImportConfig.event).toBe("order.canceled")
+  })
+
+  it("registers a refund subscriber so staff refunds refresh the sync app", () => {
+    expect(refundedPaymentImportConfig.event).toBe("payment.refunded")
   })
 
   it("normalizes Medusa order line totals when graph payloads omit computed item fields", () => {

@@ -31,6 +31,56 @@ const refundAmount = (refund: Record<string, any>, fallback?: number): number =>
   return Number(value)
 }
 
+const metadataObject = (value: unknown): Record<string, any> => {
+  if (!value) return {}
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return { ...(value as Record<string, any>) }
+  }
+  return {}
+}
+
+const appendAuditLog = (
+  metadata: Record<string, any>,
+  entry: Record<string, any>
+): Record<string, any> => {
+  const raw = metadata.staff_audit_log
+  let audit: Array<Record<string, any>> = []
+
+  if (Array.isArray(raw)) {
+    audit = raw
+  } else if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw)
+      audit = Array.isArray(parsed) ? parsed : []
+    } catch {
+      audit = []
+    }
+  }
+
+  return {
+    ...metadata,
+    staff_audit_log: JSON.stringify(
+      [
+        ...audit,
+        {
+          at: new Date().toISOString(),
+          ...entry,
+        },
+      ].slice(-50)
+    ),
+  }
+}
+
 async function orderIdForPaymentCollection(
   query: { graph: (input: Record<string, unknown>) => Promise<{ data?: any[] }> },
   paymentCollectionId: string | undefined
@@ -44,6 +94,54 @@ async function orderIdForPaymentCollection(
   })
 
   return data?.[0]?.order_id || null
+}
+
+async function queueQbdRefundPosting({
+  orderModule,
+  orderId,
+  refund,
+  refundAmountValue,
+  note,
+  actorId,
+}: {
+  orderModule: any
+  orderId: string
+  refund: Record<string, any>
+  refundAmountValue: number
+  note?: string
+  actorId?: string
+}) {
+  const order = await orderModule.retrieveOrder(orderId, {
+    select: ["id", "metadata"],
+  })
+  const amountMinor = Math.round(Math.abs(refundAmountValue) * 100)
+  const requestKey = `refund:${refund.id}`
+  const metadata = appendAuditLog(
+    {
+      ...metadataObject(order?.metadata),
+      qbd_posting_required: true,
+      qbd_posting_status: "pending_manual",
+      qbd_posting_action: "card_refund_accounting_record",
+      qbd_posting_amount: amountMinor,
+      qbd_posting_request_key: requestKey,
+      qbd_posting_requested_at: new Date().toISOString(),
+      stripe_refund_id: refund.id,
+      stripe_provider_refund_id:
+        refund.provider_refund_id || refund.data?.id || refund.id,
+    },
+    {
+      action: "stripe_refund",
+      status: "queued_for_quickbooks",
+      qbd_posting_action: "card_refund_accounting_record",
+      qbd_posting_request_key: requestKey,
+      qbd_posting_amount: amountMinor,
+      refund_id: refund.id,
+      staff_actor_id: actorId,
+      note: note || null,
+    }
+  )
+
+  await orderModule.updateOrders(orderId, { metadata })
 }
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
@@ -83,6 +181,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   )
 
   if (orderId && refund?.id) {
+    const resolvedRefundAmount = refundAmount(refund, amount)
     const existingTransactions = await orderModule.listOrderTransactions(
       {
         order_id: orderId,
@@ -95,12 +194,21 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     if (!existingTransactions.length) {
       await orderModule.addOrderTransactions({
         order_id: orderId,
-        amount: -Math.abs(refundAmount(refund, amount)),
+        amount: -Math.abs(resolvedRefundAmount),
         currency_code: payment.currency_code || before.currency_code,
         reference: "refund",
         reference_id: refund.id,
       })
     }
+
+    await queueQbdRefundPosting({
+      orderModule,
+      orderId,
+      refund,
+      refundAmountValue: resolvedRefundAmount,
+      note: body.note,
+      actorId: (req as any).auth_context?.actor_id,
+    })
   }
 
   if (refund?.id) {

@@ -59,6 +59,11 @@ describe("staff payment refund route", () => {
     const orderModule = {
       listOrderTransactions: jest.fn(async () => []),
       addOrderTransactions: jest.fn(async () => undefined),
+      retrieveOrder: jest.fn(async () => ({
+        id: "order_123",
+        metadata: { qbd_existing: "kept" },
+      })),
+      updateOrders: jest.fn(async () => undefined),
     }
     const eventBus = {
       emit: jest.fn(async () => undefined),
@@ -107,6 +112,18 @@ describe("staff payment refund route", () => {
       reference: "refund",
       reference_id: "refund_123",
     })
+    expect(orderModule.updateOrders).toHaveBeenCalledWith("order_123", {
+      metadata: expect.objectContaining({
+        qbd_existing: "kept",
+        qbd_posting_required: true,
+        qbd_posting_status: "pending_manual",
+        qbd_posting_action: "card_refund_accounting_record",
+        qbd_posting_amount: 500,
+        qbd_posting_request_key: "refund:refund_123",
+        stripe_refund_id: "refund_123",
+        stripe_provider_refund_id: "re_123",
+      }),
+    })
     expect(eventBus.emit).toHaveBeenCalledWith({
       name: "payment.refunded",
       data: {
@@ -145,6 +162,11 @@ describe("staff payment refund route", () => {
     const orderModule = {
       listOrderTransactions: jest.fn(async () => []),
       addOrderTransactions: jest.fn(async () => undefined),
+      retrieveOrder: jest.fn(async () => ({
+        id: "order_123",
+        metadata: {},
+      })),
+      updateOrders: jest.fn(async () => undefined),
     }
     const eventBus = {
       emit: jest.fn(async () => undefined),
