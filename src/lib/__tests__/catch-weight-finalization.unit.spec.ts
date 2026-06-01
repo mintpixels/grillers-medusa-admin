@@ -4,6 +4,7 @@ import {
   buildFinalizationLineSnapshot,
   finalChargeOrderMetadata,
   fulfillmentGateAllowsShipment,
+  orderPlacedFinalizationMetadata,
 } from "../catch-weight-finalization"
 
 describe("catch-weight finalization helpers", () => {
@@ -86,5 +87,56 @@ describe("catch-weight finalization helpers", () => {
       "final_card_charge_accounting_record"
     )
     expect(metadata.qbd_posting_amount).toBe(10650)
+  })
+
+  it("marks every placed order as catch-weight finalization gated", () => {
+    const metadata = orderPlacedFinalizationMetadata(
+      {
+        id: "order_123",
+        total: 100,
+        metadata: {
+          stripe_payment_method_id: "pm_123",
+          staff_note: "leave intact",
+        },
+      },
+      {
+        id: "gpfin_123",
+        status: "pending_pack",
+        estimated_order_total: 100,
+      }
+    ) as Record<string, any>
+
+    expect(metadata.payment_workflow).toBe(
+      PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE
+    )
+    expect(metadata.payment_setup_status).toBe("saved")
+    expect(metadata.catch_weight_status).toBe("pending_pack")
+    expect(metadata.finalization_id).toBe("gpfin_123")
+    expect(metadata.finalization_status).toBe("pending_pack")
+    expect(metadata.final_charge_status).toBe("not_started")
+    expect(metadata.fulfillment_gate_status).toBe(
+      "blocked_until_final_charge"
+    )
+    expect(metadata.staff_note).toBe("leave intact")
+  })
+
+  it("surfaces missing saved-card setup when an order bypasses catch-weight checkout", () => {
+    const metadata = orderPlacedFinalizationMetadata(
+      {
+        id: "order_123",
+        total: 100,
+        metadata: {},
+      },
+      {
+        id: "gpfin_123",
+        status: "pending_pack",
+        estimated_order_total: 100,
+      }
+    ) as Record<string, any>
+
+    expect(metadata.payment_setup_status).toBe("missing_saved_card")
+    expect(metadata.fulfillment_gate_status).toBe(
+      "blocked_until_final_charge"
+    )
   })
 })

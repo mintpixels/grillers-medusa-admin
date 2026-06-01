@@ -50,7 +50,6 @@ export default async function orderPlacedHandler({
 
     if (
       name === "order.placed" &&
-      metadata.payment_workflow === PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE &&
       !finalChargeSucceeded(metadata)
     ) {
       await analyticsService.track({
@@ -64,7 +63,10 @@ export default async function orderPlacedHandler({
           currency: order.currency_code,
           email: order.email,
           customer_id: order.customer_id || undefined,
-          payment_workflow: PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
+          payment_workflow:
+            metadata.payment_workflow || PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
+          finalization_id: metadata.finalization_id,
+          final_charge_status: metadata.final_charge_status || "not_started",
         },
       })
       return

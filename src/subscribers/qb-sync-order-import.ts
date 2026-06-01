@@ -2,7 +2,6 @@ import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { createHmac } from "node:crypto"
 import {
-  PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
   finalChargeSucceeded,
 } from "../lib/catch-weight-finalization"
 
@@ -525,10 +524,7 @@ export async function importOrderToQbSync({
     }
 
     const metadata = objectRecord(order.metadata)
-    if (
-      metadata.payment_workflow === PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE &&
-      !finalChargeSucceeded(metadata)
-    ) {
+    if (source === "order.placed" && !finalChargeSucceeded(metadata)) {
       logger.info(
         `[qb-sync-order-import] skipped pending catch-weight order=${orderId} source=${source}; final charge has not succeeded`
       )
@@ -562,13 +558,13 @@ export async function importOrderToQbSync({
 }
 
 export default async function qbSyncOrderImportHandler({
-  event: { data },
+  event: { name, data },
   container,
 }: SubscriberArgs<{ id: string }>) {
   await importOrderToQbSync({
     orderId: data.id,
     container,
-    source: "order.placed",
+    source: name || "order.placed",
   })
 }
 

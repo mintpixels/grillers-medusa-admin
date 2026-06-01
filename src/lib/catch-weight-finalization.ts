@@ -218,6 +218,33 @@ export const fulfillmentGateAllowsShipment = (
   return !orderRequiresFinalCharge(order) || finalChargeSucceeded(order)
 }
 
+export const orderPlacedFinalizationMetadata = (
+  order: Record<string, any>,
+  finalization: Record<string, any>
+) => {
+  const metadata = metadataObject(order.metadata)
+  const hasSavedCard =
+    Boolean(metadata.stripe_payment_method_id) ||
+    metadata.payment_setup_status === "saved"
+
+  return {
+    ...metadata,
+    payment_workflow:
+      metadata.payment_workflow || PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
+    payment_setup_status:
+      metadata.payment_setup_status ||
+      (hasSavedCard ? "saved" : "missing_saved_card"),
+    catch_weight_status: metadata.catch_weight_status || FINALIZATION_PENDING_PACK,
+    finalization_id: finalization.id,
+    finalization_status: finalization.status,
+    final_charge_status: metadata.final_charge_status || "not_started",
+    fulfillment_gate_status:
+      metadata.fulfillment_gate_status || "blocked_until_final_charge",
+    estimated_total:
+      metadata.estimated_total ?? finalization.estimated_order_total ?? order.total,
+  }
+}
+
 const fieldAmount = (source: Record<string, any>, names: string[]) => {
   for (const name of names) {
     const value = nullableNumber(source?.[name])

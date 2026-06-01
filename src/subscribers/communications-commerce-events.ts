@@ -5,7 +5,6 @@ import {
   upsertCustomerProfile,
 } from "../lib/communications/core"
 import {
-  PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
   finalChargeSucceeded,
   metadataObject,
 } from "../lib/catch-weight-finalization"
@@ -132,7 +131,6 @@ export default async function communicationsCommerceEvents({
     const orderMetadata = metadataObject(order?.metadata)
     const catchWeightPendingOrderPlaced =
       name === "order.placed" &&
-      orderMetadata.payment_workflow === PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE &&
       !finalChargeSucceeded(orderMetadata)
 
     if (
