@@ -53,6 +53,16 @@ export const CATCH_WEIGHT_ORDER_FIELDS = [
   "items.raw_tax_total",
   "items.raw_total",
   "items.metadata",
+  "items.detail.quantity",
+  "items.detail.raw_quantity",
+  "items.detail.unit_price",
+  "items.detail.raw_unit_price",
+  "items.detail.subtotal",
+  "items.detail.raw_subtotal",
+  "items.detail.tax_total",
+  "items.detail.raw_tax_total",
+  "items.detail.total",
+  "items.detail.raw_total",
   "items.variant.id",
   "items.variant.sku",
   "items.variant.metadata",
@@ -245,9 +255,17 @@ export const orderPlacedFinalizationMetadata = (
   }
 }
 
+const valueAtPath = (source: Record<string, any>, path: string) => {
+  if (!path.includes(".")) return source?.[path]
+  return path.split(".").reduce((current: any, segment) => {
+    if (current === undefined || current === null) return undefined
+    return current[segment]
+  }, source)
+}
+
 const fieldAmount = (source: Record<string, any>, names: string[]) => {
   for (const name of names) {
-    const value = nullableNumber(source?.[name])
+    const value = nullableNumber(valueAtPath(source, name))
     if (value !== null) return value
   }
   return 0
@@ -267,6 +285,20 @@ const metadataValue = (
   }
   return undefined
 }
+
+const itemSearchText = (item: Record<string, any>) =>
+  [
+    item.title,
+    item.subtitle,
+    item.product_title,
+    item.variant_title,
+    item.description,
+    item.metadata?.title,
+    item.metadata?.customer_title,
+  ]
+    .filter((value) => typeof value === "string")
+    .join(" ")
+    .toLowerCase()
 
 const combinedLineMetadata = (item: Record<string, any>) => ({
   ...metadataObject(item?.variant?.product?.metadata),
@@ -301,6 +333,15 @@ const pricingModeFromItem = (item: Record<string, any>) => {
     metadata.catch_weight === true ||
     metadata.is_catch_weight === true ||
     metadata.RequiresCatchWeight === true
+  ) {
+    return "per_lb"
+  }
+
+  const text = itemSearchText(item)
+  if (
+    /\$\s*\d+(?:\.\d+)?\s*\/\s*lb\b/.test(text) ||
+    /\b(per|\/)\s*lb\b/.test(text) ||
+    /\bper\s+pound\b/.test(text)
   ) {
     return "per_lb"
   }
@@ -353,7 +394,16 @@ const estimatedWeightEachFromItem = (item: Record<string, any>) => {
     "net_weight",
     "NetWeight",
   ])
-  return parseWeight(value)
+  const metadataWeight = parseWeight(value)
+  if (metadataWeight !== null) return metadataWeight
+
+  const text = itemSearchText(item)
+  const approximate = text.match(
+    /[~≈]\s*(\d+(?:\.\d+)?)\s*(lb|lbs|pound|pounds)\b/
+  )
+  if (approximate) return Number(approximate[1])
+
+  return null
 }
 
 const orderBreakdown = (order: Record<string, any>) => {
@@ -388,13 +438,39 @@ const orderBreakdown = (order: Record<string, any>) => {
 }
 
 const lineEstimate = (item: Record<string, any>) => {
-  const quantity = fieldAmount(item, ["quantity", "raw_quantity"])
-  const unitPrice = fieldAmount(item, ["unit_price", "raw_unit_price"])
+  const quantity = fieldAmount(item, [
+    "quantity",
+    "raw_quantity",
+    "detail.quantity",
+    "detail.raw_quantity",
+  ])
+  const unitPrice = fieldAmount(item, [
+    "unit_price",
+    "raw_unit_price",
+    "detail.unit_price",
+    "detail.raw_unit_price",
+  ])
   const subtotal =
-    fieldAmount(item, ["subtotal", "raw_subtotal"]) ||
+    fieldAmount(item, [
+      "subtotal",
+      "raw_subtotal",
+      "detail.subtotal",
+      "detail.raw_subtotal",
+    ]) ||
     roundMoney(unitPrice * quantity)
-  const total = fieldAmount(item, ["total", "raw_total"]) || subtotal
-  const tax = fieldAmount(item, ["tax_total", "raw_tax_total"])
+  const total =
+    fieldAmount(item, [
+      "total",
+      "raw_total",
+      "detail.total",
+      "detail.raw_total",
+    ]) || subtotal
+  const tax = fieldAmount(item, [
+    "tax_total",
+    "raw_tax_total",
+    "detail.tax_total",
+    "detail.raw_tax_total",
+  ])
 
   return { quantity, unitPrice, subtotal, total, tax }
 }
@@ -446,6 +522,105 @@ export const buildFinalizationLineSnapshot = (
     created_at: new Date(),
     updated_at: new Date(),
   }
+}
+
+const existingLineRepairPatch = (
+  existing: Record<string, any>,
+  snapshot: Record<string, any>
+) => {
+  const patch: Record<string, any> = {}
+  const copyIfMissingOrZero = [
+    "product_id",
+    "variant_id",
+    "sku",
+    "qbd_list_id",
+    "title_snapshot",
+    "customer_title",
+    "unit_price",
+    "estimated_unit_price",
+    "estimated_line_total",
+    "ordered_quantity",
+    "estimated_weight_each",
+    "estimated_weight_total",
+  ]
+
+  for (const field of copyIfMissingOrZero) {
+    const current = existing[field]
+    const next = snapshot[field]
+    if (
+      next !== undefined &&
+      next !== null &&
+      (current === undefined ||
+        current === null ||
+        current === "" ||
+        Number(current) === 0)
+    ) {
+      patch[field] = next
+    }
+  }
+
+  if (
+    snapshot.actual_quantity &&
+    (!existing.actual_quantity || Number(existing.actual_quantity) === 0)
+  ) {
+    patch.actual_quantity = snapshot.actual_quantity
+  }
+
+  if (
+    snapshot.actual_piece_count &&
+    (!existing.actual_piece_count || Number(existing.actual_piece_count) === 0)
+  ) {
+    patch.actual_piece_count = snapshot.actual_piece_count
+  }
+
+  if (snapshot.pricing_mode === "per_lb" && existing.pricing_mode !== "per_lb") {
+    patch.pricing_mode = "per_lb"
+    patch.final_line_subtotal = null
+    patch.final_line_total = null
+    patch.delta_line_total = null
+    if (!nullableNumber(existing.actual_weight_total)) {
+      patch.status = "needs_weight"
+    }
+  }
+
+  const currentMetadata = metadataObject(existing.metadata)
+  const snapshotMetadata = metadataObject(snapshot.metadata)
+  const shouldRepairMetadata = Object.entries(snapshotMetadata).some(
+    ([field, next]) => {
+      const current = currentMetadata[field]
+      if (field === "source_line_metadata") {
+        return (
+          Object.keys(metadataObject(next)).length > 0 &&
+          Object.keys(metadataObject(current)).length === 0
+        )
+      }
+      return (
+        next !== undefined &&
+        next !== null &&
+        (current === undefined ||
+          current === null ||
+          current === "" ||
+          Number(current) === 0)
+      )
+    }
+  )
+  if (shouldRepairMetadata) {
+    const mergedMetadata = {
+      ...snapshotMetadata,
+      ...currentMetadata,
+      source_line_metadata: {
+        ...metadataObject(snapshotMetadata.source_line_metadata),
+        ...metadataObject(currentMetadata.source_line_metadata),
+      },
+    }
+    patch.metadata = mergedMetadata
+  }
+
+  if (Object.keys(patch).length) {
+    patch.updated_at = new Date()
+  }
+
+  return patch
 }
 
 export async function ensurePaymentSetup(
@@ -551,6 +726,29 @@ export async function ensureFinalizationForOrder(
   const existingLineIds = new Set(
     (existingLines || []).map((line: Record<string, any>) => line.line_item_id)
   )
+  const itemsById = new Map(
+    (order.items || [])
+      .filter((item: Record<string, any>) => item?.id)
+      .map((item: Record<string, any>) => [item.id, item])
+  )
+  const repairableStatuses = new Set([
+    FINALIZATION_PENDING_PACK,
+    FINALIZATION_PACKING,
+    FINALIZATION_PACKED_PENDING_REVIEW,
+  ])
+  const repairedLines = await Promise.all(
+    (existingLines || []).map(async (line: Record<string, any>) => {
+      const item = itemsById.get(line.line_item_id)
+      if (!item || !repairableStatuses.has(finalization.status)) return line
+
+      const snapshot = buildFinalizationLineSnapshot(order, item, finalization.id)
+      const patch = existingLineRepairPatch(line, snapshot)
+      if (!Object.keys(patch).length) return line
+
+      await db("gp_order_finalization_line").where({ id: line.id }).update(patch)
+      return { ...line, ...patch }
+    })
+  )
   const newLines = (order.items || [])
     .filter((item: Record<string, any>) => item?.id && !existingLineIds.has(item.id))
     .map((item: Record<string, any>) =>
@@ -561,7 +759,7 @@ export async function ensureFinalizationForOrder(
     await db("gp_order_finalization_line").insert(newLines)
   }
 
-  const lines = [...(existingLines || []), ...newLines]
+  const lines = [...repairedLines, ...newLines]
   return { finalization, lines }
 }
 

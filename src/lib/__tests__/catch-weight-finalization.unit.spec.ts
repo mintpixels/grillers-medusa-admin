@@ -62,6 +62,41 @@ describe("catch-weight finalization helpers", () => {
     expect(line.qbd_list_id).toBe("80000001-123")
   })
 
+  it("normalizes Medusa detail line quantities and infers per-lb pricing from customer copy", () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_123" },
+      {
+        id: "item_123",
+        title:
+          "Veal Scallopini, 5-8 Slices, ~1 lb., Uncooked, Kosher for Passover. $36.99/lb.",
+        variant_id: "variant_123",
+        variant_sku: "2-06-11-1",
+        detail: {
+          quantity: { value: "1", precision: 20 },
+          unit_price: { value: "36.99", precision: 20 },
+          subtotal: { value: "36.99", precision: 20 },
+          total: { value: "39.856725", precision: 20 },
+          tax_total: { value: "2.866725", precision: 20 },
+        },
+        variant: {
+          metadata: {
+            qbd_list_id: "410000-1102714368",
+          },
+        },
+        metadata: {},
+      },
+      "gpfin_123"
+    )
+
+    expect(line.pricing_mode).toBe("per_lb")
+    expect(line.status).toBe("needs_weight")
+    expect(line.ordered_quantity).toBe(1)
+    expect(line.actual_quantity).toBe(1)
+    expect(line.estimated_weight_total).toBe(1)
+    expect(line.estimated_line_total).toBeCloseTo(39.856725)
+    expect(line.qbd_list_id).toBe("410000-1102714368")
+  })
+
   it("summarizes a successful final charge for order metadata and QBD posting", () => {
     const metadata = finalChargeOrderMetadata({
       order: { id: "order_123", metadata: {} },
