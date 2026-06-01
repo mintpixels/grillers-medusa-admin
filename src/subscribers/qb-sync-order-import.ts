@@ -1,6 +1,10 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { createHmac } from "node:crypto"
+import {
+  PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
+  finalChargeSucceeded,
+} from "../lib/catch-weight-finalization"
 
 export const ORDER_FIELDS = [
   "id",
@@ -194,6 +198,29 @@ function itemFallbackKeys(item: Record<string, unknown>): string[] {
   ].filter((key): key is string => Boolean(key))
 }
 
+function finalLinesByLineItemId(
+  order: Record<string, unknown>
+): Map<string, Record<string, unknown>> {
+  const metadata = objectRecord(order.metadata)
+  const lines = Array.isArray(metadata.catch_weight_final_lines)
+    ? metadata.catch_weight_final_lines
+    : []
+  const byId = new Map<string, Record<string, unknown>>()
+
+  for (const rawLine of lines) {
+    if (!rawLine || typeof rawLine !== "object") {
+      continue
+    }
+    const line = rawLine as Record<string, unknown>
+    const lineItemId = textValue(line.line_item_id)
+    if (lineItemId) {
+      byId.set(lineItemId, line)
+    }
+  }
+
+  return byId
+}
+
 function fallbackQbdListId(
   item: Record<string, unknown>,
   fallbacks: QbdListIdFallbacks
@@ -212,6 +239,7 @@ export function normalizeOrderForQbSync(
   order: Record<string, unknown>,
   qbdListIdFallbacks: QbdListIdFallbacks = {}
 ): Record<string, unknown> {
+  const finalLines = finalLinesByLineItemId(order)
   const items = Array.isArray(order.items)
     ? order.items.map((rawItem) => {
         if (!rawItem || typeof rawItem !== "object") {
@@ -224,19 +252,35 @@ export function normalizeOrderForQbSync(
             ? (item.detail as Record<string, unknown>)
             : {}
         const metadata = objectRecord(item.metadata)
+        const finalLine = textValue(item.id)
+          ? finalLines.get(textValue(item.id)!)
+          : undefined
         const qbdListId =
-          itemQbdListId(item) || fallbackQbdListId(item, qbdListIdFallbacks)
+          textValue(finalLine?.qbd_list_id) ||
+          itemQbdListId(item) ||
+          fallbackQbdListId(item, qbdListIdFallbacks)
+        const pricingMode = textValue(finalLine?.pricing_mode)
         const quantity =
+          pricingMode === "per_lb"
+            ? firstNumeric(finalLine?.actual_weight_total)
+            : firstNumeric(
+                finalLine?.actual_quantity,
+                finalLine?.actual_piece_count
+              )
+        const fallbackQuantity =
+          quantity ??
           firstNumeric(
             item.raw_quantity,
             detail.raw_quantity,
             detail.quantity,
             item.quantity
-          ) ?? 1
+          ) ??
+          1
         const unitPrice = firstNumeric(item.unit_price, item.raw_unit_price)
         const computedLineSubtotal =
-          unitPrice !== null ? unitPrice * quantity : null
+          unitPrice !== null ? unitPrice * fallbackQuantity : null
         const subtotal =
+          firstNumeric(finalLine?.final_line_subtotal) ??
           firstPositiveNumeric(
             item.raw_subtotal,
             item.subtotal,
@@ -245,6 +289,7 @@ export function normalizeOrderForQbSync(
           computedLineSubtotal ??
           0
         const total =
+          firstNumeric(finalLine?.final_line_total) ??
           firstPositiveNumeric(
             item.raw_total,
             item.total,
@@ -261,9 +306,17 @@ export function normalizeOrderForQbSync(
             ? {
                 ...metadata,
                 qbd_list_id: qbdListId,
+                catch_weight_actual_quantity:
+                  finalLine?.actual_quantity ?? finalLine?.actual_piece_count,
+                catch_weight_actual_weight_total:
+                  finalLine?.actual_weight_total ?? null,
+                catch_weight_final_line_subtotal:
+                  finalLine?.final_line_subtotal ?? null,
+                catch_weight_final_line_total:
+                  finalLine?.final_line_total ?? null,
               }
             : item.metadata,
-          quantity,
+          quantity: fallbackQuantity,
           subtotal,
           total,
         }
@@ -471,6 +524,17 @@ export async function importOrderToQbSync({
       return
     }
 
+    const metadata = objectRecord(order.metadata)
+    if (
+      metadata.payment_workflow === PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE &&
+      !finalChargeSucceeded(metadata)
+    ) {
+      logger.info(
+        `[qb-sync-order-import] skipped pending catch-weight order=${orderId} source=${source}; final charge has not succeeded`
+      )
+      return
+    }
+
     const response = await postOrderToQbSync(
       endpoint,
       token,
@@ -509,5 +573,5 @@ export default async function qbSyncOrderImportHandler({
 }
 
 export const config: SubscriberConfig = {
-  event: "order.placed",
+  event: ["order.placed", "order.final_charge_succeeded"],
 }

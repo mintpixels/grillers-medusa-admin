@@ -4,14 +4,20 @@ import {
   experimentContextFromItems,
   experimentIdentityFromItems,
 } from "../../lib/analytics/experiment-context"
+import {
+  PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
+  finalChargeSucceeded,
+  metadataObject,
+} from "../../lib/catch-weight-finalization"
 
 export default async function orderPlacedHandler({
-  event: { data },
+  event: { name, data },
   container,
-}: SubscriberArgs<{ id: string }>) {
+}: SubscriberArgs<{ id: string; order_id?: string; amount?: number }>) {
   const logger = container.resolve("logger")
   const query = container.resolve("query")
   const analyticsService = container.resolve("analytics")
+  const orderId = data.order_id || data.id
 
   try {
     const { data: orders } = await query.graph({
@@ -19,6 +25,7 @@ export default async function orderPlacedHandler({
       fields: [
         "id",
         "display_id",
+        "cart_id",
         "email",
         "currency_code",
         "customer_id",
@@ -34,11 +41,35 @@ export default async function orderPlacedHandler({
         "shipping_methods.*",
         "payment_collections.payments.*",
       ],
-      filters: { id: data.id },
+      filters: { id: orderId },
     })
 
     const order = orders?.[0] as any
     if (!order) return
+    const metadata = metadataObject(order.metadata)
+
+    if (
+      name === "order.placed" &&
+      metadata.payment_workflow === PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE &&
+      !finalChargeSucceeded(metadata)
+    ) {
+      await analyticsService.track({
+        event: "order_received",
+        actor_id: order.customer_id || undefined,
+        properties: {
+          transaction_id: order.id,
+          cart_id: order.cart_id,
+          display_id: order.display_id,
+          estimated_value: order.total,
+          currency: order.currency_code,
+          email: order.email,
+          customer_id: order.customer_id || undefined,
+          payment_workflow: PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
+        },
+      })
+      return
+    }
+
     const customerId = order.customer_id || undefined
 
     const coupon = (order as any).promotions?.[0]?.code
@@ -52,7 +83,10 @@ export default async function orderPlacedHandler({
         ...experimentIdentity,
         transaction_id: order.id,
         display_id: (order as any).display_id,
-        value: order.total,
+        value:
+          data.amount ||
+          Number(metadata.final_total || metadata.final_order_total) ||
+          order.total,
         subtotal: order.subtotal,
         currency: order.currency_code,
         tax: order.tax_total,
@@ -83,12 +117,12 @@ export default async function orderPlacedHandler({
     })
   } catch (err) {
     logger.error(
-      `Analytics: Failed to track order.placed for ${data.id}`,
+      `Analytics: Failed to track ${name} for ${orderId}`,
       err
     )
   }
 }
 
 export const config: SubscriberConfig = {
-  event: "order.placed",
+  event: ["order.placed", "order.final_charge_succeeded"],
 }

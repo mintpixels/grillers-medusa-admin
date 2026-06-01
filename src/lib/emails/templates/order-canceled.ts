@@ -15,7 +15,7 @@ export const buildOrderCanceledEmail = ({
 
   const bodyHtml = `
     <p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;">
-      Your order${display ? ` <strong>${escapeHtml(display)}</strong>` : ""} has been canceled. Any pending authorization on your card will be released, and most banks reflect the release within 1-5 business days.
+      Your order${display ? ` <strong>${escapeHtml(display)}</strong>` : ""} has been canceled. If your card was charged, any refund or reversal will be handled separately and may take a few business days to appear.
     </p>
     ${reason ? `<div style="background:#FBFAF6;border:1px solid #E4DED2;padding:14px 18px;border-radius:6px;margin:20px 0;font-size:14px;color:#2A2828;"><strong style="color:#17201A;">Reason:</strong> ${escapeHtml(reason)}</div>` : ""}
     <div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:#8B5E2D;font-weight:700;margin:24px 0 12px 0;">Canceled items</div>
@@ -38,7 +38,7 @@ export const buildOrderCanceledEmail = ({
   const text = renderTextFromLines([
     `Order canceled${display ? " " + display : ""}`,
     "",
-    "Your order has been canceled. Any pending authorization will be released within 1-5 business days.",
+    "Your order has been canceled. If your card was charged, any refund or reversal will be handled separately and may take a few business days to appear.",
     reason ? `Reason: ${reason}` : "",
     "",
     "Items:",

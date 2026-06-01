@@ -60,7 +60,7 @@ export const buildOrderPlacedEmail = (order: OrderForEmail) => {
     value: formatMoney(order.tax_total, currency),
   })
   totalsRows.push({
-    label: "Total (authorized)",
+    label: "Estimated total",
     value: formatMoney(order.total, currency),
     emphasize: true,
   })
@@ -74,7 +74,7 @@ export const buildOrderPlacedEmail = (order: OrderForEmail) => {
         <td style="padding:18px 20px;">
           <div style="font-size:11px;letter-spacing:0;text-transform:uppercase;color:#8B5E2D;font-weight:700;margin-bottom:8px;">Order received</div>
           <div style="font-size:22px;line-height:1.25;color:#17201A;font-weight:700;">We're preparing your order.</div>
-          <div style="font-size:14px;line-height:1.55;color:#6F665B;margin-top:8px;">Your card is authorized for ${orderTotal}. Final catch-weight items are weighed before fulfillment, and we will email if the final total changes.</div>
+          <div style="font-size:14px;line-height:1.55;color:#6F665B;margin-top:8px;">Your card is saved securely but not charged today. Final catch-weight items are weighed before fulfillment, and we will email the final charge after packing.</div>
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:18px;">
             <tr>
               <td align="center" valign="top" style="width:33.33%;padding:0 4px;vertical-align:top;">
@@ -120,7 +120,7 @@ export const buildOrderPlacedEmail = (order: OrderForEmail) => {
     </table>`
 
   const footerNote = `
-    <strong style="color:#17201A;">A note on catch-weight pricing.</strong> Most cuts are sold by the pound. Your card has been <em>authorized</em> for the estimate above, not yet charged. We'll weigh your order before it ships and adjust the final charge within the allowed range. <a href="${STOREFRONT_URL}/us/page/catch-weight-pricing">Learn more</a>.`
+    <strong style="color:#17201A;">A note on catch-weight pricing.</strong> Most cuts are sold by the pound. Your card has been saved securely, but it has not been charged or authorized for the estimate above. We'll weigh your order before it ships and charge the final amount right before release. <a href="${STOREFRONT_URL}/us/page/catch-weight-pricing">Learn more</a>.`
 
   const { html } = renderEmail({
     preheader: `Order confirmed${display ? " " + display : ""}: total ${orderTotal}.`,
@@ -164,7 +164,7 @@ export const buildOrderPlacedEmail = (order: OrderForEmail) => {
       ? `Discount: -${formatMoney(order.discount_total, currency)}`
       : "",
     `Taxes (estimated): ${formatMoney(order.tax_total, currency)}`,
-    `Total (authorized): ${formatMoney(order.total, currency)}`,
+    `Estimated total: ${formatMoney(order.total, currency)}`,
     "",
     `View order: ${orderUrl}`,
   ])

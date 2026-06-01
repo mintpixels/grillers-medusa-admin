@@ -161,6 +161,9 @@ module.exports = defineConfig({
       resolve: "./src/modules/gp-inventory-allocation",
     },
     {
+      resolve: "./src/modules/gp-catch-weight",
+    },
+    {
       resolve: "./src/modules/gp-communications",
     },
     {

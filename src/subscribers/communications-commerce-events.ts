@@ -4,10 +4,16 @@ import {
   recordCommunicationEvent,
   upsertCustomerProfile,
 } from "../lib/communications/core"
+import {
+  PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
+  finalChargeSucceeded,
+  metadataObject,
+} from "../lib/catch-weight-finalization"
 
 type EventData = {
   id: string
   order_id?: string
+  cart_id?: string
   customer_id?: string
   email?: string
   amount?: number | string
@@ -22,6 +28,7 @@ async function fetchOrderContext(container: any, orderId?: string) {
     fields: [
       "id",
       "display_id",
+      "cart_id",
       "email",
       "customer_id",
       "currency_code",
@@ -53,7 +60,11 @@ async function updateProfileStatsFromOrder(
   if (alreadyCounted) return
 
   const totalOrders = Number(profile.total_orders || 0) + 1
-  const totalRevenue = Number(profile.total_revenue || 0) + Number(order.total || 0)
+  const metadata = metadataObject(order.metadata)
+  const recognizedRevenue =
+    Number(metadata.final_total || metadata.final_order_total) ||
+    Number(order.total || 0)
+  const totalRevenue = Number(profile.total_revenue || 0) + recognizedRevenue
   const firstOrderAt = profile.first_order_at || new Date()
   const firstBasketSize =
     profile.first_basket_size ||
@@ -86,8 +97,15 @@ export default async function communicationsCommerceEvents({
     let medusaCustomerId = data.customer_id
     let orderId = data.order_id
 
-    if (name === "order.placed" || name === "order.canceled") {
+    if (
+      name === "order.placed" ||
+      name === "order.canceled" ||
+      name === "order.final_charge_succeeded"
+    ) {
       orderId = data.id
+    }
+    if (name === "order.final_charge_succeeded") {
+      orderId = data.order_id || data.id
     }
 
     if (orderId) {
@@ -111,7 +129,26 @@ export default async function communicationsCommerceEvents({
       })
     }
 
-    if (name === "order.placed") {
+    const orderMetadata = metadataObject(order?.metadata)
+    const catchWeightPendingOrderPlaced =
+      name === "order.placed" &&
+      orderMetadata.payment_workflow === PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE &&
+      !finalChargeSucceeded(orderMetadata)
+
+    if (
+      name === "order.placed" &&
+      !catchWeightPendingOrderPlaced
+    ) {
+      await updateProfileStatsFromOrder(db, customer, order)
+      if (customer?.id) {
+        customer = await db("gp_customer_profile")
+          .whereNull("deleted_at")
+          .where("id", customer.id)
+          .first()
+      }
+    }
+
+    if (name === "order.final_charge_succeeded") {
       await updateProfileStatsFromOrder(db, customer, order)
       if (customer?.id) {
         customer = await db("gp_customer_profile")
@@ -123,23 +160,31 @@ export default async function communicationsCommerceEvents({
 
     await recordCommunicationEvent(db, {
       event_name:
-        name === "order.placed"
-          ? "order_completed"
-          : name === "payment.refunded"
-            ? "order_refunded"
-            : eventName,
+        catchWeightPendingOrderPlaced
+          ? "order_received"
+          : name === "order.placed" || name === "order.final_charge_succeeded"
+            ? "order_completed"
+            : name === "payment.refunded"
+              ? "order_refunded"
+              : eventName,
       event_id: `${name}:${data.id}:${data.order_id || ""}:${data.amount || ""}`,
       source: "medusa-server",
       profile_id: customer?.id || null,
       medusa_customer_id: medusaCustomerId || null,
       email: email || null,
       order_id: orderId || null,
+      cart_id: order?.cart_id || data.cart_id || null,
       customer_type: customer?.customer_type || "unknown",
       route_market: customer?.route_market || "unknown",
       properties: {
         ...data,
         display_id: order?.display_id,
-        total: order?.total,
+        cart_id: order?.cart_id,
+        total:
+          data.amount ||
+          orderMetadata.final_total ||
+          orderMetadata.final_order_total ||
+          order?.total,
         item_count: Array.isArray(order?.items) ? order.items.length : undefined,
         currency_code: order?.currency_code,
       },
@@ -156,6 +201,7 @@ export default async function communicationsCommerceEvents({
 export const config: SubscriberConfig = {
   event: [
     "order.placed",
+    "order.final_charge_succeeded",
     "order.canceled",
     "order.fulfilled",
     "shipment.created",

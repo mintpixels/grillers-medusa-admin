@@ -72,7 +72,7 @@ export async function syncCartLifecycleFromEvent(
     updated_at: now(),
   }
 
-  if (eventName === "order_completed") {
+  if (eventName === "order_completed" || eventName === "order_received") {
     if (!existing) return null
     const patch = {
       ...common,

@@ -6,6 +6,10 @@ import {
   type MedusaResponse,
 } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import {
+  finalChargeSucceeded,
+  orderRequiresFinalCharge,
+} from "../lib/catch-weight-finalization"
 
 const INTERNAL_RAW_MATERIAL_SKU = /^RM-/i
 
@@ -52,6 +56,46 @@ async function blockInternalRawMaterialLineItems(
   return next()
 }
 
+async function blockFulfillmentBeforeFinalCharge(
+  req: MedusaRequest,
+  res: MedusaResponse,
+  next: MedusaNextFunction
+) {
+  const orderId =
+    req.params.id ||
+    (req.body as Record<string, any> | undefined)?.order_id ||
+    (req.body as Record<string, any> | undefined)?.order?.id
+
+  if (!orderId || typeof orderId !== "string") {
+    return next()
+  }
+
+  try {
+    const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
+    const { data } = await query.graph({
+      entity: "order",
+      fields: ["id", "metadata"],
+      filters: { id: orderId },
+    })
+    const order = data?.[0]
+
+    if (order && orderRequiresFinalCharge(order) && !finalChargeSucceeded(order)) {
+      res.status(409).json({
+        type: "payment_required",
+        message:
+          "This catch-weight order cannot be fulfilled until the final pre-shipment card charge succeeds.",
+      })
+      return
+    }
+  } catch (error) {
+    const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
+    const message = error instanceof Error ? error.message : String(error)
+    logger.warn(`[catch-weight-finalization] fulfillment gate lookup failed: ${message}`)
+  }
+
+  return next()
+}
+
 export default defineMiddlewares({
   routes: [
     {
@@ -66,6 +110,11 @@ export default defineMiddlewares({
     },
     {
       matcher: "/store/payment-methods*",
+      middlewares: [authenticate("customer", ["session", "bearer"])],
+    },
+    {
+      matcher: "/store/grillers/checkout*",
+      method: ["POST"],
       middlewares: [authenticate("customer", ["session", "bearer"])],
     },
     {
@@ -102,6 +151,31 @@ export default defineMiddlewares({
       matcher: "/admin/grillers/inventory*",
       method: ["GET", "POST"],
       middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
+    },
+    {
+      matcher: "/admin/grillers/finalization*",
+      method: ["GET", "POST"],
+      middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
+    },
+    {
+      matcher: "/admin/grillers/orders/*/finalization*",
+      method: ["GET", "POST", "PATCH"],
+      middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
+    },
+    {
+      matcher: "/admin/orders/:id/fulfillments",
+      method: ["POST"],
+      middlewares: [blockFulfillmentBeforeFinalCharge],
+    },
+    {
+      matcher: "/admin/orders/:id/fulfillments/*/shipments",
+      method: ["POST"],
+      middlewares: [blockFulfillmentBeforeFinalCharge],
+    },
+    {
+      matcher: "/admin/fulfillments",
+      method: ["POST"],
+      middlewares: [blockFulfillmentBeforeFinalCharge],
     },
   ],
 })

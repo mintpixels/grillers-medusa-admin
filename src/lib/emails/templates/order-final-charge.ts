@@ -48,7 +48,7 @@ export const buildOrderFinalChargeEmail = ({
 
   const totalsRows = [
     {
-      label: "Original estimate (authorized)",
+      label: "Original estimate",
       value: formatMoney(estimatedTotal, currency),
     },
     {
