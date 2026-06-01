@@ -97,6 +97,32 @@ describe("catch-weight finalization helpers", () => {
     expect(line.qbd_list_id).toBe("410000-1102714368")
   })
 
+  it("treats explicit pound pack meat copy as a weight-finalized line", () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_123" },
+      {
+        id: "item_ground_beef",
+        title:
+          "1 lb. Pack Ground Beef, 85/15, Uncooked, Vacuum Pack. NOT Kosher for Passover.",
+        variant_id: "variant_ground_beef",
+        variant_sku: "1-00-12-1",
+        quantity: 1,
+        unit_price: 11.52,
+        subtotal: 11.52,
+        total: 11.52,
+        metadata: {
+          qbd_list_id: "60000-1102339574",
+        },
+      },
+      "gpfin_123"
+    )
+
+    expect(line.pricing_mode).toBe("per_lb")
+    expect(line.status).toBe("needs_weight")
+    expect(line.estimated_weight_total).toBe(1)
+    expect(line.final_line_total).toBeNull()
+  })
+
   it("summarizes a successful final charge for order metadata and QBD posting", () => {
     const metadata = finalChargeOrderMetadata({
       order: { id: "order_123", metadata: {} },

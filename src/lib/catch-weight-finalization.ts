@@ -309,6 +309,16 @@ const itemSearchText = (item: Record<string, any>) =>
     .join(" ")
     .toLowerCase()
 
+const explicitPoundWeightFromText = (text: string) => {
+  const match = text.match(
+    /(?:^|\b|[~≈])\s*(\d+(?:\.\d+)?)\s*(lb|lbs|pound|pounds)\b/
+  )
+  if (!match) return null
+
+  const pounds = Number(match[1])
+  return Number.isFinite(pounds) && pounds > 0 ? pounds : null
+}
+
 const combinedLineMetadata = (item: Record<string, any>) => ({
   ...metadataObject(item?.variant?.product?.metadata),
   ...metadataObject(item?.product?.metadata),
@@ -350,7 +360,8 @@ const pricingModeFromItem = (item: Record<string, any>) => {
   if (
     /\$\s*\d+(?:\.\d+)?\s*\/\s*lb\b/.test(text) ||
     /\b(per|\/)\s*lb\b/.test(text) ||
-    /\bper\s+pound\b/.test(text)
+    /\bper\s+pound\b/.test(text) ||
+    explicitPoundWeightFromText(text) !== null
   ) {
     return "per_lb"
   }
@@ -411,6 +422,9 @@ const estimatedWeightEachFromItem = (item: Record<string, any>) => {
     /[~≈]\s*(\d+(?:\.\d+)?)\s*(lb|lbs|pound|pounds)\b/
   )
   if (approximate) return Number(approximate[1])
+
+  const explicit = explicitPoundWeightFromText(text)
+  if (explicit !== null) return explicit
 
   return null
 }
@@ -897,6 +911,15 @@ const calculateLine = (line: Record<string, any>) => {
   } else if (status === "substituted") {
     if (!line.replacement_variant_id || !line.replacement_qbd_list_id) {
       errors.push("Substituted line requires replacement variant and QBD ListID.")
+    }
+    if (pricingMode === "per_lb") {
+      if (!actualWeightTotal || actualWeightTotal <= 0) {
+        errors.push("Actual weight is required for per-lb items.")
+      } else {
+        finalSubtotal = roundMoney(actualWeightTotal * unitPrice)
+      }
+    } else if (finalSubtotal === null) {
+      finalSubtotal = roundMoney(actualQuantity * unitPrice)
     }
   } else if (pricingMode === "per_lb") {
     if (!actualWeightTotal || actualWeightTotal <= 0) {
