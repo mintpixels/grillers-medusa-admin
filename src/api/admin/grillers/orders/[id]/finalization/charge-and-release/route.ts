@@ -204,7 +204,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     })
 
     res.status(200).json({
+      order,
       finalization: finalizationForMetadata,
+      lines: preview.lines,
+      payment_setup: preview.payment_setup,
       charge_attempt: attempt,
       payment_intent: {
         id: paymentIntent.id,

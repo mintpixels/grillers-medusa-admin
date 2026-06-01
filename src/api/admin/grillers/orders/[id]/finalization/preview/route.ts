@@ -15,5 +15,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     persist: Boolean((req.body as Record<string, any> | undefined)?.persist),
   })
 
-  res.status(200).json(preview)
+  res.status(200).json({
+    order,
+    ...preview,
+  })
 }

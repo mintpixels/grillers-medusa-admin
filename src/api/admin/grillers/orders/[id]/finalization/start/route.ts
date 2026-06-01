@@ -45,6 +45,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   await orderModule.updateOrders(order.id, { metadata })
 
   res.status(200).json({
+    order,
     finalization: {
       ...detail.finalization,
       status: FINALIZATION_PACKING,

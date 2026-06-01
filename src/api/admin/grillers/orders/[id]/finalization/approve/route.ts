@@ -35,7 +35,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       }
     )
     await orderModule.updateOrders(order.id, { metadata })
-    res.status(200).json(approved)
+    res.status(200).json({
+      order,
+      ...approved,
+    })
   } catch (error) {
     return jsonError(
       res,
