@@ -497,6 +497,66 @@ describe("catch-weight finalization helpers", () => {
     expect(preview.totals.delta_total).toBeNull()
   })
 
+  it("uses replacement price for substituted catch-weight lines", async () => {
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_123",
+          order_id: "order_123",
+          status: "packed_pending_review",
+          estimated_order_total: 21.38,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          id: "gpfinline_123",
+          finalization_id: "gpfin_123",
+          order_id: "order_123",
+          line_item_id: "item_ground_beef",
+          qbd_list_id: "ORIGINAL-QBD",
+          pricing_mode: "per_lb",
+          unit_price: 10.69,
+          actual_unit_price: 12.5,
+          actual_quantity: 1,
+          actual_piece_count: 1,
+          actual_weight_total: 2,
+          replacement_variant_id: "variant_replacement",
+          replacement_qbd_list_id: "REPLACEMENT-QBD",
+          replacement_reason: "Substituted with a larger pack",
+          status: "substituted",
+          metadata: {
+            estimated_line_subtotal: 21.38,
+            estimated_line_total: 21.38,
+            estimated_tax_total: 0,
+          },
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const preview = await previewFinalization(
+      db,
+      {
+        id: "order_123",
+        total: 21.38,
+        item_subtotal: 21.38,
+        tax_total: 0,
+        shipping_total: 0,
+        discount_total: 0,
+        items: [],
+      },
+      { persist: true }
+    )
+
+    expect(preview.errors).toEqual([])
+    expect(preview.lines[0].final_line_subtotal).toBe(25)
+    expect(preview.lines[0].final_line_total).toBe(25)
+    expect(preview.totals.final_order_total).toBe(25)
+  })
+
   it("summarizes a successful final charge for order metadata and QBD posting", () => {
     const metadata = finalChargeOrderMetadata({
       order: { id: "order_123", metadata: {} },
