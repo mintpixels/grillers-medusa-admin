@@ -315,11 +315,16 @@ const stripLegacyDescriptors = (value: string): string =>
   value
     .replace(/\s*\((?:alle)\)\s*/gi, " ")
     .replace(/\bInstitutional\b\.?/gi, " ")
+    .replace(/\bAmerican\s+Angus\b\.?/gi, " ")
+    .replace(/\bVacuum\s+Pack\b\.?/gi, " ")
     .replace(/\bUncooked\b\.?/gi, " ")
     .replace(/\bNOT\s+Kosher\s+for\s+Passover\.?/gi, " ")
+    .replace(/\bKosher\s+for\s+Passover\b\.?/gi, " ")
+    .replace(/\bKFP\b\.?/gi, " ")
     .replace(/\bNO\s+MSG\b\.?/gi, " ")
     .replace(/\bNOT\s+Gluten\s+Free\.?/gi, " ")
     .replace(/\bFresh\s+Beef\s+Choice\s+Per\s+LB\b\.?/gi, " ")
+    .replace(/\bProduced\s+from\b[^,.]*[,.]?/gi, " ")
     .replace(/\s{2,}/g, " ")
     .trim()
 
@@ -356,6 +361,18 @@ const formatGroundBeefPackTitle = (value: string): string | null => {
   return `Ground Beef ${ratio} - ${amount} lb ${packageType}`
 }
 
+const formatVealScallopiniTitle = (value: string): string | null => {
+  const match = value.match(
+    /^(?:kosher\s+)?veal\s+scallopini(?:,\s*(\d{1,2}\s*-\s*\d{1,2})\s*slices?)?(?:,\s*~?\s*(\d+(?:\.\d+)?)\s*lb\.?)?/i
+  )
+
+  if (!match) return null
+
+  const amount = match[2] || "1"
+  const slices = match[1]?.replace(/\s+/g, "")
+  return `Veal Scallopini - ${amount} lb${slices ? ` (${slices} slices)` : ""}`
+}
+
 const looksLikeAccountingTitle = (value: string | null): boolean => {
   if (!value) return false
 
@@ -363,12 +380,19 @@ const looksLikeAccountingTitle = (value: string | null): boolean => {
 
   return (
     /\binstitutional\b/.test(title) ||
+    /\bvacuum\s+pack\b/.test(title) ||
+    /\buncooked\b/.test(title) ||
+    /\bkosher\s+for\s+passover\b/.test(title) ||
     /\bnot kosher for passover\b/.test(title) ||
     /\bno\s+msg\b/.test(title) ||
     /\bnot\s+gluten\s+free\b/.test(title) ||
+    /\bamerican\s+angus\b/.test(title) ||
+    /\bproduced\s+from\b/.test(title) ||
     /\bfresh beef choice per lb\b/.test(title) ||
     /,\s*(?:with|in)\s+/.test(title) ||
     /@\s*\$?\d+(?:\.\d+)?\s*\/?\s*lb\.?/.test(title) ||
+    /\$\s?\d+(?:\.\d+)?\s*\/\s*(?:lb|lbs|oz|kg|g|each|ea)\.?/.test(title) ||
+    (/^[A-Z0-9\s,./()&'-]{12,}$/.test(value) && /[A-Z]{3,}/.test(value)) ||
     (title.length > 72 && /\b(per lb|uncooked|choice|alle)\b/.test(title))
   )
 }
@@ -407,6 +431,8 @@ const cleanLegacyCustomerTitle = (value: string | null): string | null => {
   const joined = segments.join(", ") || shortened || stripped
   const groundBeefTitle = formatGroundBeefPackTitle(joined)
   if (groundBeefTitle) return groundBeefTitle
+  const vealScallopiniTitle = formatVealScallopiniTitle(joined)
+  if (vealScallopiniTitle) return vealScallopiniTitle
 
   const cleaned = titleCaseLegacyWords(joined)
     .replace(/\blb\./gi, "lb")
@@ -735,6 +761,22 @@ const existingLineRepairPatch = (
     }
   }
 
+  const currentCustomerTitle = cleanText(existing.customer_title)
+  const nextCustomerTitle = cleanText(snapshot.customer_title)
+  const currentTitleSnapshot = cleanText(existing.title_snapshot)
+  const nextTitleSnapshot = cleanText(snapshot.title_snapshot)
+  if (
+    nextCustomerTitle &&
+    currentCustomerTitle !== nextCustomerTitle &&
+    (!currentCustomerTitle ||
+      currentCustomerTitle === currentTitleSnapshot ||
+      currentCustomerTitle === nextTitleSnapshot ||
+      looksLikeAccountingTitle(currentCustomerTitle) ||
+      cleanLegacyCustomerTitle(currentCustomerTitle) !== currentCustomerTitle)
+  ) {
+    patch.customer_title = nextCustomerTitle
+  }
+
   if (
     snapshot.actual_quantity &&
     (!existing.actual_quantity || Number(existing.actual_quantity) === 0)
@@ -1059,7 +1101,9 @@ const calculateLine = (line: Record<string, any>) => {
   const actualQuantity = numberOrZero(line.actual_quantity ?? line.ordered_quantity)
   const actualWeightTotal = nullableNumber(line.actual_weight_total)
 
-  let finalSubtotal: number | null = nullableNumber(line.final_line_subtotal)
+  const persistedFinalSubtotal = nullableNumber(line.final_line_subtotal)
+  let finalSubtotal: number | null =
+    pricingMode === "per_lb" ? null : persistedFinalSubtotal
   const errors: string[] = []
   const warnings: string[] = []
 
@@ -1078,20 +1122,34 @@ const calculateLine = (line: Record<string, any>) => {
     }
     if (pricingMode === "per_lb") {
       if (!actualWeightTotal || actualWeightTotal <= 0) {
+        finalSubtotal = null
         errors.push("Actual weight is required for per-lb items.")
       } else {
         finalSubtotal = roundMoney(actualWeightTotal * unitPrice)
       }
-    } else if (finalSubtotal === null) {
+    } else if (
+      finalSubtotal === null ||
+      (finalSubtotal === 0 &&
+        estimatedSubtotal > 0 &&
+        unitPrice > 0 &&
+        actualQuantity > 0)
+    ) {
       finalSubtotal = roundMoney(actualQuantity * unitPrice)
     }
   } else if (pricingMode === "per_lb") {
     if (!actualWeightTotal || actualWeightTotal <= 0) {
+      finalSubtotal = null
       errors.push("Actual weight is required for per-lb items.")
     } else {
       finalSubtotal = roundMoney(actualWeightTotal * unitPrice)
     }
-  } else if (finalSubtotal === null) {
+  } else if (
+    finalSubtotal === null ||
+    (finalSubtotal === 0 &&
+      estimatedSubtotal > 0 &&
+      unitPrice > 0 &&
+      actualQuantity > 0)
+  ) {
     finalSubtotal = roundMoney(actualQuantity * unitPrice)
   }
 

@@ -10,6 +10,12 @@ const DEFAULT_STATUSES = [
   "charged_ready_to_ship",
 ]
 
+const OPEN_STATUSES_WITHOUT_FINAL_TOTALS = new Set([
+  "pending_pack",
+  "packing",
+  "packed_pending_review",
+])
+
 const clampLimit = (value: unknown) => {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed <= 0) return 50
@@ -34,8 +40,22 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     .orderBy("created_at", "asc")
     .limit(clampLimit(req.query?.limit))
 
+  const finalizations = (rows || []).map((row: Record<string, any>) =>
+    OPEN_STATUSES_WITHOUT_FINAL_TOTALS.has(row.status)
+      ? {
+          ...row,
+          final_item_total: null,
+          final_shipping_total: null,
+          final_tax_total: null,
+          final_discount_total: null,
+          final_order_total: null,
+          delta_total: null,
+        }
+      : row
+  )
+
   res.status(200).json({
-    finalizations: rows || [],
-    count: rows?.length || 0,
+    finalizations,
+    count: finalizations.length,
   })
 }

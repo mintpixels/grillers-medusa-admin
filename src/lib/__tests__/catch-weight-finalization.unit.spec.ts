@@ -147,6 +147,7 @@ describe("catch-weight finalization helpers", () => {
     expect(line.estimated_weight_total).toBe(1)
     expect(line.estimated_line_total).toBeCloseTo(39.856725)
     expect(line.qbd_list_id).toBe("410000-1102714368")
+    expect(line.customer_title).toBe("Veal Scallopini - 1 lb (5-8 slices)")
   })
 
   it("treats explicit pound pack meat copy as a weight-finalized line", () => {
@@ -194,6 +195,10 @@ describe("catch-weight finalization helpers", () => {
           order_id: "order_123",
           line_item_id: "item_ground_beef",
           pricing_mode: "per_lb",
+          title_snapshot:
+            "1 lb. Pack Ground Beef, 85/15, Uncooked, Vacuum Pack. NOT Kosher for Passover.",
+          customer_title:
+            "1 lb. Pack Ground Beef, 85/15, Uncooked, Vacuum Pack. NOT Kosher for Passover.",
           actual_quantity: 1,
           actual_piece_count: 1,
           metadata: {
@@ -238,6 +243,7 @@ describe("catch-weight finalization helpers", () => {
         staff_note: "keep me",
       },
     })
+    expect(detail.lines[0].customer_title).toBe("Ground Beef 85/15 - 1 lb Pack")
   })
 
   it("does not calculate a final order total while required weights are missing", async () => {
@@ -264,6 +270,9 @@ describe("catch-weight finalization helpers", () => {
           actual_quantity: 1,
           actual_piece_count: 1,
           actual_weight_total: null,
+          final_line_subtotal: 0,
+          final_line_total: 0,
+          delta_line_total: -11.518475,
           status: "needs_weight",
           metadata: {
             estimated_line_subtotal: 10.69,
