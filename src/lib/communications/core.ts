@@ -126,6 +126,28 @@ function postmarkStream(stream: CommunicationStream): string {
   return process.env.POSTMARK_TRANSACTIONAL_STREAM || "outbound"
 }
 
+function compactMetadataValue(value: unknown): string {
+  if (value === undefined || value === null) return ""
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  return JSON.stringify(value)
+}
+
+export function postmarkMetadata(
+  input: Record<string, unknown>
+): Record<string, string> {
+  const metadata: Record<string, string> = {}
+
+  for (const [key, value] of Object.entries(input)) {
+    if (Object.keys(metadata).length >= 10) break
+    const normalized = compactMetadataValue(value).trim()
+    if (!key || !normalized) continue
+    metadata[key] = normalized.slice(0, 500)
+  }
+
+  return metadata
+}
+
 function inferredPurpose(
   stream: CommunicationStream,
   templateKey?: string | null
@@ -656,17 +678,17 @@ export async function sendTrackedEmail(
         tag: input.template_key,
         template_alias: input.postmark_template_alias || null,
         template_model: input.template_model || {},
-        metadata: {
+        metadata: postmarkMetadata({
           message_log_id: messageRow.id,
           template_key: input.template_key,
           stream: input.stream,
           purpose,
-          order_id: input.order_id || "",
-          cart_id: input.cart_id || "",
-          campaign_id: input.campaign_id || "",
-          flow_id: input.flow_id || "",
+          order_id: input.order_id,
+          cart_id: input.cart_id,
+          campaign_id: input.campaign_id,
+          flow_id: input.flow_id,
           ...(input.metadata || {}),
-        },
+        }),
       },
     })
 

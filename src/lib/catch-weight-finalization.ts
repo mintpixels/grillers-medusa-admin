@@ -283,6 +283,140 @@ const fieldAmount = (source: Record<string, any>, names: string[]) => {
 const lower = (value: unknown) =>
   typeof value === "string" ? value.trim().toLowerCase() : ""
 
+const cleanText = (value: unknown): string | null => {
+  const text = String(value ?? "").trim()
+  return text === "" ? null : text
+}
+
+const stripEmbeddedPrice = (value: string): string =>
+  value
+    .replace(
+      /\s*@\s*\$?\d+(?:\.\d+)?\s*\/?\s*(?:lb|lbs|oz|kg|g|each|ea)\.?/gi,
+      ""
+    )
+    .replace(
+      /\s*\$\s?\d+(?:\.\d+)?\s*\/\s*(?:lb|lbs|oz|kg|g|each|ea)\.?/gi,
+      ""
+    )
+    .replace(/\s+@\s*$/g, "")
+
+const titleCaseLegacyWords = (value: string): string =>
+  value
+    .replace(/\b[A-Z]{3,}\b/g, (word) =>
+      ["USDA", "KFP", "OU", "MSG"].includes(word)
+        ? word
+        : word[0] + word.slice(1).toLowerCase()
+    )
+    .replace(/\bBnls\b/gi, "Boneless")
+    .replace(/\bLb\b/g, "lb")
+    .replace(/\bOz\b/g, "oz")
+
+const stripLegacyDescriptors = (value: string): string =>
+  value
+    .replace(/\s*\((?:alle)\)\s*/gi, " ")
+    .replace(/\bInstitutional\b\.?/gi, " ")
+    .replace(/\bUncooked\b\.?/gi, " ")
+    .replace(/\bNOT\s+Kosher\s+for\s+Passover\.?/gi, " ")
+    .replace(/\bNO\s+MSG\b\.?/gi, " ")
+    .replace(/\bNOT\s+Gluten\s+Free\.?/gi, " ")
+    .replace(/\bFresh\s+Beef\s+Choice\s+Per\s+LB\b\.?/gi, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+
+const shortenLegacyDescriptionTitle = (value: string): string => {
+  const commaIndex = value.indexOf(",")
+  if (commaIndex <= 3) return value
+
+  const head = value.slice(0, commaIndex).trim()
+  const tail = value.slice(commaIndex + 1).trim().toLowerCase()
+
+  if (
+    head.length >= 4 &&
+    (tail.startsWith("with ") ||
+      tail.startsWith("in ") ||
+      (value.length > 72 && !/^\(?\d{1,3}\s*\/\s*\d{1,3}\)?\b/.test(tail)))
+  ) {
+    return head
+  }
+
+  return value
+}
+
+const formatGroundBeefPackTitle = (value: string): string | null => {
+  const match = value.match(
+    /^(\d+(?:\.\d+)?)\s*lb\.?\s*(pack|tube)\s+ground\s+beef(?:\s*,?\s*\(?(\d{1,3}\s*\/\s*\d{1,3})\)?)?/i
+  )
+
+  if (!match?.[1] || !match?.[2] || !match?.[3]) return null
+
+  const amount = match[1]
+  const packageType = match[2].toLowerCase() === "tube" ? "Tube" : "Pack"
+  const ratio = match[3].replace(/\s+/g, "")
+
+  return `Ground Beef ${ratio} - ${amount} lb ${packageType}`
+}
+
+const looksLikeAccountingTitle = (value: string | null): boolean => {
+  if (!value) return false
+
+  const title = value.toLowerCase()
+
+  return (
+    /\binstitutional\b/.test(title) ||
+    /\bnot kosher for passover\b/.test(title) ||
+    /\bno\s+msg\b/.test(title) ||
+    /\bnot\s+gluten\s+free\b/.test(title) ||
+    /\bfresh beef choice per lb\b/.test(title) ||
+    /,\s*(?:with|in)\s+/.test(title) ||
+    /@\s*\$?\d+(?:\.\d+)?\s*\/?\s*lb\.?/.test(title) ||
+    (title.length > 72 && /\b(per lb|uncooked|choice|alle)\b/.test(title))
+  )
+}
+
+const cleanLegacyCustomerTitle = (value: string | null): string | null => {
+  const text = cleanText(value)
+  if (!text) return null
+
+  const shouldClean =
+    looksLikeAccountingTitle(text) ||
+    /\$\s?\d+(?:\.\d+)?\s*\/\s*(?:lb|lbs|oz|kg|g|each|ea)\.?/i.test(text) ||
+    /\s*@\s*\$?\d+(?:\.\d+)?\s*\/?\s*(?:lb|lbs|oz|kg|g|each|ea)\.?/i.test(text)
+
+  if (!shouldClean) return text
+
+  const stripped = stripLegacyDescriptors(stripEmbeddedPrice(text))
+  const shortened = shortenLegacyDescriptionTitle(stripped)
+  const segments = shortened
+    .split(",")
+    .map((segment) =>
+      segment
+        .replace(/^[\s,.;:/-]+|[\s,.;:/-]+$/g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim()
+    )
+    .filter((segment) => {
+      if (!segment) return false
+      const value = segment.toLowerCase()
+      return (
+        value !== "uncooked" &&
+        value !== "institutional" &&
+        value !== "not kosher for passover"
+      )
+    })
+
+  const joined = segments.join(", ") || shortened || stripped
+  const groundBeefTitle = formatGroundBeefPackTitle(joined)
+  if (groundBeefTitle) return groundBeefTitle
+
+  const cleaned = titleCaseLegacyWords(joined)
+    .replace(/\blb\./gi, "lb")
+    .replace(/\s{2,}/g, " ")
+    .replace(/[\s,.;:-]+$/g, "")
+    .trim()
+
+  return cleaned || text
+}
+
 const metadataValue = (
   metadata: Record<string, any>,
   names: string[]
@@ -380,6 +514,25 @@ const qbdListIdFromItem = (item: Record<string, any>) => {
     "QuickBooksListId",
   ])
   return typeof value === "string" && value.trim() ? value.trim() : null
+}
+
+const customerTitleFromItem = (item: Record<string, any>) => {
+  const metadata = combinedLineMetadata(item)
+  const variant = metadataObject(item.variant)
+  const product = metadataObject(item.product)
+  const variantProduct = metadataObject(variant.product)
+  const raw =
+    cleanText(metadata.strapi_title) ||
+    cleanText(metadata.display_title) ||
+    cleanText(metadata.customer_title) ||
+    cleanText(metadata.medusa_product_title) ||
+    cleanText(item.product_title) ||
+    cleanText(variantProduct.title) ||
+    cleanText(product.title) ||
+    cleanText(variant.title) ||
+    cleanText(item.title)
+
+  return cleanLegacyCustomerTitle(raw) || raw || null
 }
 
 const parseWeight = (value: unknown): number | null => {
@@ -521,7 +674,7 @@ export const buildFinalizationLineSnapshot = (
     sku: item.variant_sku || item.sku || item.variant?.sku || null,
     qbd_list_id: qbdListIdFromItem(item),
     title_snapshot: item.title || item.product_title || item.subtitle || null,
-    customer_title: item.title || item.product_title || null,
+    customer_title: customerTitleFromItem(item),
     pricing_mode: pricingMode,
     unit_price: estimate.unitPrice,
     estimated_unit_price: estimate.unitPrice,
@@ -628,13 +781,24 @@ const existingLineRepairPatch = (
     }
   )
   if (shouldRepairMetadata) {
-    const mergedMetadata = {
-      ...snapshotMetadata,
-      ...currentMetadata,
-      source_line_metadata: {
-        ...metadataObject(snapshotMetadata.source_line_metadata),
-        ...metadataObject(currentMetadata.source_line_metadata),
-      },
+    const mergedMetadata: Record<string, any> = { ...currentMetadata }
+    for (const [field, next] of Object.entries(snapshotMetadata)) {
+      if (field === "source_line_metadata") continue
+      const current = currentMetadata[field]
+      if (
+        next !== undefined &&
+        next !== null &&
+        (current === undefined ||
+          current === null ||
+          current === "" ||
+          Number(current) === 0)
+      ) {
+        mergedMetadata[field] = next
+      }
+    }
+    mergedMetadata.source_line_metadata = {
+      ...metadataObject(snapshotMetadata.source_line_metadata),
+      ...metadataObject(currentMetadata.source_line_metadata),
     }
     patch.metadata = mergedMetadata
   }
@@ -935,17 +1099,23 @@ const calculateLine = (line: Record<string, any>) => {
     errors.push("Final unit price is missing.")
   }
 
-  const finalTax = roundMoney((finalSubtotal || 0) * estimatedTaxRate)
-  const finalTotal = roundMoney((finalSubtotal || 0) + finalTax)
-  const delta = roundMoney(finalTotal - estimatedTotal)
+  const hasFinalSubtotal = finalSubtotal !== null
+  const finalTax = hasFinalSubtotal
+    ? roundMoney((finalSubtotal || 0) * estimatedTaxRate)
+    : null
+  const finalTotal = hasFinalSubtotal
+    ? roundMoney((finalSubtotal || 0) + (finalTax || 0))
+    : null
+  const delta =
+    finalTotal !== null ? roundMoney(finalTotal - estimatedTotal) : null
 
-  if (Math.abs(delta) >= Math.max(15, estimatedTotal * 0.25)) {
+  if (delta !== null && Math.abs(delta) >= Math.max(15, estimatedTotal * 0.25)) {
     warnings.push("Large final price change needs staff review.")
   }
 
   return {
     line,
-    final_line_subtotal: finalSubtotal || 0,
+    final_line_subtotal: hasFinalSubtotal ? finalSubtotal || 0 : null,
     final_line_tax_total: finalTax,
     final_line_total: finalTotal,
     delta_line_total: delta,
@@ -974,13 +1144,32 @@ export async function previewFinalization(
       message,
     }))
   )
+  const totalsComplete =
+    lineErrors.length === 0 &&
+    calculatedLines.every(
+      (line) =>
+        line.final_line_subtotal !== null &&
+        line.final_line_tax_total !== null &&
+        line.final_line_total !== null &&
+        line.delta_line_total !== null
+    )
 
-  const finalItemTotal = roundMoney(
-    calculatedLines.reduce((sum, line) => sum + line.final_line_subtotal, 0)
-  )
-  const recalculatedLineTax = roundMoney(
-    calculatedLines.reduce((sum, line) => sum + line.final_line_tax_total, 0)
-  )
+  const finalItemTotal = totalsComplete
+    ? roundMoney(
+        calculatedLines.reduce(
+          (sum, line) => sum + numberOrZero(line.final_line_subtotal),
+          0
+        )
+      )
+    : null
+  const recalculatedLineTax = totalsComplete
+    ? roundMoney(
+        calculatedLines.reduce(
+          (sum, line) => sum + numberOrZero(line.final_line_tax_total),
+          0
+        )
+      )
+    : null
   const estimatedLineTax = roundMoney(
     detail.lines.reduce(
       (sum: number, line: Record<string, any>) =>
@@ -988,22 +1177,30 @@ export async function previewFinalization(
       0
     )
   )
-  const fixedNonLineTax = Math.max(
-    0,
-    roundMoney(breakdown.estimated_tax_total - estimatedLineTax)
-  )
-  const finalTaxTotal = roundMoney(recalculatedLineTax + fixedNonLineTax)
-  const finalShippingTotal = breakdown.estimated_shipping_total
-  const finalDiscountTotal = breakdown.estimated_discount_total
-  const finalOrderTotal = roundMoney(
-    finalItemTotal +
-      finalShippingTotal +
-      finalTaxTotal -
-      finalDiscountTotal
-  )
-  const deltaTotal = roundMoney(
-    finalOrderTotal - breakdown.estimated_order_total
-  )
+  const fixedNonLineTax = totalsComplete
+    ? Math.max(0, roundMoney(breakdown.estimated_tax_total - estimatedLineTax))
+    : null
+  const finalTaxTotal = totalsComplete
+    ? roundMoney(numberOrZero(recalculatedLineTax) + numberOrZero(fixedNonLineTax))
+    : null
+  const finalShippingTotal = totalsComplete
+    ? breakdown.estimated_shipping_total
+    : null
+  const finalDiscountTotal = totalsComplete
+    ? breakdown.estimated_discount_total
+    : null
+  const finalOrderTotal = totalsComplete
+    ? roundMoney(
+        numberOrZero(finalItemTotal) +
+          numberOrZero(finalShippingTotal) +
+          numberOrZero(finalTaxTotal) -
+          numberOrZero(finalDiscountTotal)
+      )
+    : null
+  const deltaTotal =
+    finalOrderTotal !== null
+      ? roundMoney(finalOrderTotal - breakdown.estimated_order_total)
+      : null
   const summary = {
     final_item_total: finalItemTotal,
     final_shipping_total: finalShippingTotal,

@@ -298,21 +298,29 @@ export function normalizeOrderForQbSync(
             ? computedLineSubtotal + (numeric(item.tax_total) ?? 0)
             : null) ??
           subtotal
+        const customerTitle = textValue(finalLine?.customer_title)
 
         return {
           ...item,
+          title: customerTitle || item.title,
           metadata: qbdListId
             ? {
                 ...metadata,
                 qbd_list_id: qbdListId,
                 catch_weight_actual_quantity:
                   finalLine?.actual_quantity ?? finalLine?.actual_piece_count,
+                catch_weight_actual_piece_count:
+                  finalLine?.actual_piece_count ?? null,
                 catch_weight_actual_weight_total:
                   finalLine?.actual_weight_total ?? null,
                 catch_weight_final_line_subtotal:
                   finalLine?.final_line_subtotal ?? null,
                 catch_weight_final_line_total:
                   finalLine?.final_line_total ?? null,
+                catch_weight_customer_title: customerTitle || null,
+                catch_weight_line_note: finalLine?.note ?? null,
+                catch_weight_replacement_reason:
+                  finalLine?.replacement_reason ?? finalLine?.short_reason ?? null,
               }
             : item.metadata,
           quantity: fallbackQuantity,

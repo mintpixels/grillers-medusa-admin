@@ -2,10 +2,62 @@ import {
   PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
   amountInMinorUnits,
   buildFinalizationLineSnapshot,
+  ensureFinalizationForOrder,
   finalChargeOrderMetadata,
   fulfillmentGateAllowsShipment,
   orderPlacedFinalizationMetadata,
+  previewFinalization,
 } from "../catch-weight-finalization"
+
+function createMemoryCatchWeightDb(seed: Record<string, any[]>) {
+  const tables = seed
+
+  const matches = (row: Record<string, any>, where: Record<string, any>) =>
+    Object.entries(where).every(([key, value]) => row[key] === value)
+
+  const queryFor = (table: string) => {
+    const filters: Array<(row: Record<string, any>) => boolean> = []
+
+    const query: any = {
+      where(where: Record<string, any>) {
+        filters.push((row) => matches(row, where))
+        return query
+      },
+      whereNull(field: string) {
+        filters.push((row) => row[field] === null || row[field] === undefined)
+        return query
+      },
+      orderBy() {
+        return query
+      },
+      first() {
+        return Promise.resolve((tables[table] || []).filter((row) => filters.every((filter) => filter(row)))[0])
+      },
+      insert(rows: any) {
+        const values = Array.isArray(rows) ? rows : [rows]
+        tables[table] = tables[table] || []
+        tables[table].push(...values)
+        return Promise.resolve(values)
+      },
+      update(patch: Record<string, any>) {
+        const rows = (tables[table] || []).filter((row) =>
+          filters.every((filter) => filter(row))
+        )
+        rows.forEach((row) => Object.assign(row, patch))
+        return Promise.resolve(rows.length)
+      },
+      then(resolve: (value: any[]) => unknown, reject?: (reason: unknown) => unknown) {
+        return Promise.resolve(
+          (tables[table] || []).filter((row) => filters.every((filter) => filter(row)))
+        ).then(resolve, reject)
+      },
+    }
+
+    return query
+  }
+
+  return Object.assign(jest.fn((table: string) => queryFor(table)), { tables })
+}
 
 describe("catch-weight finalization helpers", () => {
   it("blocks fulfillment until the final charge succeeds", () => {
@@ -120,7 +172,136 @@ describe("catch-weight finalization helpers", () => {
     expect(line.pricing_mode).toBe("per_lb")
     expect(line.status).toBe("needs_weight")
     expect(line.estimated_weight_total).toBe(1)
+    expect(line.customer_title).toBe("Ground Beef 85/15 - 1 lb Pack")
+    expect(line.metadata.estimated_line_subtotal).toBe(11.52)
     expect(line.final_line_total).toBeNull()
+  })
+
+  it("repairs stale zero line estimates without losing source metadata", async () => {
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_123",
+          order_id: "order_123",
+          status: "packed_pending_review",
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          id: "gpfinline_123",
+          finalization_id: "gpfin_123",
+          order_id: "order_123",
+          line_item_id: "item_ground_beef",
+          pricing_mode: "per_lb",
+          actual_quantity: 1,
+          actual_piece_count: 1,
+          metadata: {
+            estimated_line_subtotal: 0,
+            estimated_line_total: 0,
+            estimated_tax_total: 0,
+            source_line_metadata: {
+              staff_note: "keep me",
+            },
+          },
+          deleted_at: null,
+        },
+      ],
+    })
+
+    const detail = await ensureFinalizationForOrder(db, {
+      id: "order_123",
+      items: [
+        {
+          id: "item_ground_beef",
+          title:
+            "1 lb. Pack Ground Beef, 85/15, Uncooked, Vacuum Pack. NOT Kosher for Passover.",
+          variant_sku: "1-00-12-1",
+          quantity: 1,
+          unit_price: 10.69,
+          subtotal: 10.69,
+          total: 11.518475,
+          tax_total: 0.828475,
+          metadata: {
+            qbd_list_id: "60000-1102339574",
+          },
+        },
+      ],
+    })
+
+    expect(detail.lines[0].metadata).toMatchObject({
+      estimated_line_subtotal: 10.69,
+      estimated_line_total: 11.518475,
+      estimated_tax_total: 0.828475,
+      source_line_metadata: {
+        qbd_list_id: "60000-1102339574",
+        staff_note: "keep me",
+      },
+    })
+  })
+
+  it("does not calculate a final order total while required weights are missing", async () => {
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_123",
+          order_id: "order_123",
+          status: "packing",
+          estimated_order_total: 11.518475,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          id: "gpfinline_123",
+          finalization_id: "gpfin_123",
+          order_id: "order_123",
+          line_item_id: "item_ground_beef",
+          qbd_list_id: "60000-1102339574",
+          pricing_mode: "per_lb",
+          unit_price: 10.69,
+          actual_unit_price: 10.69,
+          actual_quantity: 1,
+          actual_piece_count: 1,
+          actual_weight_total: null,
+          status: "needs_weight",
+          metadata: {
+            estimated_line_subtotal: 10.69,
+            estimated_line_total: 11.518475,
+            estimated_tax_total: 0.828475,
+          },
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const preview = await previewFinalization(
+      db,
+      {
+        id: "order_123",
+        total: 11.518475,
+        item_subtotal: 10.69,
+        tax_total: 0.828475,
+        shipping_total: 0,
+        discount_total: 0,
+        items: [],
+      },
+      { persist: true }
+    )
+
+    expect(preview.errors).toEqual([
+      {
+        line_item_id: "item_ground_beef",
+        message: "Actual weight is required for per-lb items.",
+      },
+    ])
+    expect(preview.lines[0].final_line_total).toBeNull()
+    expect(preview.totals.final_item_total).toBeNull()
+    expect(preview.totals.final_tax_total).toBeNull()
+    expect(preview.totals.final_order_total).toBeNull()
+    expect(preview.totals.delta_total).toBeNull()
   })
 
   it("summarizes a successful final charge for order metadata and QBD posting", () => {

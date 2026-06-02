@@ -73,6 +73,15 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return jsonError(res, 409, "Order does not have a Stripe customer id.")
   }
 
+  const finalOrderTotal = preview.totals.final_order_total
+  if (finalOrderTotal === null || finalOrderTotal === undefined) {
+    return jsonError(
+      res,
+      409,
+      "Final order total is not available until all catch-weight lines are complete."
+    )
+  }
+
   const idempotencyKey =
     body.idempotency_key ||
     `final-charge:${order.id}:${preview.finalization.id}:${randomUUID()}`
@@ -88,7 +97,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
   try {
     const paymentIntent = await createStripeFinalPaymentIntent({
-      amount: preview.totals.final_order_total,
+      amount: finalOrderTotal,
       currencyCode: preview.finalization.currency_code || order.currency_code || "usd",
       stripeCustomerId: preview.payment_setup.stripe_customer_id,
       stripePaymentMethodId: preview.payment_setup.stripe_payment_method_id,
@@ -101,7 +110,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     const attempt = await recordFinalChargeAttempt(db, {
       orderId: order.id,
       finalizationId: preview.finalization.id,
-      amount: preview.totals.final_order_total,
+      amount: finalOrderTotal,
       currencyCode: preview.finalization.currency_code || order.currency_code || "usd",
       stripeCustomerId: preview.payment_setup.stripe_customer_id,
       stripePaymentMethodId: preview.payment_setup.stripe_payment_method_id,
@@ -154,7 +163,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     if (!existingTransactions.length) {
       await orderModule.addOrderTransactions({
         order_id: order.id,
-        amount: preview.totals.final_order_total,
+        amount: finalOrderTotal,
         currency_code:
           preview.finalization.currency_code || order.currency_code || "usd",
         reference: "final_charge",
@@ -164,16 +173,18 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     const metadata = {
       ...finalChargeOrderMetadata({
-      order,
-      finalization: finalizationForMetadata,
-      paymentIntent,
-      attemptId: attempt.id,
-      actorId: staffActor,
+        order,
+        finalization: finalizationForMetadata,
+        paymentIntent,
+        attemptId: attempt.id,
+        actorId: staffActor,
       }),
       catch_weight_final_lines: preview.lines.map((line: Record<string, any>) => ({
         line_item_id: line.line_item_id,
         product_id: line.product_id,
         variant_id: line.variant_id,
+        customer_title: line.customer_title || null,
+        title_snapshot: line.title_snapshot || null,
         sku: line.sku,
         qbd_list_id: line.replacement_qbd_list_id || line.qbd_list_id,
         pricing_mode: line.pricing_mode,
@@ -186,6 +197,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         final_line_total: line.final_line_total,
         delta_line_total: line.delta_line_total,
         status: line.status,
+        note: line.note || null,
+        replacement_variant_id: line.replacement_variant_id || null,
+        replacement_qbd_list_id: line.replacement_qbd_list_id || null,
+        replacement_reason: line.replacement_reason || null,
+        short_reason: line.short_reason || null,
       })),
     }
 
@@ -197,7 +213,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         order_id: order.id,
         finalization_id: preview.finalization.id,
         payment_intent_id: paymentIntent.id,
-        amount: preview.totals.final_order_total,
+        amount: finalOrderTotal,
         currency_code:
           preview.finalization.currency_code || order.currency_code || "usd",
       },
@@ -223,7 +239,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     const attempt = await recordFinalChargeAttempt(db, {
       orderId: order.id,
       finalizationId: preview.finalization.id,
-      amount: preview.totals.final_order_total,
+      amount: finalOrderTotal,
       currencyCode: preview.finalization.currency_code || order.currency_code || "usd",
       stripeCustomerId: preview.payment_setup.stripe_customer_id,
       stripePaymentMethodId: preview.payment_setup.stripe_payment_method_id,

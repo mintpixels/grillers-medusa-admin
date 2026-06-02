@@ -130,6 +130,61 @@ describe("qb-sync order import subscriber", () => {
     })
   })
 
+  it("normalizes finalized catch-weight lines for QuickBooks posting", () => {
+    const order = normalizeOrderForQbSync({
+      id: "order_final_weight",
+      total: 11.52,
+      subtotal: 10.69,
+      shipping_total: 0,
+      tax_total: 0.83,
+      discount_total: 0,
+      metadata: {
+        catch_weight_final_lines: [
+          {
+            line_item_id: "ordli_1",
+            customer_title: "Ground Beef 85/15 - 1 lb Pack",
+            qbd_list_id: "800009C7-1502034505",
+            pricing_mode: "per_lb",
+            actual_quantity: 1,
+            actual_piece_count: 6,
+            actual_weight_total: 1.07,
+            final_line_subtotal: 12.3,
+            final_line_total: 13.25,
+            note: "Use the firmer pack.",
+          },
+        ],
+      },
+      items: [
+        {
+          id: "ordli_1",
+          title: "1-00-12-1 GBD 0102939574",
+          quantity: 1,
+          unit_price: 11.49,
+          total: 11.52,
+          subtotal: 10.69,
+          metadata: { strapi_title: "Ground Beef" },
+        },
+      ],
+    })
+
+    expect((order.items as any[])[0]).toMatchObject({
+      title: "Ground Beef 85/15 - 1 lb Pack",
+      quantity: 1.07,
+      subtotal: 12.3,
+      total: 13.25,
+      metadata: {
+        qbd_list_id: "800009C7-1502034505",
+        catch_weight_actual_quantity: 1,
+        catch_weight_actual_piece_count: 6,
+        catch_weight_actual_weight_total: 1.07,
+        catch_weight_final_line_subtotal: 12.3,
+        catch_weight_final_line_total: 13.25,
+        catch_weight_customer_title: "Ground Beef 85/15 - 1 lb Pack",
+        catch_weight_line_note: "Use the firmer pack.",
+      },
+    })
+  })
+
   it("uses legacy item maps as a fallback when current product metadata is missing", () => {
     const order = normalizeOrderForQbSync(
       {

@@ -2,6 +2,7 @@ import { buildSimpleMessageEmail } from "../emails/templates/simple-message"
 import {
   MARKETING_SUPPRESSION_SCOPES,
   normalizeEmail,
+  postmarkMetadata,
   preferenceUrl,
   verifyServiceApiKey,
 } from "../communications/core"
@@ -22,6 +23,34 @@ describe("communications helpers", () => {
   it("normalizes profile email addresses consistently", () => {
     expect(normalizeEmail("  Avi@Example.COM ")).toBe("avi@example.com")
     expect(normalizeEmail(null)).toBe("")
+  })
+
+  it("caps Postmark metadata at the provider limit without empty fields", () => {
+    const metadata = postmarkMetadata({
+      message_log_id: "gpmsg_1",
+      template_key: "order-placed",
+      stream: "transactional",
+      purpose: "transactional",
+      order_id: "order_1",
+      cart_id: "",
+      campaign_id: null,
+      flow_id: undefined,
+      email: "avi@example.com",
+      total: 42.45,
+      display_id: 102,
+      extra_1: "kept",
+      extra_2: "dropped",
+      nested: { too: "late" },
+    })
+
+    expect(Object.keys(metadata)).toHaveLength(10)
+    expect(metadata.cart_id).toBeUndefined()
+    expect(metadata.campaign_id).toBeUndefined()
+    expect(metadata.flow_id).toBeUndefined()
+    expect(metadata.total).toBe("42.45")
+    expect(metadata.extra_1).toBe("kept")
+    expect(metadata.extra_2).toBe("dropped")
+    expect(metadata.nested).toBeUndefined()
   })
 
   it("renders lifecycle emails with absolute storefront links", () => {

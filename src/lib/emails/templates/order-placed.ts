@@ -120,7 +120,7 @@ export const buildOrderPlacedEmail = (order: OrderForEmail) => {
     </table>`
 
   const footerNote = `
-    <strong style="color:#17201A;">A note on catch-weight pricing.</strong> Most cuts are sold by the pound. Your card has been saved securely, but it has not been charged or authorized for the estimate above. We'll weigh your order before it ships and charge the final amount right before release. <a href="${STOREFRONT_URL}/us/page/catch-weight-pricing">Learn more</a>.`
+    <strong style="color:#17201A;">A note on catch-weight pricing.</strong> Most cuts are sold by the pound. Your card is saved today, and we charge the final weighed amount when your order is packed and ready to leave. <a href="${STOREFRONT_URL}/us/page/catch-weight-pricing">Learn more</a>.`
 
   const { html } = renderEmail({
     preheader: `Order confirmed${display ? " " + display : ""}: total ${orderTotal}.`,
