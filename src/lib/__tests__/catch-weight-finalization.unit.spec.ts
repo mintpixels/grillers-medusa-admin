@@ -557,6 +557,82 @@ describe("catch-weight finalization helpers", () => {
     expect(preview.totals.final_order_total).toBe(25)
   })
 
+  it("keeps substituted replacement prices during line repair", async () => {
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_123",
+          order_id: "order_123",
+          status: "packing",
+          estimated_order_total: 10.69,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          id: "gpfinline_123",
+          finalization_id: "gpfin_123",
+          order_id: "order_123",
+          line_item_id: "item_ground_beef",
+          qbd_list_id: "ORIGINAL-QBD",
+          pricing_mode: "per_lb",
+          unit_price: 10.69,
+          estimated_unit_price: 10.69,
+          actual_unit_price: 14.99,
+          actual_quantity: 1,
+          actual_piece_count: 1,
+          actual_weight_total: 1.7,
+          replacement_variant_id: "variant_brisket",
+          replacement_qbd_list_id: "BRISKET-QBD",
+          replacement_reason: "Substituted with First Cut Brisket",
+          status: "substituted",
+          metadata: {
+            estimated_line_subtotal: 10.69,
+            estimated_line_total: 11.52,
+            estimated_tax_total: 0,
+          },
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const order = {
+      id: "order_123",
+      total: 10.69,
+      item_subtotal: 10.69,
+      tax_total: 0,
+      shipping_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "item_ground_beef",
+          title:
+            "1 lb. Pack Ground Beef, 85/15, Uncooked, Vacuum Pack. NOT Kosher for Passover.",
+          variant_sku: "1-00-12-1",
+          quantity: 1,
+          unit_price: 10.69,
+          subtotal: 10.69,
+          total: 10.69,
+          tax_total: 0,
+          metadata: {
+            qbd_list_id: "ORIGINAL-QBD",
+          },
+        },
+      ],
+    }
+
+    const detail = await ensureFinalizationForOrder(db, order)
+    expect(detail.lines[0].actual_unit_price).toBe(14.99)
+    expect(detail.lines[0].replacement_variant_id).toBe("variant_brisket")
+
+    const preview = await previewFinalization(db, order, { persist: true })
+    expect(preview.errors).toEqual([])
+    expect(preview.lines[0].final_line_subtotal).toBeCloseTo(25.48)
+    expect(preview.totals.final_order_total).toBeCloseTo(25.48)
+  })
+
   it("summarizes a successful final charge for order metadata and QBD posting", () => {
     const metadata = finalChargeOrderMetadata({
       order: { id: "order_123", metadata: {} },

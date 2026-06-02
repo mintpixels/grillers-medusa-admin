@@ -857,11 +857,12 @@ const existingLineRepairPatch = (
       existing.actual_unit_price ?? existing.unit_price
     )
 
+    // Existing lines may carry picker-entered replacement pricing. Repair only
+    // missing historical prices; do not reset an intentional positive value.
     if (
       nextUnitPrice !== null &&
       nextUnitPrice > 0 &&
-      (currentUnitPrice === null ||
-        Math.abs(currentUnitPrice - nextUnitPrice) >= 0.005)
+      (currentUnitPrice === null || currentUnitPrice <= 0)
     ) {
       patch.unit_price = snapshot.unit_price
       patch.estimated_unit_price = snapshot.estimated_unit_price
