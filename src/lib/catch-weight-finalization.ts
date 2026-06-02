@@ -11,6 +11,7 @@ export const FINALIZATION_CHARGE_ATTEMPTING = "charge_attempting"
 export const FINALIZATION_CHARGE_FAILED_HOLD = "charge_failed_hold"
 export const FINALIZATION_CHARGED_READY_TO_SHIP = "charged_ready_to_ship"
 export const FINALIZATION_RELEASED_TO_FULFILLMENT = "released_to_fulfillment"
+export const FINALIZATION_LINE_NEEDS_PICK = "needs_pick"
 
 export const CATCH_WEIGHT_ORDER_FIELDS = [
   "id",
@@ -859,6 +860,9 @@ export const buildFinalizationLineSnapshot = (
     estimatedWeightTotal
   )
 
+  const initialLineStatus =
+    pricingMode === "per_lb" ? "needs_weight" : FINALIZATION_LINE_NEEDS_PICK
+
   return {
     id: id("gpfinline"),
     finalization_id: finalizationId,
@@ -877,13 +881,13 @@ export const buildFinalizationLineSnapshot = (
     ordered_quantity: estimate.quantity,
     estimated_weight_each: estimatedWeightEach,
     estimated_weight_total: estimatedWeightTotal,
-    actual_quantity: estimate.quantity,
-    actual_piece_count: estimate.quantity,
+    actual_quantity: 0,
+    actual_piece_count: 0,
     actual_unit_price: finalUnitPrice,
-    final_line_subtotal: pricingMode === "per_lb" ? null : estimate.subtotal,
-    final_line_total: pricingMode === "per_lb" ? null : estimate.total,
-    delta_line_total: pricingMode === "per_lb" ? null : 0,
-    status: pricingMode === "per_lb" ? "needs_weight" : "ready",
+    final_line_subtotal: null,
+    final_line_total: null,
+    delta_line_total: null,
+    status: initialLineStatus,
     metadata: {
       estimated_tax_total: estimate.tax,
       estimated_line_subtotal: estimate.subtotal,
@@ -900,6 +904,31 @@ const existingLineRepairPatch = (
   snapshot: Record<string, any>
 ) => {
   const patch: Record<string, any> = {}
+  const existingMetadata = metadataObject(existing.metadata)
+  const estimatedSubtotal = nullableNumber(
+    existingMetadata.estimated_line_subtotal
+  )
+  const estimatedTotal = nullableNumber(
+    existing.estimated_line_total ?? existingMetadata.estimated_line_total
+  )
+  const oldFixedReadyDefault =
+    snapshot.pricing_mode !== "per_lb" &&
+    (existing.status || "ready") === "ready" &&
+    numberOrZero(existing.actual_quantity) ===
+      numberOrZero(existing.ordered_quantity) &&
+    numberOrZero(existing.actual_piece_count) ===
+      numberOrZero(existing.ordered_quantity) &&
+    !existing.actual_weight_total &&
+    !existing.note &&
+    !existing.replacement_variant_id &&
+    !existing.replacement_qbd_list_id &&
+    !existing.replacement_reason &&
+    !existing.short_reason &&
+    !existing.exception_reason &&
+    estimatedSubtotal !== null &&
+    estimatedTotal !== null &&
+    nullableNumber(existing.final_line_subtotal) === estimatedSubtotal &&
+    nullableNumber(existing.final_line_total) === estimatedTotal
   const copyIfMissingOrZero = [
     "product_id",
     "variant_id",
@@ -955,6 +984,15 @@ const existingLineRepairPatch = (
     if (!nullableNumber(existing.actual_weight_total)) {
       patch.status = "needs_weight"
     }
+  }
+
+  if (oldFixedReadyDefault) {
+    patch.actual_quantity = 0
+    patch.actual_piece_count = 0
+    patch.final_line_subtotal = null
+    patch.final_line_total = null
+    patch.delta_line_total = null
+    patch.status = FINALIZATION_LINE_NEEDS_PICK
   }
 
   if (snapshot.pricing_mode === "per_lb") {
@@ -1358,9 +1396,22 @@ const calculateLine = (line: Record<string, any>) => {
     if (!line.short_reason && !line.exception_reason) {
       errors.push("Removed line requires a short/removal reason.")
     }
+  } else if (status !== "ready" && status !== "substituted") {
+    finalSubtotal = null
+    if (
+      pricingMode === "per_lb" &&
+      (!actualWeightTotal || actualWeightTotal <= 0)
+    ) {
+      errors.push("Actual weight is required for per-lb items.")
+    } else {
+      errors.push("Line must be marked ready, removed, or substituted.")
+    }
   } else if (status === "substituted") {
     if (!line.replacement_variant_id || !line.replacement_qbd_list_id) {
       errors.push("Substituted line requires replacement variant and QBD ListID.")
+    }
+    if (actualQuantity <= 0) {
+      errors.push("Fulfilled quantity must be greater than zero.")
     }
     if (pricingMode === "per_lb") {
       if (!actualWeightTotal || actualWeightTotal <= 0) {
@@ -1380,21 +1431,29 @@ const calculateLine = (line: Record<string, any>) => {
       finalSubtotal = roundMoney(actualQuantity * unitPrice)
     }
   } else if (pricingMode === "per_lb") {
+    if (actualQuantity <= 0) {
+      errors.push("Fulfilled quantity must be greater than zero.")
+    }
     if (!actualWeightTotal || actualWeightTotal <= 0) {
       finalSubtotal = null
       errors.push("Actual weight is required for per-lb items.")
     } else {
       finalSubtotal = roundMoney(actualWeightTotal * unitPrice)
     }
-  } else if (
-    finalSubtotal === null ||
-    actualQuantity !== numberOrZero(line.ordered_quantity) ||
-    (finalSubtotal === 0 &&
-      estimatedSubtotal > 0 &&
-      unitPrice > 0 &&
-      actualQuantity > 0)
-  ) {
-    finalSubtotal = roundMoney(actualQuantity * unitPrice)
+  } else {
+    if (actualQuantity <= 0) {
+      finalSubtotal = null
+      errors.push("Fulfilled quantity must be greater than zero.")
+    } else if (
+      finalSubtotal === null ||
+      actualQuantity !== numberOrZero(line.ordered_quantity) ||
+      (finalSubtotal === 0 &&
+        estimatedSubtotal > 0 &&
+        unitPrice > 0 &&
+        actualQuantity > 0)
+    ) {
+      finalSubtotal = roundMoney(actualQuantity * unitPrice)
+    }
   }
 
   if (status !== "removed" && unitPrice <= 0) {
@@ -1530,11 +1589,7 @@ export async function previewFinalization(
             final_line_subtotal: calculated.final_line_subtotal,
             final_line_total: calculated.final_line_total,
             delta_line_total: calculated.delta_line_total,
-            status: calculated.errors.length
-              ? calculated.line.status
-              : calculated.line.status === "needs_weight"
-                ? "ready"
-                : calculated.line.status,
+            status: calculated.line.status,
             updated_at: new Date(),
           })
       )

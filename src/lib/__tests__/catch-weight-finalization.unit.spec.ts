@@ -115,7 +115,38 @@ describe("catch-weight finalization helpers", () => {
     expect(line.pricing_mode).toBe("per_lb")
     expect(line.status).toBe("needs_weight")
     expect(line.estimated_weight_total).toBe(2)
+    expect(line.actual_quantity).toBe(0)
+    expect(line.actual_piece_count).toBe(0)
+    expect(line.final_line_total).toBeNull()
     expect(line.qbd_list_id).toBe("80000001-123")
+  })
+
+  it("creates fixed-price line snapshots that still require picker input", () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_fixed_snapshot" },
+      {
+        id: "item_boerewors",
+        title: "KosherBoeries Classic Beef Boerewors (6x4 oz)",
+        variant_id: "variant_boerewors",
+        variant_sku: "1-09-11-1",
+        quantity: 1,
+        unit_price: 27.98,
+        subtotal: 27.98,
+        total: 27.98,
+        metadata: {
+          pricing_mode: "fixed",
+          qbd_list_id: "DA0000-1130097021",
+        },
+      },
+      "gpfin_fixed_snapshot"
+    )
+
+    expect(line.pricing_mode).toBe("fixed_price")
+    expect(line.status).toBe("needs_pick")
+    expect(line.ordered_quantity).toBe(1)
+    expect(line.actual_quantity).toBe(0)
+    expect(line.actual_piece_count).toBe(0)
+    expect(line.final_line_total).toBeNull()
   })
 
   it("uses the true per-pound rate for final catch-weight math", async () => {
@@ -157,6 +188,8 @@ describe("catch-weight finalization helpers", () => {
         {
           ...line,
           status: "ready",
+          actual_quantity: 1,
+          actual_piece_count: 1,
           actual_weight_total: 2.6,
           deleted_at: null,
         },
@@ -217,6 +250,8 @@ describe("catch-weight finalization helpers", () => {
         {
           ...line,
           status: "ready",
+          actual_quantity: 1,
+          actual_piece_count: 1,
           actual_weight_total: 11,
           deleted_at: null,
         },
@@ -274,7 +309,7 @@ describe("catch-weight finalization helpers", () => {
     expect(line.pricing_mode).toBe("per_lb")
     expect(line.status).toBe("needs_weight")
     expect(line.ordered_quantity).toBe(1)
-    expect(line.actual_quantity).toBe(1)
+    expect(line.actual_quantity).toBe(0)
     expect(line.estimated_weight_total).toBe(1)
     expect(line.estimated_line_total).toBeCloseTo(39.856725)
     expect(line.qbd_list_id).toBe("410000-1102714368")
@@ -597,6 +632,8 @@ describe("catch-weight finalization helpers", () => {
         {
           ...line,
           status: "ready",
+          actual_quantity: 1,
+          actual_piece_count: 1,
           actual_weight_total: 2,
           deleted_at: null,
         },
