@@ -105,6 +105,13 @@ type FinalizationLinePatch = {
   metadata?: Record<string, any> | null
 }
 
+export type FinalizationPackageInput = {
+  package_type?: string | null
+  count?: number | string | null
+  packed_weight_lb?: number | string | null
+  note?: string | null
+}
+
 type StripePaymentIntent = {
   id: string
   status?: string
@@ -131,6 +138,11 @@ const numberOrZero = (value: unknown): number => nullableNumber(value) ?? 0
 
 const roundMoney = (value: number): number =>
   Math.round((value + Number.EPSILON) * 100) / 100
+
+const positiveNumber = (value: unknown): number | null => {
+  const amount = nullableNumber(value)
+  return amount !== null && amount > 0 ? amount : null
+}
 
 const id = (prefix: string) => `${prefix}_${randomUUID()}`
 
@@ -182,6 +194,102 @@ export const appendStaffAudit = (
       ].slice(-75)
     ),
   }
+}
+
+const textBlob = (value: unknown): string => {
+  if (value === undefined || value === null) return ""
+  if (typeof value === "string") return value.toLowerCase()
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value).toLowerCase()
+  }
+  try {
+    return JSON.stringify(value).toLowerCase()
+  } catch {
+    return ""
+  }
+}
+
+export const orderRequiresPackageCapture = (order: Record<string, any>) => {
+  const metadata = metadataObject(order?.metadata)
+  const shippingMethods = Array.isArray(order?.shipping_methods)
+    ? order.shipping_methods
+    : []
+  const fulfillmentText = textBlob([
+    metadata.fulfillment_type,
+    metadata.shipping_type,
+    metadata.shipping_method_type,
+    metadata.service_code,
+    metadata.service_name,
+    metadata.fulfillment_method,
+    shippingMethods,
+  ])
+
+  return (
+    fulfillmentText.includes("ups") ||
+    fulfillmentText.includes("shippo") ||
+    fulfillmentText.includes("shipper") ||
+    fulfillmentText.includes("shipping")
+  )
+}
+
+export const finalizationPackages = (
+  finalization: Record<string, any> | null | undefined
+): Array<Record<string, any>> => {
+  const metadata = metadataObject(finalization?.metadata)
+  const packages = Array.isArray(metadata.packages) ? metadata.packages : []
+
+  return packages.filter((pkg) => pkg && typeof pkg === "object")
+}
+
+const normalizeFinalizationPackages = (
+  packages: FinalizationPackageInput[]
+) => {
+  return packages
+    .map((pkg) => ({
+      id: String((pkg as Record<string, any>).id || id("gpfinpkg")),
+      package_type: String(pkg.package_type || "").trim(),
+      count: positiveNumber(pkg.count),
+      packed_weight_lb: positiveNumber(pkg.packed_weight_lb),
+      note: String(pkg.note || "").trim() || null,
+    }))
+    .filter(
+      (pkg) =>
+        pkg.package_type ||
+        pkg.count !== null ||
+        pkg.packed_weight_lb !== null ||
+        pkg.note
+    )
+}
+
+export const packageCaptureErrors = (
+  order: Record<string, any>,
+  finalization: Record<string, any>
+) => {
+  if (!orderRequiresPackageCapture(order)) return []
+
+  const packages = finalizationPackages(finalization)
+  if (!packages.length) {
+    return [
+      {
+        message:
+          "Shipping orders need package size, count, and packed weight before charging.",
+      },
+    ]
+  }
+
+  return packages.flatMap((pkg, index) => {
+    const errors: Array<{ message: string }> = []
+    if (!String(pkg.package_type || "").trim()) {
+      errors.push({ message: `Package ${index + 1} needs a size or type.` })
+    }
+    if (!positiveNumber(pkg.count)) {
+      errors.push({ message: `Package ${index + 1} needs a count.` })
+    }
+    if (!positiveNumber(pkg.packed_weight_lb)) {
+      errors.push({ message: `Package ${index + 1} needs packed weight.` })
+    }
+    return errors
+  })
 }
 
 export const amountInMinorUnits = (
@@ -1103,8 +1211,47 @@ export async function getFinalizationDetail(
 
   return {
     ...ensured,
+    package_capture_required: orderRequiresPackageCapture(order),
+    packages: finalizationPackages(ensured.finalization),
     payment_setup: paymentSetup || null,
     charge_attempts: attempts || [],
+  }
+}
+
+export async function updateFinalizationPackages(
+  db: CatchWeightDb,
+  order: Record<string, any>,
+  packages: FinalizationPackageInput[],
+  actorId?: string | null
+) {
+  const detail = await ensureFinalizationForOrder(db, order)
+  const nextPackages = normalizeFinalizationPackages(packages)
+  const metadata = {
+    ...metadataObject(detail.finalization.metadata),
+    packages: nextPackages,
+    package_capture_required: orderRequiresPackageCapture(order),
+    package_capture_status: nextPackages.length ? "captured" : "missing",
+    package_capture_updated_at: new Date().toISOString(),
+    package_capture_updated_by: actorId || null,
+  }
+
+  await db("gp_order_finalization")
+    .where({ id: detail.finalization.id })
+    .update({
+      metadata,
+      status: FINALIZATION_PACKED_PENDING_REVIEW,
+      updated_at: new Date(),
+    })
+
+  return {
+    ...detail,
+    finalization: {
+      ...detail.finalization,
+      metadata,
+      status: FINALIZATION_PACKED_PENDING_REVIEW,
+    },
+    package_capture_required: orderRequiresPackageCapture(order),
+    packages: nextPackages,
   }
 }
 
@@ -1224,6 +1371,7 @@ const calculateLine = (line: Record<string, any>) => {
       }
     } else if (
       finalSubtotal === null ||
+      actualQuantity !== numberOrZero(line.ordered_quantity) ||
       (finalSubtotal === 0 &&
         estimatedSubtotal > 0 &&
         unitPrice > 0 &&
@@ -1240,6 +1388,7 @@ const calculateLine = (line: Record<string, any>) => {
     }
   } else if (
     finalSubtotal === null ||
+    actualQuantity !== numberOrZero(line.ordered_quantity) ||
     (finalSubtotal === 0 &&
       estimatedSubtotal > 0 &&
       unitPrice > 0 &&
@@ -1297,8 +1446,10 @@ export async function previewFinalization(
       message,
     }))
   )
+  const workflowErrors = packageCaptureErrors(order, detail.finalization)
+  const errors = [...lineErrors, ...workflowErrors]
   const totalsComplete =
-    lineErrors.length === 0 &&
+    errors.length === 0 &&
     calculatedLines.every(
       (line) =>
         line.final_line_subtotal !== null &&
@@ -1392,7 +1543,7 @@ export async function previewFinalization(
       .where({ id: detail.finalization.id })
       .update({
         ...summary,
-        status: lineErrors.length
+        status: errors.length
           ? FINALIZATION_PACKED_PENDING_REVIEW
           : FINALIZATION_PACKED_PENDING_CHARGE,
         reviewed_at: new Date(),
@@ -1414,9 +1565,11 @@ export async function previewFinalization(
       errors: calculated.errors,
       warnings: calculated.warnings,
     })),
+    package_capture_required: orderRequiresPackageCapture(order),
+    packages: finalizationPackages(detail.finalization),
     payment_setup: detail.payment_setup,
     charge_attempts: detail.charge_attempts,
-    errors: lineErrors,
+    errors,
     warnings: lineWarnings,
     totals: summary,
   }

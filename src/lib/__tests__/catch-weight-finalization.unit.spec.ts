@@ -1,5 +1,7 @@
 import {
   FINALIZATION_CHARGED_READY_TO_SHIP,
+  FINALIZATION_PACKED_PENDING_CHARGE,
+  FINALIZATION_PACKED_PENDING_REVIEW,
   PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
   amountInMinorUnits,
   buildFinalizationLineSnapshot,
@@ -8,6 +10,7 @@ import {
   fulfillmentGateAllowsShipment,
   orderPlacedFinalizationMetadata,
   previewFinalization,
+  updateFinalizationPackages,
 } from "../catch-weight-finalization"
 
 function createMemoryCatchWeightDb(seed: Record<string, any[]>) {
@@ -495,6 +498,167 @@ describe("catch-weight finalization helpers", () => {
     expect(preview.totals.final_tax_total).toBeNull()
     expect(preview.totals.final_order_total).toBeNull()
     expect(preview.totals.delta_total).toBeNull()
+  })
+
+  it("lets fixed-price lines finalize from fulfilled quantity without weight", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_fixed" },
+      {
+        id: "item_soup",
+        title: "Chicken Soup",
+        variant_id: "variant_soup",
+        variant_sku: "10-01-11-0",
+        quantity: 2,
+        unit_price: 12,
+        subtotal: 24,
+        total: 24,
+        metadata: {
+          pricing_mode: "fixed",
+          qbd_list_id: "QBD-SOUP",
+        },
+      },
+      "gpfin_fixed"
+    )
+
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_fixed",
+          order_id: "order_fixed",
+          status: "packing",
+          estimated_order_total: 24,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          ...line,
+          actual_quantity: 1,
+          actual_piece_count: 1,
+          actual_weight_total: null,
+          status: "ready",
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const preview = await previewFinalization(
+      db,
+      {
+        id: "order_fixed",
+        total: 24,
+        item_subtotal: 24,
+        tax_total: 0,
+        shipping_total: 0,
+        discount_total: 0,
+        items: [],
+      },
+      { persist: true }
+    )
+
+    expect(preview.errors).toEqual([])
+    expect(preview.lines[0].final_line_total).toBe(12)
+    expect(preview.totals.final_order_total).toBe(12)
+  })
+
+  it("blocks shipping orders from ready-to-charge until packages are captured", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_ship" },
+      {
+        id: "item_brisket",
+        title: "First Cut Brisket ~2 lb. $14.99/lb.",
+        variant_id: "variant_brisket",
+        variant_sku: "1-03-15-0",
+        quantity: 1,
+        unit_price: 29.98,
+        subtotal: 29.98,
+        total: 29.98,
+        metadata: {
+          qbd_list_id: "QBD-BRISKET",
+        },
+      },
+      "gpfin_ship"
+    )
+
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_ship",
+          order_id: "order_ship",
+          status: "packing",
+          estimated_order_total: 49.98,
+          metadata: {},
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          ...line,
+          status: "ready",
+          actual_weight_total: 2,
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+    const order = {
+      id: "order_ship",
+      total: 49.98,
+      item_subtotal: 29.98,
+      tax_total: 0,
+      shipping_total: 20,
+      discount_total: 0,
+      shipping_methods: [
+        {
+          name: "UPS Ground",
+          metadata: { fulfillment_type: "ups_shipping" },
+        },
+      ],
+      items: [],
+    }
+
+    const blocked = await previewFinalization(db, order, { persist: true })
+    expect(blocked.errors).toEqual([
+      {
+        message:
+          "Shipping orders need package size, count, and packed weight before charging.",
+      },
+    ])
+    expect(blocked.totals.final_order_total).toBeNull()
+
+    await updateFinalizationPackages(
+      db,
+      order,
+      [{ package_type: "Medium 345", count: 1, packed_weight_lb: 42 }],
+      "staff_123"
+    )
+
+    const ready = await previewFinalization(db, order, { persist: true })
+    expect(ready.errors).toEqual([])
+    expect(ready.packages).toMatchObject([
+      {
+        package_type: "Medium 345",
+        count: 1,
+        packed_weight_lb: 42,
+      },
+    ])
+    expect(ready.totals.final_order_total).toBeCloseTo(49.98)
+    expect(db.tables.gp_order_finalization[0].status).toBe(
+      FINALIZATION_PACKED_PENDING_CHARGE
+    )
+
+    await updateFinalizationPackages(
+      db,
+      order,
+      [{ package_type: "Large 460", count: 1, packed_weight_lb: 46 }],
+      "staff_123"
+    )
+    expect(db.tables.gp_order_finalization[0].status).toBe(
+      FINALIZATION_PACKED_PENDING_REVIEW
+    )
   })
 
   it("uses replacement price for substituted catch-weight lines", async () => {

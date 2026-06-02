@@ -203,6 +203,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         replacement_reason: line.replacement_reason || null,
         short_reason: line.short_reason || null,
       })),
+      catch_weight_packages: preview.packages || [],
     }
 
     await orderModule.updateOrders(order.id, { metadata })
@@ -223,6 +224,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       order,
       finalization: finalizationForMetadata,
       lines: preview.lines,
+      package_capture_required: preview.package_capture_required,
+      packages: preview.packages,
       payment_setup: preview.payment_setup,
       charge_attempt: attempt,
       payment_intent: {
