@@ -349,14 +349,18 @@ const shortenLegacyDescriptionTitle = (value: string): string => {
 
 const formatGroundBeefPackTitle = (value: string): string | null => {
   const match = value.match(
-    /^(\d+(?:\.\d+)?)\s*lb\.?\s*(pack|tube)\s+ground\s+beef(?:\s*,?\s*\(?(\d{1,3}\s*\/\s*\d{1,3})\)?)?/i
+    /^(\d+(?:\.\d+)?)\s*lb\.?\s*(pack|tube)\s+ground\s+beef(?:[\s,]+((?:extra\s+lean\s+)?\d{1,3}\s*\/\s*\d{1,3}))?/i
   )
 
   if (!match?.[1] || !match?.[2] || !match?.[3]) return null
 
   const amount = match[1]
   const packageType = match[2].toLowerCase() === "tube" ? "Tube" : "Pack"
-  const ratio = match[3].replace(/\s+/g, "")
+  const ratio = match[3]
+    .replace(/\bextra\s+lean\b/i, "Extra Lean")
+    .replace(/\s*\/\s*/g, "/")
+    .replace(/\s{2,}/g, " ")
+    .trim()
 
   return `Ground Beef ${ratio} - ${amount} lb ${packageType}`
 }
@@ -761,21 +765,7 @@ const existingLineRepairPatch = (
     }
   }
 
-  const currentCustomerTitle = cleanText(existing.customer_title)
-  const nextCustomerTitle = cleanText(snapshot.customer_title)
-  const currentTitleSnapshot = cleanText(existing.title_snapshot)
-  const nextTitleSnapshot = cleanText(snapshot.title_snapshot)
-  if (
-    nextCustomerTitle &&
-    currentCustomerTitle !== nextCustomerTitle &&
-    (!currentCustomerTitle ||
-      currentCustomerTitle === currentTitleSnapshot ||
-      currentCustomerTitle === nextTitleSnapshot ||
-      looksLikeAccountingTitle(currentCustomerTitle) ||
-      cleanLegacyCustomerTitle(currentCustomerTitle) !== currentCustomerTitle)
-  ) {
-    patch.customer_title = nextCustomerTitle
-  }
+  Object.assign(patch, customerTitleRepairPatch(existing, snapshot))
 
   if (
     snapshot.actual_quantity &&
@@ -847,6 +837,30 @@ const existingLineRepairPatch = (
 
   if (Object.keys(patch).length) {
     patch.updated_at = new Date()
+  }
+
+  return patch
+}
+
+const customerTitleRepairPatch = (
+  existing: Record<string, any>,
+  snapshot: Record<string, any>
+) => {
+  const patch: Record<string, any> = {}
+  const currentCustomerTitle = cleanText(existing.customer_title)
+  const nextCustomerTitle = cleanText(snapshot.customer_title)
+  const currentTitleSnapshot = cleanText(existing.title_snapshot)
+  const nextTitleSnapshot = cleanText(snapshot.title_snapshot)
+  if (
+    nextCustomerTitle &&
+    currentCustomerTitle !== nextCustomerTitle &&
+    (!currentCustomerTitle ||
+      currentCustomerTitle === currentTitleSnapshot ||
+      currentCustomerTitle === nextTitleSnapshot ||
+      looksLikeAccountingTitle(currentCustomerTitle) ||
+      cleanLegacyCustomerTitle(currentCustomerTitle) !== currentCustomerTitle)
+  ) {
+    patch.customer_title = nextCustomerTitle
   }
 
   return patch
@@ -968,10 +982,12 @@ export async function ensureFinalizationForOrder(
   const repairedLines = await Promise.all(
     (existingLines || []).map(async (line: Record<string, any>) => {
       const item = itemsById.get(line.line_item_id)
-      if (!item || !repairableStatuses.has(finalization.status)) return line
+      if (!item) return line
 
       const snapshot = buildFinalizationLineSnapshot(order, item, finalization.id)
-      const patch = existingLineRepairPatch(line, snapshot)
+      const patch = repairableStatuses.has(finalization.status)
+        ? existingLineRepairPatch(line, snapshot)
+        : customerTitleRepairPatch(line, snapshot)
       if (!Object.keys(patch).length) return line
 
       await db("gp_order_finalization_line").where({ id: line.id }).update(patch)

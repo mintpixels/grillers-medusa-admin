@@ -1,4 +1,5 @@
 import {
+  FINALIZATION_CHARGED_READY_TO_SHIP,
   PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
   amountInMinorUnits,
   buildFinalizationLineSnapshot,
@@ -244,6 +245,62 @@ describe("catch-weight finalization helpers", () => {
       },
     })
     expect(detail.lines[0].customer_title).toBe("Ground Beef 85/15 - 1 lb Pack")
+  })
+
+  it("repairs stale customer titles on charged rows without changing final money", async () => {
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_123",
+          order_id: "order_123",
+          status: FINALIZATION_CHARGED_READY_TO_SHIP,
+          final_order_total: 42.45,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          id: "gpfinline_123",
+          finalization_id: "gpfin_123",
+          order_id: "order_123",
+          line_item_id: "item_veal",
+          pricing_mode: "per_lb",
+          title_snapshot:
+            "Veal Scallopini, 5-8 Slices, ~1 lb., Uncooked, Kosher for Passover. $36.99/lb.",
+          customer_title:
+            "Veal Scallopini, 5-8 Slices, ~1 lb., Uncooked, Kosher for Passover. $36.99/lb.",
+          actual_weight_total: 1.07,
+          final_line_subtotal: 39.58,
+          final_line_total: 42.45,
+          deleted_at: null,
+        },
+      ],
+    })
+
+    const detail = await ensureFinalizationForOrder(db, {
+      id: "order_123",
+      items: [
+        {
+          id: "item_veal",
+          title:
+            "Veal Scallopini, 5-8 Slices, ~1 lb., Uncooked, Kosher for Passover. $36.99/lb.",
+          variant_sku: "2-06-11-1",
+          quantity: 1,
+          unit_price: 36.99,
+          subtotal: 36.99,
+          total: 39.856725,
+          tax_total: 2.866725,
+          metadata: {
+            qbd_list_id: "410000-1102714368",
+          },
+        },
+      ],
+    })
+
+    expect(detail.lines[0].customer_title).toBe(
+      "Veal Scallopini - 1 lb (5-8 slices)"
+    )
+    expect(detail.lines[0].final_line_total).toBe(42.45)
   })
 
   it("does not calculate a final order total while required weights are missing", async () => {
