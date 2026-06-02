@@ -14,10 +14,18 @@ import {
   previewFinalization,
   recordFinalChargeAttempt,
 } from "../../../../../../../lib/catch-weight-finalization"
-import { actorId, jsonError, retrieveFinalizationOrder } from "../utils"
+import {
+  jsonError,
+  retrieveFinalizationOrder,
+  staffAuditActorId,
+  staffAuditFields,
+} from "../utils"
 
 type ChargeBody = {
   idempotency_key?: string
+  staff_actor_customer_id?: string
+  staff_actor_email?: string
+  staff_actor_name?: string
 }
 
 const stripeChargeId = (paymentIntent: {
@@ -44,7 +52,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const orderModule = req.scope.resolve(Modules.ORDER)
   const eventBus = req.scope.resolve(Modules.EVENT_BUS)
   const body = (req.body || {}) as ChargeBody
-  const staffActor = actorId(req)
+  const staffAudit = staffAuditFields(req, body)
+  const staffActor = staffAuditActorId(staffAudit)
   const preview = await previewFinalization(db, order, { persist: true })
 
   if (preview.errors.length) {
@@ -178,6 +187,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         paymentIntent,
         attemptId: attempt.id,
         actorId: staffActor,
+        staffAudit,
       }),
       catch_weight_final_lines: preview.lines.map((line: Record<string, any>) => ({
         line_item_id: line.line_item_id,
@@ -273,7 +283,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         action: "final_charge_failed",
         status: FINALIZATION_CHARGE_FAILED_HOLD,
         charge_attempt_id: attempt.id,
-        staff_actor_id: staffActor,
+        ...staffAudit,
         failure_code: stripeError.code || null,
         failure_message: failureMessage,
       }

@@ -6,7 +6,12 @@ import {
   markFinalizationReadyForPacking,
   metadataObject,
 } from "../../../../../../../lib/catch-weight-finalization"
-import { actorId, jsonError, retrieveFinalizationOrder } from "../utils"
+import {
+  jsonError,
+  retrieveFinalizationOrder,
+  staffAuditActorId,
+  staffAuditFields,
+} from "../utils"
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const order = await retrieveFinalizationOrder(req, req.params.id)
@@ -17,7 +22,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
   const orderModule = req.scope.resolve(Modules.ORDER)
-  const actor = actorId(req)
+  const body = (req.body || {}) as Record<string, any>
+  const staffAudit = staffAuditFields(req, body)
+  const actor = staffAuditActorId(staffAudit)
   const detail = await markFinalizationReadyForPacking(db, order, actor)
 
   const metadata = appendStaffAudit(
@@ -30,7 +37,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     {
       action: "catch_weight_ready_for_packing",
       status: FINALIZATION_READY_FOR_PACKING,
-      staff_actor_id: actor,
+      ...staffAudit,
     }
   )
   await orderModule.updateOrders(order.id, { metadata })

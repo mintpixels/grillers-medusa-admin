@@ -2054,6 +2054,7 @@ export function finalChargeOrderMetadata(input: {
   paymentIntent: StripePaymentIntent
   attemptId: string
   actorId?: string | null
+  staffAudit?: Record<string, any>
 }) {
   const metadata = metadataObject(input.order.metadata)
   const chargeId =
@@ -2100,6 +2101,7 @@ export function finalChargeOrderMetadata(input: {
       stripe_charge_id: chargeId,
       charge_attempt_id: input.attemptId,
       staff_actor_id: input.actorId || null,
+      ...(input.staffAudit || {}),
     }
   )
 }

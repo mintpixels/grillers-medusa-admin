@@ -27,3 +27,28 @@ export async function retrieveFinalizationOrder(
 export function actorId(req: MedusaRequest) {
   return (req as any).auth_context?.actor_id || null
 }
+
+export function staffAuditFields(
+  req: MedusaRequest,
+  body?: Record<string, any> | null
+) {
+  return {
+    staff_actor_id: actorId(req),
+    staff_actor_customer_id:
+      typeof body?.staff_actor_customer_id === "string"
+        ? body.staff_actor_customer_id
+        : null,
+    staff_actor_email:
+      typeof body?.staff_actor_email === "string"
+        ? body.staff_actor_email
+        : null,
+    staff_actor_name:
+      typeof body?.staff_actor_name === "string"
+        ? body.staff_actor_name
+        : null,
+  }
+}
+
+export function staffAuditActorId(fields: Record<string, any>) {
+  return fields.staff_actor_customer_id || fields.staff_actor_id || null
+}

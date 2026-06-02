@@ -1116,6 +1116,11 @@ describe("catch-weight finalization helpers", () => {
       },
       attemptId: "gpcharge_123",
       actorId: "user_123",
+      staffAudit: {
+        staff_actor_customer_id: "cus_staff",
+        staff_actor_email: "packer@example.com",
+        staff_actor_name: "Packer Person",
+      },
     }) as Record<string, any>
 
     expect(metadata.final_charge_status).toBe("succeeded")
@@ -1129,6 +1134,14 @@ describe("catch-weight finalization helpers", () => {
     expect(metadata.final_shipping_total).toBe(5)
     expect(metadata.final_tax_total).toBe(7.5)
     expect(metadata.final_discount_total).toBe(4)
+    const audit = JSON.parse(metadata.staff_audit_log)
+    expect(audit[audit.length - 1]).toMatchObject({
+      action: "final_charge_succeeded",
+      staff_actor_id: "user_123",
+      staff_actor_customer_id: "cus_staff",
+      staff_actor_email: "packer@example.com",
+      staff_actor_name: "Packer Person",
+    })
   })
 
   it("marks every placed order as catch-weight finalization gated", () => {

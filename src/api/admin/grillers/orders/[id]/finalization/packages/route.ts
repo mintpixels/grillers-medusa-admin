@@ -7,7 +7,12 @@ import {
   previewFinalization,
   updateFinalizationPackages,
 } from "../../../../../../../lib/catch-weight-finalization"
-import { actorId, jsonError, retrieveFinalizationOrder } from "../utils"
+import {
+  jsonError,
+  retrieveFinalizationOrder,
+  staffAuditActorId,
+  staffAuditFields,
+} from "../utils"
 
 type PackagesBody = {
   packages?: Array<{
@@ -31,7 +36,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const packages = Array.isArray(body.packages) ? body.packages : []
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
   const orderModule = req.scope.resolve(Modules.ORDER)
-  const actor = actorId(req)
+  const staffAudit = staffAuditFields(req, body as Record<string, any>)
+  const actor = staffAuditActorId(staffAudit)
   await updateFinalizationPackages(db, order, packages, actor)
   const detail = await previewFinalization(db, order, { persist: false })
 
@@ -46,7 +52,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       action: "catch_weight_packages_updated",
       status: FINALIZATION_PACKED_PENDING_REVIEW,
       package_count: detail.packages?.length || 0,
-      staff_actor_id: actor,
+      ...staffAudit,
     }
   )
   await orderModule.updateOrders(order.id, { metadata })

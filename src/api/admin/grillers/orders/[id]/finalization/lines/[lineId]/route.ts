@@ -6,7 +6,7 @@ import {
   metadataObject,
   updateFinalizationLine,
 } from "../../../../../../../../lib/catch-weight-finalization"
-import { actorId, jsonError, retrieveFinalizationOrder } from "../../utils"
+import { jsonError, retrieveFinalizationOrder, staffAuditFields } from "../../utils"
 
 export const PATCH = async (req: MedusaRequest, res: MedusaResponse) => {
   const order = await retrieveFinalizationOrder(req, req.params.id)
@@ -17,12 +17,14 @@ export const PATCH = async (req: MedusaRequest, res: MedusaResponse) => {
 
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
   const orderModule = req.scope.resolve(Modules.ORDER)
+  const body = (req.body || {}) as Record<string, any>
+  const staffAudit = staffAuditFields(req, body)
   await ensureFinalizationForOrder(db, order)
   const line = await updateFinalizationLine(
     db,
     order.id,
     req.params.lineId,
-    (req.body || {}) as Record<string, any>
+    body
   )
   const finalization = await db("gp_order_finalization")
     .where({ id: line.finalization_id })
@@ -39,7 +41,7 @@ export const PATCH = async (req: MedusaRequest, res: MedusaResponse) => {
       action: "catch_weight_line_updated",
       status: finalizationStatus,
       line_item_id: req.params.lineId,
-      staff_actor_id: actorId(req),
+      ...staffAudit,
     }
   )
   await orderModule.updateOrders(order.id, { metadata })
