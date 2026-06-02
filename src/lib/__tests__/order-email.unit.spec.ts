@@ -3,6 +3,8 @@ import { buildOrderPlacedEmail } from "../emails/templates/order-placed"
 import { buildOrderCanceledEmail } from "../emails/templates/order-canceled"
 import { buildRefundIssuedEmail } from "../emails/templates/refund-issued"
 import { buildPasswordResetEmail } from "../emails/templates/password-reset"
+import { buildOrderFinalChargeEmail } from "../emails/templates/order-final-charge"
+import { buildOrderShippedEmail } from "../emails/templates/order-shipped"
 
 describe("order email rendering", () => {
   it("uses customer-facing line metadata titles instead of source accounting titles", () => {
@@ -216,6 +218,111 @@ describe("order email rendering", () => {
     expect(email.html).toContain("Butcher review")
   })
 
+  it("renders PDP links and pricing basis for per-pound and pack items", () => {
+    const order = normalizeOrderForEmail({
+      id: "order_email_pricing_basis",
+      display_id: 37,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 65.99,
+      subtotal: 65.99,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "line_per_lb",
+          title: "Veal Scallopini",
+          variant: {
+            sku: "2-06-11-1",
+            product: {
+              handle: "kosher-veal-scallopini-1-lb",
+            },
+          },
+          metadata: {
+            strapi_title: "Kosher Veal Scallopini - 1 lb",
+            strapi_pricing_mode: "per_lb",
+            strapi_avg_pack_weight: "1 lb.",
+          },
+          quantity: 1,
+          unit_price: 36.99,
+          subtotal: 36.99,
+        },
+        {
+          id: "line_pack",
+          title: "Chicken Soup",
+          variant: {
+            sku: "10-01-11-0",
+            product: {
+              handle: "chicken-soup",
+            },
+          },
+          metadata: {
+            strapi_pricing_mode: "fixed_price",
+          },
+          quantity: 1,
+          unit_price: 15,
+          subtotal: 15,
+        },
+        {
+          id: "line_oz_multipack",
+          title: "Duck Breast",
+          variant: {
+            sku: "2-04-10-1",
+            product: {
+              handle: "kosher-duck-breast",
+            },
+          },
+          metadata: {
+            strapi_title: "Kosher Duck Breast - 2 pack",
+            strapi_pricing_mode: "per_lb",
+            strapi_avg_pack_weight: "2x ~7 oz.",
+          },
+          quantity: 1,
+          unit_price: 14,
+          subtotal: 14,
+        },
+      ],
+    })
+
+    const vealUrl = order.items?.[0]?.product_url
+    const soupUrl = order.items?.[1]?.product_url
+    const duckUrl = order.items?.[2]?.product_url
+
+    expect(order.items?.[0]).toMatchObject({
+      pricing_mode: "per_lb",
+      price_per_lb: 36.99,
+    })
+    expect(vealUrl).toMatch(/\/us\/products\/kosher-veal-scallopini-1-lb$/)
+    expect(order.items?.[1]).toMatchObject({
+      pricing_mode: "fixed_price",
+      price_per_lb: null,
+    })
+    expect(soupUrl).toMatch(/\/us\/products\/chicken-soup$/)
+    expect(order.items?.[2]).toMatchObject({
+      pricing_mode: "per_lb",
+      price_per_lb: 16,
+    })
+    expect(duckUrl).toMatch(/\/us\/products\/kosher-duck-breast$/)
+
+    const email = buildOrderPlacedEmail(order)
+    expect(email.html).toContain(
+      `href="${vealUrl}"`
+    )
+    expect(email.html).toContain("Priced by pound: $36.99/lb")
+    expect(email.html).toContain(
+      `href="${soupUrl}"`
+    )
+    expect(email.html).toContain("Priced by pack: $15.00 each")
+    expect(email.html).toContain(
+      `href="${duckUrl}"`
+    )
+    expect(email.html).toContain("Priced by pound: $16.00/lb")
+    expect(email.text).toContain(
+      `1 x Kosher Veal Scallopini - 1 lb (SKU 2-06-11-1) - Priced by pound: $36.99/lb: $36.99 - ${vealUrl}`
+    )
+  })
+
   it("renders canceled emails with customer titles, SKU subtext, and brand logo", () => {
     const legacyTitle =
       "1 lb. Pack Ground Beef, 85/15, Uncooked, Vacuum Pack. NOT Kosher for Passover."
@@ -255,6 +362,55 @@ describe("order email rendering", () => {
     expect(email.text).toContain(
       "1 x Ground Beef 85/15 - 1 lb Pack (SKU 1-00-12-1)"
     )
+  })
+
+  it("uses enriched item rows in final-charge and shipped emails", () => {
+    const order = normalizeOrderForEmail({
+      id: "order_email_transactional_rows",
+      display_id: 38,
+      email: "customer@example.com",
+      currency_code: "usd",
+      total: 36.99,
+      subtotal: 36.99,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "line_final_charge",
+          title: "Veal Scallopini",
+          variant: {
+            sku: "2-06-11-1",
+            product: {
+              handle: "kosher-veal-scallopini-1-lb",
+            },
+          },
+          metadata: {
+            strapi_title: "Kosher Veal Scallopini - 1 lb",
+            strapi_pricing_mode: "per_lb",
+            strapi_avg_pack_weight: "1 lb.",
+          },
+          quantity: 1,
+          unit_price: 36.99,
+          subtotal: 36.99,
+        },
+      ],
+    })
+
+    const finalChargeEmail = buildOrderFinalChargeEmail({
+      order,
+      estimatedTotal: 36.99,
+      finalTotal: 36.99,
+    })
+    const shippedEmail = buildOrderShippedEmail({ order, carrier: "UPS" })
+    const productUrl = order.items?.[0]?.product_url
+
+    expect(finalChargeEmail.html).toContain("Priced by pound: $36.99/lb")
+    expect(finalChargeEmail.text).toContain("Priced by pound: $36.99/lb")
+    expect(shippedEmail.html).toContain(
+      `href="${productUrl}"`
+    )
+    expect(shippedEmail.text).toContain(String(productUrl))
   })
 
   it("collapses prepared-food legacy import titles before rendering emails", () => {
@@ -655,6 +811,13 @@ describe("order email rendering", () => {
     }))
     const findProductByMedusaId = jest.fn(async () => ({
       Title: "Kosher Alle Ground Beef 75/25 Tube · 10 lb",
+      MedusaProduct: {
+        Handle: "ground-beef-75-25-10-lb-tube",
+        PricingMode: "per_lb",
+      },
+      Metadata: {
+        AvgPackWeight: "10 lb.",
+      },
     }))
     const container = {
       resolve: (key: string) => {
@@ -669,13 +832,24 @@ describe("order email rendering", () => {
     const email = buildOrderPlacedEmail(order!)
 
     expect(findProductByMedusaId).toHaveBeenCalledWith("prod_ground_beef")
+    const hydratedProductUrl = order?.items?.[0]?.product_url
+
     expect(order?.items?.[0]).toMatchObject({
       title: "Kosher Alle Ground Beef 75/25 Tube · 10 lb",
       sku: "1-00-12-0",
       variant_title: null,
+      pricing_mode: "per_lb",
+      price_per_lb: 8.49,
     })
+    expect(hydratedProductUrl).toMatch(
+      /\/us\/products\/ground-beef-75-25-10-lb-tube$/
+    )
     expect(email.html).toContain("Kosher Alle Ground Beef 75/25 Tube · 10 lb")
     expect(email.html).toContain("SKU 1-00-12-0")
+    expect(email.html).toContain(
+      `href="${hydratedProductUrl}"`
+    )
+    expect(email.html).toContain("Priced by pound: $8.49/lb")
     expect(email.html).not.toContain("Institutional, (75/25)")
     expect(email.text).not.toContain("Institutional, (75/25)")
   })

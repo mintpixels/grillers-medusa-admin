@@ -1,5 +1,5 @@
 import { renderEmail, renderTextFromLines, STOREFRONT_URL, SUPPORT_EMAIL } from "../layout"
-import { formatMoney, renderItemRows, escapeHtml } from "../components"
+import { renderItemRows, escapeHtml, renderTextItemRows } from "../components"
 import { type OrderForEmail } from "../order-fetch"
 
 export const buildOrderCanceledEmail = ({
@@ -42,10 +42,7 @@ export const buildOrderCanceledEmail = ({
     reason ? `Reason: ${reason}` : "",
     "",
     "Items:",
-    ...(order.items?.map(
-      (i) =>
-        `  ${i.quantity} x ${i.title}${i.sku ? ` (SKU ${i.sku})` : ""}: ${formatMoney((i.unit_price || 0) * (i.quantity || 0), currency)}`
-    ) || []),
+    ...renderTextItemRows(order.items, currency),
     "",
     `Need help? ${SUPPORT_EMAIL}`,
   ])

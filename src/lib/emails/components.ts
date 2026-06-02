@@ -66,6 +66,9 @@ type LineItem = {
   unit_price?: number | null
   line_total?: number | null
   thumbnail?: string | null
+  product_url?: string | null
+  pricing_mode?: "per_lb" | "fixed_price" | string | null
+  price_per_lb?: number | null
 }
 
 export const formatQuantity = (n: number | null | undefined): string => {
@@ -74,6 +77,44 @@ export const formatQuantity = (n: number | null | undefined): string => {
   return Number.isInteger(value)
     ? String(value)
     : value.toLocaleString("en-US", { maximumFractionDigits: 3 })
+}
+
+const itemTitle = (item: LineItem): string =>
+  item.display_title ||
+  item.product_title ||
+  item.title ||
+  "Griller's Pride item"
+
+const itemLineTotal = (item: LineItem, currency: string): string => {
+  const qty = item.quantity ?? 0
+  const unit = item.unit_price ?? 0
+  return formatMoney(item.line_total ?? unit * qty, currency)
+}
+
+const itemPricingBasis = (
+  item: LineItem,
+  currency: string
+): string | null => {
+  if (item.pricing_mode === "per_lb") {
+    return item.price_per_lb && item.price_per_lb > 0
+      ? `Priced by pound: ${formatMoney(item.price_per_lb, currency)}/lb`
+      : "Priced by pound"
+  }
+
+  if (item.pricing_mode === "fixed_price") {
+    return `Priced by pack: ${formatMoney(item.unit_price ?? 0, currency)} each`
+  }
+
+  return null
+}
+
+const itemTitleHtml = (item: LineItem): string => {
+  const title = itemTitle(item)
+  if (!item.product_url) {
+    return escapeHtml(title)
+  }
+
+  return `<a href="${escapeHtml(item.product_url)}" style="color:#0B5A43;text-decoration:none;font-weight:700;">${escapeHtml(title)}</a>`
 }
 
 export const renderItemRows = (
@@ -85,18 +126,14 @@ export const renderItemRows = (
     .map((item) => {
       const qty = item.quantity ?? 0
       const unit = item.unit_price ?? 0
-      const lineTotal = formatMoney(
-        item.line_total ?? unit * qty,
-        currency
-      )
-      const title =
-        item.display_title ||
-        item.product_title ||
-        item.title ||
-        "Griller's Pride item"
+      const lineTotal = itemLineTotal(item, currency)
       const subtext = item.sku ? `SKU ${item.sku}` : null
       const subtitle = subtext
         ? `<div style="color:#6F665B;font-size:13px;font-weight:600;line-height:1.35;margin-top:2px;">${escapeHtml(subtext)}</div>`
+        : ""
+      const pricingBasis = itemPricingBasis(item, currency)
+      const pricingBasisHtml = pricingBasis
+        ? `<div style="color:#6F665B;font-size:13px;line-height:1.35;margin-top:3px;">${escapeHtml(pricingBasis)}</div>`
         : ""
       const thumb = item.thumbnail
         ? `<img src="${escapeHtml(item.thumbnail)}" width="58" height="58" alt="" style="display:block;border-radius:6px;object-fit:cover;border:1px solid #E4DED2;background:#F7F3EA;"/>`
@@ -105,8 +142,9 @@ export const renderItemRows = (
         <tr>
           <td valign="top" style="padding:16px 0;border-bottom:1px solid #E8E2D7;width:74px;">${thumb}</td>
           <td valign="top" style="padding:16px 12px;border-bottom:1px solid #E8E2D7;">
-            <div style="font-weight:700;color:#17201A;font-size:15px;line-height:1.35;">${escapeHtml(title)}</div>
+            <div style="font-weight:700;color:#17201A;font-size:15px;line-height:1.35;">${itemTitleHtml(item)}</div>
             ${subtitle}
+            ${pricingBasisHtml}
             <div style="color:#6F665B;font-size:13px;margin-top:5px;">Qty ${formatQuantity(qty)} &times; ${formatMoney(unit, currency)}</div>
           </td>
           <td valign="top" style="padding:16px 0;border-bottom:1px solid #E8E2D7;text-align:right;font-weight:700;color:#17201A;font-size:15px;white-space:nowrap;">${lineTotal}</td>
@@ -114,6 +152,19 @@ export const renderItemRows = (
     })
     .join("")
 }
+
+export const renderTextItemRows = (
+  items: LineItem[] | null | undefined,
+  currency = "USD"
+): string[] =>
+  (items || []).map((item) => {
+    const qtyTitle = `${formatQuantity(item.quantity)} x ${itemTitle(item)}`
+    const sku = item.sku ? ` (SKU ${item.sku})` : ""
+    const pricingBasis = itemPricingBasis(item, currency)
+    const pricing = pricingBasis ? ` - ${pricingBasis}` : ""
+    const url = item.product_url ? ` - ${item.product_url}` : ""
+    return `  ${qtyTitle}${sku}${pricing}: ${itemLineTotal(item, currency)}${url}`
+  })
 
 type TotalsRow = { label: string; value: string; emphasize?: boolean }
 

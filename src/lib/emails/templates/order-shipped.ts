@@ -1,5 +1,9 @@
 import { renderEmail, renderTextFromLines, STOREFRONT_URL } from "../layout"
-import { renderHighlightCard, renderItemRows, escapeHtml } from "../components"
+import {
+  renderHighlightCard,
+  renderItemRows,
+  renderTextItemRows,
+} from "../components"
 import { type OrderForEmail, getFulfillmentInfo } from "../order-fetch"
 
 export const buildOrderShippedEmail = ({
@@ -68,7 +72,7 @@ export const buildOrderShippedEmail = ({
     trackingUrl ? `Track: ${trackingUrl}` : "",
     "",
     "Items shipped:",
-    ...(order.items?.map((i) => `  ${i.quantity} x ${i.title}${i.sku ? ` (SKU ${i.sku})` : ""}`) || []),
+    ...renderTextItemRows(order.items, currency),
     "",
     `View order: ${orderUrl}`,
   ])

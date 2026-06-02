@@ -2,6 +2,7 @@ import { renderEmail, renderTextFromLines, STOREFRONT_URL } from "../layout"
 import {
   formatMoney,
   renderItemRows,
+  renderTextItemRows,
   renderTotalsTable,
   renderHighlightCard,
 } from "../components"
@@ -90,6 +91,9 @@ export const buildOrderFinalChargeEmail = ({
     `Original estimate: ${formatMoney(estimatedTotal, currency)}`,
     `Adjustment: ${delta >= 0 ? "+" : "-"}${formatMoney(Math.abs(delta), currency)}`,
     `Final charge: ${formatMoney(finalTotal, currency)}`,
+    "",
+    "Items:",
+    ...renderTextItemRows(order.items, currency),
     "",
     `View order: ${orderUrl}`,
   ])

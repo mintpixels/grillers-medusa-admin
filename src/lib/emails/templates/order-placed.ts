@@ -7,7 +7,7 @@ import {
   renderHighlightCard,
   formatCityStateZip,
   escapeHtml,
-  formatQuantity,
+  renderTextItemRows,
 } from "../components"
 import {
   getFulfillmentInfo,
@@ -143,13 +143,7 @@ export const buildOrderPlacedEmail = (order: OrderForEmail) => {
     `${shippingMethodName}${scheduledDate ? ": " + scheduledDate : ""}`,
     "",
     "Items:",
-    ...(order.items?.map(
-      (i) =>
-        `  ${formatQuantity(i.quantity)} x ${i.display_title || i.product_title || i.title}${i.sku ? ` (SKU ${i.sku})` : ""}: ${formatMoney(
-          i.line_total ?? (i.unit_price || 0) * (i.quantity || 0),
-          currency
-        )}`
-    ) || []),
+    ...renderTextItemRows(order.items, currency),
     "",
     isPickup ? "Pickup contact:" : "Shipping to:",
     `${order.shipping_address?.first_name || ""} ${order.shipping_address?.last_name || ""}`.trim(),

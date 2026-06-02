@@ -1,5 +1,6 @@
 import { STRAPI_MODULE } from "../../modules/strapi"
 import StrapiModuleService from "../../modules/strapi/service"
+import { STOREFRONT_URL } from "./layout"
 
 type Container = { resolve: (key: string) => any }
 
@@ -106,6 +107,22 @@ const productIdForItem = (item: Record<string, any>): string | null => {
   )
 }
 
+const productHandleForItem = (item: Record<string, any>): string | null => {
+  const variant = objectValue(item.variant)
+  const product = objectValue(item.product)
+  const variantProduct = objectValue(variant.product)
+  const metadata = objectValue(item.metadata)
+
+  return (
+    cleanText(metadata.strapi_product_handle) ||
+    cleanText(metadata.product_handle) ||
+    cleanText(metadata.medusa_product_handle) ||
+    cleanText(item.product_handle) ||
+    cleanText(product.handle) ||
+    cleanText(variantProduct.handle)
+  )
+}
+
 const skuForItem = (item: Record<string, any>): string | null => {
   const variant = objectValue(item.variant)
   const detail = objectValue(item.detail)
@@ -120,6 +137,211 @@ const skuForItem = (item: Record<string, any>): string | null => {
     cleanText(detail.sku) ||
     cleanText(variant.sku)
   )
+}
+
+const metadataValue = (
+  metadata: Record<string, any>,
+  keys: string[]
+): unknown => {
+  for (const key of keys) {
+    if (metadata[key] !== undefined && metadata[key] !== null) {
+      return metadata[key]
+    }
+  }
+  return null
+}
+
+const combinedLineMetadata = (item: Record<string, any>): Record<string, any> => {
+  const variant = objectValue(item.variant)
+  const product = objectValue(item.product)
+  const variantProduct = objectValue(variant.product)
+  return {
+    ...objectValue(variantProduct.metadata),
+    ...objectValue(product.metadata),
+    ...objectValue(variant.metadata),
+    ...objectValue(item.metadata),
+  }
+}
+
+const normalizePricingMode = (
+  value: unknown
+): "per_lb" | "fixed_price" | null => {
+  const raw = cleanText(value)?.toLowerCase()
+  if (!raw) return null
+
+  if (
+    raw === "per_lb" ||
+    raw === "per-pound" ||
+    raw === "per pound" ||
+    raw === "catch_weight" ||
+    raw === "catch-weight"
+  ) {
+    return "per_lb"
+  }
+
+  if (
+    raw === "fixed" ||
+    raw === "fixed_price" ||
+    raw === "fixed-price" ||
+    raw === "flat" ||
+    raw === "pack" ||
+    raw === "by_pack"
+  ) {
+    return "fixed_price"
+  }
+
+  return null
+}
+
+const pricePerPoundFromText = (value: unknown): number | null => {
+  const text = cleanText(value)
+  if (!text) return null
+
+  const match = text.match(
+    /\$\s*(\d+(?:\.\d+)?)\s*(?:\/\s*)?(?:lb|lbs|pound|pounds)\b/i
+  )
+  if (!match) return null
+
+  const price = Number(match[1])
+  return Number.isFinite(price) && price > 0 ? price : null
+}
+
+const parseWeightRangeAverage = (value: unknown): number | null => {
+  const direct = numeric(value as MaybeMoney)
+  if (direct !== null && direct > 0) return direct
+
+  const text = cleanText(value)?.toLowerCase().replace(/[~≈]/g, "")
+  if (!text) return null
+
+  const range = text.match(
+    /(\d+(?:\.\d+)?)\s*(?:-|to|–|—)\s*(\d+(?:\.\d+)?)\s*(lb|lbs|pound|pounds|oz|ounce|ounces)\b/
+  )
+  const ozMultipack = text.match(
+    /(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*(oz|ounce|ounces)\b/
+  )
+  const single = text.match(
+    /(\d+(?:\.\d+)?)\s*(lb|lbs|pound|pounds|oz|ounce|ounces)\b/
+  )
+
+  let amount: number | null = null
+  let unit = ""
+  if (range) {
+    amount = (Number(range[1]) + Number(range[2])) / 2
+    unit = range[3] || ""
+  } else if (ozMultipack) {
+    amount = Number(ozMultipack[1]) * Number(ozMultipack[2])
+    unit = ozMultipack[3] || ""
+  } else if (single) {
+    amount = Number(single[1])
+    unit = single[2] || ""
+  }
+
+  if (!amount || !Number.isFinite(amount)) return null
+  return /oz|ounce/.test(unit || text) ? amount / 16 : amount
+}
+
+const pricingModeForItem = (
+  item: Record<string, any>
+): "per_lb" | "fixed_price" => {
+  const metadata = combinedLineMetadata(item)
+  const explicit = normalizePricingMode(
+    metadataValue(metadata, [
+      "strapi_pricing_mode",
+      "pricing_mode",
+      "PricingMode",
+      "net_weight_pricing_mode",
+      "catch_weight_pricing_mode",
+      "price_type",
+    ])
+  )
+
+  if (explicit) return explicit
+
+  if (
+    metadata.catch_weight === true ||
+    metadata.is_catch_weight === true ||
+    metadata.RequiresCatchWeight === true
+  ) {
+    return "per_lb"
+  }
+
+  const text = [
+    item.title,
+    item.subtitle,
+    item.product_title,
+    item.variant_title,
+    metadata.title,
+    metadata.customer_title,
+  ]
+    .filter((value) => typeof value === "string")
+    .join(" ")
+
+  return pricePerPoundFromText(text) !== null || /\bper\s+pound\b/i.test(text)
+    ? "per_lb"
+    : "fixed_price"
+}
+
+const pricePerPoundForItem = (
+  item: Record<string, any>,
+  lineSubtotal: number,
+  quantity: number
+): number | null => {
+  const metadata = combinedLineMetadata(item)
+  const metadataRate = metadataValue(metadata, [
+    "strapi_price_per_lb",
+    "price_per_lb",
+    "price_per_pound",
+    "unit_price_per_lb",
+    "current_uom_price",
+    "CurrentUomPrice",
+    "catch_weight_unit_price",
+  ])
+
+  const parsedMetadataRate =
+    typeof metadataRate === "string"
+      ? pricePerPoundFromText(metadataRate)
+      : numeric(metadataRate as MaybeMoney)
+  if (parsedMetadataRate !== null && parsedMetadataRate > 0) {
+    return parsedMetadataRate
+  }
+
+  const textRate = pricePerPoundFromText(
+    [
+      item.title,
+      item.subtitle,
+      item.product_title,
+      item.variant_title,
+      metadata.title,
+      metadata.customer_title,
+    ]
+      .filter((value) => typeof value === "string")
+      .join(" ")
+  )
+  if (textRate !== null) return textRate
+
+  const averagePackWeight = parseWeightRangeAverage(
+    metadataValue(metadata, [
+      "strapi_avg_pack_weight",
+      "AvgPackWeight",
+      "average_pack_weight",
+      "approximate_pack_weight",
+      "ApproximatePackWeight",
+      "pack_weight",
+      "net_weight",
+      "NetWeight",
+    ])
+  )
+  if (averagePackWeight && averagePackWeight > 0 && lineSubtotal > 0) {
+    return lineSubtotal / Math.max(quantity, 1) / averagePackWeight
+  }
+
+  return null
+}
+
+const productUrlForHandle = (handle: string | null): string | null => {
+  if (!handle) return null
+  const base = STOREFRONT_URL.replace(/\/+$/, "")
+  return `${base}/us/products/${encodeURIComponent(handle)}`
 }
 
 const looksLikeAccountingTitle = (value: string | null): boolean => {
@@ -281,6 +503,38 @@ const strapiTitleFromProduct = (product: Record<string, any>): string | null => 
   )
 }
 
+const strapiEmailMetadataFromProduct = (product: Record<string, any>) => {
+  const attributes = objectValue(product.attributes)
+  const medusaProduct = objectValue(product.MedusaProduct)
+  const attributesMedusaProduct = objectValue(attributes.MedusaProduct)
+  const metadata = objectValue(product.Metadata)
+  const attributesMetadata = objectValue(attributes.Metadata)
+
+  return {
+    title: strapiTitleFromProduct(product),
+    handle:
+      cleanText(medusaProduct.Handle) ||
+      cleanText(attributesMedusaProduct.Handle) ||
+      cleanText(product.Handle) ||
+      cleanText(attributes.Handle),
+    pricingMode:
+      cleanText(medusaProduct.PricingMode) ||
+      cleanText(attributesMedusaProduct.PricingMode) ||
+      cleanText(metadata.PricingMode) ||
+      cleanText(attributesMetadata.PricingMode),
+    avgPackWeight:
+      cleanText(metadata.AvgPackWeight) ||
+      cleanText(attributesMetadata.AvgPackWeight),
+    pricePerLb:
+      firstPositiveNumeric(
+        metadata.PricePerLb,
+        metadata.PricePerPound,
+        attributesMetadata.PricePerLb,
+        attributesMetadata.PricePerPound
+      ),
+  }
+}
+
 const hydrateStrapiTitles = async (
   container: Container,
   order: Record<string, unknown>
@@ -313,13 +567,24 @@ const hydrateStrapiTitles = async (
     }
   })()
 
-  const titles = new Map<string, string>()
+  const productMetadata = new Map<
+    string,
+    ReturnType<typeof strapiEmailMetadataFromProduct>
+  >()
   for (const productId of productIds) {
     try {
       const product = await strapiSvc.findProductByMedusaId(productId)
-      const title = product ? strapiTitleFromProduct(objectValue(product)) : null
-      if (title) {
-        titles.set(productId, title)
+      const metadata = product
+        ? strapiEmailMetadataFromProduct(objectValue(product))
+        : null
+      if (
+        metadata?.title ||
+        metadata?.handle ||
+        metadata?.pricingMode ||
+        metadata?.avgPackWeight ||
+        metadata?.pricePerLb
+      ) {
+        productMetadata.set(productId, metadata)
       }
     } catch (err) {
       logger?.warn?.(
@@ -330,7 +595,7 @@ const hydrateStrapiTitles = async (
     }
   }
 
-  if (!titles.size) {
+  if (!productMetadata.size) {
     return order
   }
 
@@ -339,8 +604,8 @@ const hydrateStrapiTitles = async (
     items: rawItems.map((rawItem) => {
       const item = objectValue(rawItem)
       const productId = productIdForItem(item)
-      const strapiTitle = productId ? titles.get(productId) : null
-      if (!strapiTitle) {
+      const metadata = productId ? productMetadata.get(productId) : null
+      if (!metadata) {
         return rawItem
       }
 
@@ -348,7 +613,19 @@ const hydrateStrapiTitles = async (
         ...item,
         metadata: {
           ...objectValue(item.metadata),
-          strapi_title: strapiTitle,
+          ...(metadata.title ? { strapi_title: metadata.title } : {}),
+          ...(metadata.handle
+            ? { strapi_product_handle: metadata.handle }
+            : {}),
+          ...(metadata.pricingMode
+            ? { strapi_pricing_mode: metadata.pricingMode }
+            : {}),
+          ...(metadata.avgPackWeight
+            ? { strapi_avg_pack_weight: metadata.avgPackWeight }
+            : {}),
+          ...(metadata.pricePerLb
+            ? { strapi_price_per_lb: metadata.pricePerLb }
+            : {}),
         },
       }
     }),
@@ -444,8 +721,13 @@ export type OrderForEmail = {
     unit_price?: number
     line_total?: number
     thumbnail?: string | null
+    product_handle?: string | null
+    product_url?: string | null
+    pricing_mode?: "per_lb" | "fixed_price"
+    price_per_lb?: number | null
     variant_title?: string | null
     product_title?: string | null
+    metadata?: Record<string, any> | null
     variant?: {
       id?: string
       title?: string | null
@@ -453,6 +735,7 @@ export type OrderForEmail = {
       product?: {
         id?: string
         title?: string | null
+        handle?: string | null
         thumbnail?: string | null
       } | null
     } | null
@@ -543,6 +826,8 @@ export const normalizeOrderForEmail = (
           : 0
     const displayTitle = displayTitleForItem(item)
     const sku = skuForItem(item)
+    const productHandle = productHandleForItem(item)
+    const pricingMode = pricingModeForItem(item)
     const thumbnail =
       cleanText(item.thumbnail) ||
       cleanText(variantProduct.thumbnail) ||
@@ -560,6 +845,13 @@ export const normalizeOrderForEmail = (
       unit_price: effectiveUnitPrice,
       line_total: lineSubtotal,
       thumbnail,
+      product_handle: productHandle,
+      product_url: productUrlForHandle(productHandle),
+      pricing_mode: pricingMode,
+      price_per_lb:
+        pricingMode === "per_lb"
+          ? pricePerPoundForItem(item, lineSubtotal, quantity)
+          : null,
     }
   })
 
