@@ -628,7 +628,7 @@ export async function sendTrackedEmail(
   }
 
   const messageRow = {
-    id: tableId("gpmsg"),
+    id: existing?.id || tableId("gpmsg"),
     idempotency_key: idempotencyKey,
     profile_id: input.profile_id || profile?.id || null,
     medusa_customer_id:
@@ -657,11 +657,31 @@ export async function sendTrackedEmail(
       ...(experimentContext ? { experiment_context: experimentContext } : {}),
     },
     queued_at: now,
-    created_at: now,
+    created_at: existing?.created_at || now,
     updated_at: now,
   }
 
-  await db("gp_message_log").insert(messageRow)
+  if (existing) {
+    await db("gp_message_log")
+      .where("id", existing.id)
+      .update({
+        ...messageRow,
+        status: "queued",
+        postmark_message_id: null,
+        provider_response: null,
+        sent_at: null,
+        delivered_at: null,
+        opened_at: null,
+        clicked_at: null,
+        bounced_at: null,
+        complained_at: null,
+        unsubscribed_at: null,
+        failed_at: null,
+        error_message: null,
+      })
+  } else {
+    await db("gp_message_log").insert(messageRow)
+  }
 
   try {
     const result = await notification.createNotifications({
