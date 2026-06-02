@@ -442,6 +442,10 @@ describe("catch-weight finalization helpers", () => {
       finalization: {
         id: "gpfin_123",
         estimated_order_total: 100,
+        final_item_total: 98,
+        final_shipping_total: 5,
+        final_tax_total: 7.5,
+        final_discount_total: 4,
         final_order_total: 106.5,
         delta_total: 6.5,
         currency_code: "usd",
@@ -461,6 +465,10 @@ describe("catch-weight finalization helpers", () => {
       "final_card_charge_accounting_record"
     )
     expect(metadata.qbd_posting_amount).toBe(10650)
+    expect(metadata.final_item_total).toBe(98)
+    expect(metadata.final_shipping_total).toBe(5)
+    expect(metadata.final_tax_total).toBe(7.5)
+    expect(metadata.final_discount_total).toBe(4)
   })
 
   it("marks every placed order as catch-weight finalization gated", () => {
