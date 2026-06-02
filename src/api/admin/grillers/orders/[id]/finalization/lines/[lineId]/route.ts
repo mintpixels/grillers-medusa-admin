@@ -1,7 +1,6 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import {
-  FINALIZATION_PACKED_PENDING_REVIEW,
   appendStaffAudit,
   ensureFinalizationForOrder,
   metadataObject,
@@ -25,15 +24,20 @@ export const PATCH = async (req: MedusaRequest, res: MedusaResponse) => {
     req.params.lineId,
     (req.body || {}) as Record<string, any>
   )
+  const finalization = await db("gp_order_finalization")
+    .where({ id: line.finalization_id })
+    .whereNull("deleted_at")
+    .first()
+  const finalizationStatus = finalization?.status || "picking"
   const metadata = appendStaffAudit(
     {
       ...metadataObject(order.metadata),
-      finalization_status: FINALIZATION_PACKED_PENDING_REVIEW,
-      catch_weight_status: FINALIZATION_PACKED_PENDING_REVIEW,
+      finalization_status: finalizationStatus,
+      catch_weight_status: finalizationStatus,
     },
     {
       action: "catch_weight_line_updated",
-      status: FINALIZATION_PACKED_PENDING_REVIEW,
+      status: finalizationStatus,
       line_item_id: req.params.lineId,
       staff_actor_id: actorId(req),
     }

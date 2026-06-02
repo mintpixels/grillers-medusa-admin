@@ -3,6 +3,9 @@ import { randomUUID } from "crypto"
 export const PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE =
   "setup_then_final_charge"
 export const SYSTEM_PAYMENT_PROVIDER_ID = "pp_system_default"
+export const FINALIZATION_PENDING_PICK = "pending_pick"
+export const FINALIZATION_PICKING = "picking"
+export const FINALIZATION_READY_FOR_PACKING = "ready_for_packing"
 export const FINALIZATION_PENDING_PACK = "pending_pack"
 export const FINALIZATION_PACKING = "packing"
 export const FINALIZATION_PACKED_PENDING_REVIEW = "packed_pending_review"
@@ -92,6 +95,7 @@ type FinalizationLinePatch = {
   actual_piece_count?: number | string | null
   actual_weight_each?: number | string | null
   actual_weight_total?: number | string | null
+  actual_unit_weights?: Array<number | string | null> | string | null
   actual_unit_price?: number | string | null
   final_line_subtotal?: number | string | null
   final_line_total?: number | string | null
@@ -108,8 +112,10 @@ type FinalizationLinePatch = {
 
 export type FinalizationPackageInput = {
   package_type?: string | null
+  shipper_qbd_list_id?: string | null
   count?: number | string | null
   packed_weight_lb?: number | string | null
+  dry_ice_lb?: number | string | null
   note?: string | null
 }
 
@@ -249,15 +255,19 @@ const normalizeFinalizationPackages = (
     .map((pkg) => ({
       id: String((pkg as Record<string, any>).id || id("gpfinpkg")),
       package_type: String(pkg.package_type || "").trim(),
+      shipper_qbd_list_id: String(pkg.shipper_qbd_list_id || "").trim() || null,
       count: positiveNumber(pkg.count),
       packed_weight_lb: positiveNumber(pkg.packed_weight_lb),
+      dry_ice_lb: nullableNumber(pkg.dry_ice_lb),
       note: String(pkg.note || "").trim() || null,
     }))
     .filter(
       (pkg) =>
         pkg.package_type ||
+        pkg.shipper_qbd_list_id ||
         pkg.count !== null ||
         pkg.packed_weight_lb !== null ||
+        pkg.dry_ice_lb !== null ||
         pkg.note
     )
 }
@@ -288,6 +298,12 @@ export const packageCaptureErrors = (
     }
     if (!positiveNumber(pkg.packed_weight_lb)) {
       errors.push({ message: `Package ${index + 1} needs packed weight.` })
+    }
+    const packedWeight = nullableNumber(pkg.packed_weight_lb)
+    if (packedWeight !== null && packedWeight > 50) {
+      errors.push({
+        message: `Package ${index + 1} is over 50 lb including dry ice and packaging.`,
+      })
     }
     return errors
   })
@@ -362,7 +378,7 @@ export const orderPlacedFinalizationMetadata = (
     payment_setup_status:
       metadata.payment_setup_status ||
       (hasSavedCard ? "saved" : "missing_saved_card"),
-    catch_weight_status: metadata.catch_weight_status || FINALIZATION_PENDING_PACK,
+    catch_weight_status: metadata.catch_weight_status || FINALIZATION_PENDING_PICK,
     finalization_id: finalization.id,
     finalization_status: finalization.status,
     final_charge_status: metadata.final_charge_status || "not_started",
@@ -566,6 +582,38 @@ const metadataValue = (
     }
   }
   return undefined
+}
+
+const normalizeUnitWeights = (value: unknown): number[] => {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+    ? value
+        .split(/[,\n]/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : []
+
+  return raw
+    .map((item) => nullableNumber(item))
+    .filter((item): item is number => item !== null && item > 0)
+    .map((item) => Math.round((item + Number.EPSILON) * 1000) / 1000)
+}
+
+const unitWeightsFromLine = (line: Record<string, any>): number[] => {
+  const metadata = metadataObject(line.metadata)
+  return normalizeUnitWeights(metadata.actual_unit_weights_lb)
+}
+
+const lineWeightTotal = (line: Record<string, any>): number | null => {
+  const unitWeights = unitWeightsFromLine(line)
+  if (unitWeights.length) {
+    return Math.round(
+      unitWeights.reduce((sum, weight) => sum + weight, 0) * 1000
+    ) / 1000
+  }
+
+  return nullableNumber(line.actual_weight_total)
 }
 
 const itemSearchText = (item: Record<string, any>) =>
@@ -860,9 +908,6 @@ export const buildFinalizationLineSnapshot = (
     estimatedWeightTotal
   )
 
-  const initialLineStatus =
-    pricingMode === "per_lb" ? "needs_weight" : FINALIZATION_LINE_NEEDS_PICK
-
   return {
     id: id("gpfinline"),
     finalization_id: finalizationId,
@@ -887,7 +932,7 @@ export const buildFinalizationLineSnapshot = (
     final_line_subtotal: null,
     final_line_total: null,
     delta_line_total: null,
-    status: initialLineStatus,
+    status: FINALIZATION_LINE_NEEDS_PICK,
     metadata: {
       estimated_tax_total: estimate.tax,
       estimated_line_subtotal: estimate.subtotal,
@@ -982,7 +1027,7 @@ const existingLineRepairPatch = (
     patch.final_line_total = null
     patch.delta_line_total = null
     if (!nullableNumber(existing.actual_weight_total)) {
-      patch.status = "needs_weight"
+      patch.status = FINALIZATION_LINE_NEEDS_PICK
     }
   }
 
@@ -1147,7 +1192,7 @@ export async function ensurePaymentSetup(
 export async function ensureFinalizationForOrder(
   db: CatchWeightDb,
   order: Record<string, any>,
-  status = FINALIZATION_PENDING_PACK
+  status = FINALIZATION_PENDING_PICK
 ) {
   const existing = await db("gp_order_finalization")
     .where({ order_id: order.id })
@@ -1200,6 +1245,9 @@ export async function ensureFinalizationForOrder(
       .map((item: Record<string, any>) => [item.id, item])
   )
   const repairableStatuses = new Set([
+    FINALIZATION_PENDING_PICK,
+    FINALIZATION_PICKING,
+    FINALIZATION_READY_FOR_PACKING,
     FINALIZATION_PENDING_PACK,
     FINALIZATION_PACKING,
     FINALIZATION_PACKED_PENDING_REVIEW,
@@ -1293,8 +1341,51 @@ export async function updateFinalizationPackages(
   }
 }
 
+export async function markFinalizationReadyForPacking(
+  db: CatchWeightDb,
+  order: Record<string, any>,
+  actorId?: string | null
+) {
+  const detail = await ensureFinalizationForOrder(db, order)
+  const pickBlockingLines = (detail.lines || []).filter(
+    (line: Record<string, any>) =>
+      !["ready", "removed", "substituted"].includes(line.status || "")
+  )
+
+  if (pickBlockingLines.length) {
+    throw new Error(
+      "Every line must be picked, removed, or substituted before packing starts."
+    )
+  }
+
+  await db("gp_order_finalization")
+    .where({ id: detail.finalization.id })
+    .update({
+      status: FINALIZATION_READY_FOR_PACKING,
+      packed_at: null,
+      packed_by: null,
+      reviewed_at: null,
+      reviewed_by: null,
+      updated_at: new Date(),
+      metadata: {
+        ...metadataObject(detail.finalization.metadata),
+        ready_for_packing_at: new Date().toISOString(),
+        ready_for_packing_by: actorId || null,
+      },
+    })
+
+  return {
+    ...detail,
+    finalization: {
+      ...detail.finalization,
+      status: FINALIZATION_READY_FOR_PACKING,
+    },
+  }
+}
+
 const normalizedLinePatch = (body: FinalizationLinePatch) => {
   const patch: Record<string, any> = {}
+  const metadataPatch = metadataObject(body.metadata)
   const numericFields = [
     "actual_quantity",
     "actual_piece_count",
@@ -1328,8 +1419,26 @@ const normalizedLinePatch = (body: FinalizationLinePatch) => {
     }
   }
 
-  if (body.metadata && typeof body.metadata === "object") {
-    patch.metadata = body.metadata
+  if ("actual_unit_weights" in body) {
+    const unitWeights = normalizeUnitWeights(body.actual_unit_weights)
+    metadataPatch.actual_unit_weights_lb = unitWeights
+    if (!("actual_weight_total" in body)) {
+      patch.actual_weight_total = unitWeights.length
+        ? Math.round(
+            unitWeights.reduce((sum, weight) => sum + weight, 0) * 1000
+          ) / 1000
+        : null
+    }
+    if (!("actual_piece_count" in body)) {
+      patch.actual_piece_count = unitWeights.length || null
+    }
+    if (!("actual_quantity" in body)) {
+      patch.actual_quantity = unitWeights.length || null
+    }
+  }
+
+  if (Object.keys(metadataPatch).length) {
+    patch.metadata = metadataPatch
   }
 
   return patch
@@ -1341,7 +1450,7 @@ export async function updateFinalizationLine(
   lineId: string,
   body: FinalizationLinePatch
 ) {
-  const patch = {
+  const patch: Record<string, any> = {
     ...normalizedLinePatch(body),
     updated_at: new Date(),
   }
@@ -1355,13 +1464,31 @@ export async function updateFinalizationLine(
     throw new Error("Finalization line was not found.")
   }
 
+  if (patch.metadata) {
+    patch.metadata = {
+      ...metadataObject(line.metadata),
+      ...metadataObject(patch.metadata),
+    }
+  }
+
   await db("gp_order_finalization_line").where({ id: line.id }).update(patch)
-  await db("gp_order_finalization")
+  const finalization = await db("gp_order_finalization")
     .where({ id: line.finalization_id })
-    .update({
-      status: FINALIZATION_PACKED_PENDING_REVIEW,
-      updated_at: new Date(),
-    })
+    .whereNull("deleted_at")
+    .first()
+  const currentStatus = finalization?.status || FINALIZATION_PENDING_PICK
+  const pickingStatuses = new Set([
+    FINALIZATION_PENDING_PICK,
+    FINALIZATION_PICKING,
+    FINALIZATION_PENDING_PACK,
+  ])
+  const nextStatus = pickingStatuses.has(currentStatus)
+    ? FINALIZATION_PICKING
+    : FINALIZATION_PACKED_PENDING_REVIEW
+  await db("gp_order_finalization").where({ id: line.finalization_id }).update({
+    status: nextStatus,
+    updated_at: new Date(),
+  })
 
   return { ...line, ...patch }
 }
@@ -1378,8 +1505,10 @@ const calculateLine = (line: Record<string, any>) => {
   const estimatedTaxRate =
     estimatedSubtotal > 0 ? estimatedTax / estimatedSubtotal : 0
   const unitPrice = numberOrZero(line.actual_unit_price ?? line.unit_price)
-  const actualQuantity = numberOrZero(line.actual_quantity ?? line.ordered_quantity)
-  const actualWeightTotal = nullableNumber(line.actual_weight_total)
+  const unitWeights = unitWeightsFromLine(line)
+  const actualQuantity =
+    unitWeights.length || numberOrZero(line.actual_quantity ?? line.ordered_quantity)
+  const actualWeightTotal = lineWeightTotal(line)
 
   const persistedFinalSubtotal = nullableNumber(line.final_line_subtotal)
   let finalSubtotal: number | null =

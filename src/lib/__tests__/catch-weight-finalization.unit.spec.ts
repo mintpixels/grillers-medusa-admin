@@ -10,6 +10,7 @@ import {
   fulfillmentGateAllowsShipment,
   orderPlacedFinalizationMetadata,
   previewFinalization,
+  updateFinalizationLine,
   updateFinalizationPackages,
 } from "../catch-weight-finalization"
 
@@ -91,7 +92,7 @@ describe("catch-weight finalization helpers", () => {
     expect(amountInMinorUnits(1200, "jpy")).toBe(1200)
   })
 
-  it("creates per-lb line snapshots that require actual weight", () => {
+  it("creates per-lb line snapshots that start in the picking queue", () => {
     const line = buildFinalizationLineSnapshot(
       { id: "order_123" },
       {
@@ -113,7 +114,7 @@ describe("catch-weight finalization helpers", () => {
     )
 
     expect(line.pricing_mode).toBe("per_lb")
-    expect(line.status).toBe("needs_weight")
+    expect(line.status).toBe("needs_pick")
     expect(line.estimated_weight_total).toBe(2)
     expect(line.actual_quantity).toBe(0)
     expect(line.actual_piece_count).toBe(0)
@@ -217,6 +218,68 @@ describe("catch-weight finalization helpers", () => {
     expect(preview.errors).toEqual([])
   })
 
+  it("calculates per-lb totals from individually entered item weights", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_unit_weights" },
+      {
+        id: "item_ribeye",
+        title: "Ribeye Steak $29.99/lb.",
+        variant_id: "variant_ribeye",
+        variant_sku: "1-02-03-1",
+        quantity: 3,
+        unit_price: 29.99,
+        subtotal: 89.97,
+        total: 89.97,
+        metadata: {
+          qbd_list_id: "QBD-RIBEYE",
+        },
+      },
+      "gpfin_unit_weights"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_unit_weights",
+          order_id: "order_unit_weights",
+          status: "packing",
+          estimated_order_total: 89.97,
+          metadata: {},
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [{ ...line, deleted_at: null }],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+    const order = {
+      id: "order_unit_weights",
+      total: 89.97,
+      item_subtotal: 89.97,
+      tax_total: 0,
+      shipping_total: 0,
+      discount_total: 0,
+      items: [],
+    }
+
+    await updateFinalizationLine(db, order.id, line.line_item_id, {
+      status: "ready",
+      actual_unit_weights: ["1.1", "1.2", "1.35"],
+    })
+
+    const preview = await previewFinalization(db, order, { persist: true })
+    const previewLine = preview.lines[0] as Record<string, any>
+    expect(preview.errors).toEqual([])
+    expect(previewLine.actual_quantity).toBe(3)
+    expect(previewLine.actual_piece_count).toBe(3)
+    expect(previewLine.actual_weight_total).toBe(3.65)
+    expect(previewLine.metadata.actual_unit_weights_lb).toEqual([
+      1.1,
+      1.2,
+      1.35,
+    ])
+    expect(previewLine.final_line_subtotal).toBe(109.46)
+  })
+
   it("does not double-count free-shipping discounts in final totals", async () => {
     const line = buildFinalizationLineSnapshot(
       { id: "order_ups" },
@@ -307,7 +370,7 @@ describe("catch-weight finalization helpers", () => {
     )
 
     expect(line.pricing_mode).toBe("per_lb")
-    expect(line.status).toBe("needs_weight")
+    expect(line.status).toBe("needs_pick")
     expect(line.ordered_quantity).toBe(1)
     expect(line.actual_quantity).toBe(0)
     expect(line.estimated_weight_total).toBe(1)
@@ -337,7 +400,7 @@ describe("catch-weight finalization helpers", () => {
     )
 
     expect(line.pricing_mode).toBe("per_lb")
-    expect(line.status).toBe("needs_weight")
+    expect(line.status).toBe("needs_pick")
     expect(line.estimated_weight_total).toBe(1)
     expect(line.customer_title).toBe("Ground Beef 85/15 - 1 lb Pack")
     expect(line.metadata.estimated_line_subtotal).toBe(11.52)
@@ -669,7 +732,15 @@ describe("catch-weight finalization helpers", () => {
     await updateFinalizationPackages(
       db,
       order,
-      [{ package_type: "Medium 345", count: 1, packed_weight_lb: 42 }],
+      [
+        {
+          package_type: "Shipper-345-Large",
+          shipper_qbd_list_id: "8000085C-1415899425",
+          count: 1,
+          packed_weight_lb: 42,
+          dry_ice_lb: 10,
+        },
+      ],
       "staff_123"
     )
 
@@ -677,9 +748,11 @@ describe("catch-weight finalization helpers", () => {
     expect(ready.errors).toEqual([])
     expect(ready.packages).toMatchObject([
       {
-        package_type: "Medium 345",
+        package_type: "Shipper-345-Large",
+        shipper_qbd_list_id: "8000085C-1415899425",
         count: 1,
         packed_weight_lb: 42,
+        dry_ice_lb: 10,
       },
     ])
     expect(ready.totals.final_order_total).toBeCloseTo(49.98)
@@ -690,12 +763,24 @@ describe("catch-weight finalization helpers", () => {
     await updateFinalizationPackages(
       db,
       order,
-      [{ package_type: "Large 460", count: 1, packed_weight_lb: 46 }],
+      [{ package_type: "Shipper-360-ExtraLarge", count: 1, packed_weight_lb: 46 }],
       "staff_123"
     )
     expect(db.tables.gp_order_finalization[0].status).toBe(
       FINALIZATION_PACKED_PENDING_REVIEW
     )
+
+    await updateFinalizationPackages(
+      db,
+      order,
+      [{ package_type: "Shipper-345-Large", count: 1, packed_weight_lb: 51 }],
+      "staff_123"
+    )
+    const overweight = await previewFinalization(db, order, { persist: true })
+    expect(overweight.errors).toContainEqual({
+      message:
+        "Package 1 is over 50 lb including dry ice and packaging.",
+    })
   })
 
   it("uses replacement price for substituted catch-weight lines", async () => {
@@ -881,7 +966,7 @@ describe("catch-weight finalization helpers", () => {
       },
       {
         id: "gpfin_123",
-        status: "pending_pack",
+        status: "pending_pick",
         estimated_order_total: 100,
       }
     ) as Record<string, any>
@@ -890,9 +975,9 @@ describe("catch-weight finalization helpers", () => {
       PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE
     )
     expect(metadata.payment_setup_status).toBe("saved")
-    expect(metadata.catch_weight_status).toBe("pending_pack")
+    expect(metadata.catch_weight_status).toBe("pending_pick")
     expect(metadata.finalization_id).toBe("gpfin_123")
-    expect(metadata.finalization_status).toBe("pending_pack")
+    expect(metadata.finalization_status).toBe("pending_pick")
     expect(metadata.final_charge_status).toBe("not_started")
     expect(metadata.fulfillment_gate_status).toBe(
       "blocked_until_final_charge"
@@ -909,7 +994,7 @@ describe("catch-weight finalization helpers", () => {
       },
       {
         id: "gpfin_123",
-        status: "pending_pack",
+        status: "pending_pick",
         estimated_order_total: 100,
       }
     ) as Record<string, any>

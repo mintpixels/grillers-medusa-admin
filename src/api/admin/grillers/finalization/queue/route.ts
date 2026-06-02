@@ -2,6 +2,9 @@ import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 
 const DEFAULT_STATUSES = [
+  "pending_pick",
+  "picking",
+  "ready_for_packing",
   "pending_pack",
   "packing",
   "packed_pending_review",
@@ -11,6 +14,9 @@ const DEFAULT_STATUSES = [
 ]
 
 const OPEN_STATUSES_WITHOUT_FINAL_TOTALS = new Set([
+  "pending_pick",
+  "picking",
+  "ready_for_packing",
   "pending_pack",
   "packing",
   "packed_pending_review",
@@ -35,7 +41,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     .whereNull("deleted_at")
     .whereIn("status", statuses)
     .orderByRaw(
-      "case status when 'charge_failed_hold' then 0 when 'packed_pending_charge' then 1 when 'packed_pending_review' then 2 when 'packing' then 3 else 4 end"
+      "case status when 'charge_failed_hold' then 0 when 'packed_pending_charge' then 1 when 'packed_pending_review' then 2 when 'packing' then 3 when 'ready_for_packing' then 4 when 'picking' then 5 when 'pending_pick' then 6 else 7 end"
     )
     .orderBy("created_at", "asc")
     .limit(clampLimit(req.query?.limit))

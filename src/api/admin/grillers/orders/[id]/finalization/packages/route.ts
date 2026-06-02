@@ -12,8 +12,10 @@ import { actorId, jsonError, retrieveFinalizationOrder } from "../utils"
 type PackagesBody = {
   packages?: Array<{
     package_type?: string | null
+    shipper_qbd_list_id?: string | null
     count?: number | string | null
     packed_weight_lb?: number | string | null
+    dry_ice_lb?: number | string | null
     note?: string | null
   }>
 }

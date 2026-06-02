@@ -1,0 +1,43 @@
+import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import {
+  FINALIZATION_READY_FOR_PACKING,
+  appendStaffAudit,
+  markFinalizationReadyForPacking,
+  metadataObject,
+} from "../../../../../../../lib/catch-weight-finalization"
+import { actorId, jsonError, retrieveFinalizationOrder } from "../utils"
+
+export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
+  const order = await retrieveFinalizationOrder(req, req.params.id)
+
+  if (!order) {
+    return jsonError(res, 404, "Order was not found.")
+  }
+
+  const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+  const orderModule = req.scope.resolve(Modules.ORDER)
+  const actor = actorId(req)
+  const detail = await markFinalizationReadyForPacking(db, order, actor)
+
+  const metadata = appendStaffAudit(
+    {
+      ...metadataObject(order.metadata),
+      finalization_id: detail.finalization.id,
+      finalization_status: FINALIZATION_READY_FOR_PACKING,
+      catch_weight_status: FINALIZATION_READY_FOR_PACKING,
+    },
+    {
+      action: "catch_weight_ready_for_packing",
+      status: FINALIZATION_READY_FOR_PACKING,
+      staff_actor_id: actor,
+    }
+  )
+  await orderModule.updateOrders(order.id, { metadata })
+
+  res.status(200).json({
+    order,
+    finalization: detail.finalization,
+    lines: detail.lines,
+  })
+}

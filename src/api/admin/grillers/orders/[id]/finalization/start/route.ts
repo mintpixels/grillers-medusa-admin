@@ -1,6 +1,8 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import {
+  FINALIZATION_PICKING,
+  FINALIZATION_READY_FOR_PACKING,
   FINALIZATION_PACKING,
   appendStaffAudit,
   ensureFinalizationForOrder,
@@ -18,14 +20,39 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
   const orderModule = req.scope.resolve(Modules.ORDER)
   const actor = actorId(req)
-  const detail = await ensureFinalizationForOrder(db, order, FINALIZATION_PACKING)
+  const body = (req.body || {}) as { phase?: string }
+  const phase = body.phase === "pack" ? "pack" : "pick"
+  const nextStatus =
+    phase === "pack" ? FINALIZATION_PACKING : FINALIZATION_PICKING
+  const detail = await ensureFinalizationForOrder(db, order, nextStatus)
+
+  if (
+    phase === "pack" &&
+    ![
+      FINALIZATION_READY_FOR_PACKING,
+      FINALIZATION_PACKING,
+      "packed_pending_review",
+      "packed_pending_charge",
+      "charge_failed_hold",
+    ].includes(detail.finalization.status)
+  ) {
+    return jsonError(
+      res,
+      409,
+      "This order must be marked ready for packing before a packer starts."
+    )
+  }
 
   await db("gp_order_finalization")
     .where({ id: detail.finalization.id })
     .update({
-      status: FINALIZATION_PACKING,
+      status: nextStatus,
       started_at: detail.finalization.started_at || new Date(),
       started_by: detail.finalization.started_by || actor,
+      packed_at:
+        phase === "pack" ? detail.finalization.packed_at || new Date() : null,
+      packed_by:
+        phase === "pack" ? detail.finalization.packed_by || actor : null,
       updated_at: new Date(),
     })
 
@@ -33,12 +60,15 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     {
       ...metadataObject(order.metadata),
       finalization_id: detail.finalization.id,
-      finalization_status: FINALIZATION_PACKING,
-      catch_weight_status: FINALIZATION_PACKING,
+      finalization_status: nextStatus,
+      catch_weight_status: nextStatus,
     },
     {
-      action: "catch_weight_packing_started",
-      status: FINALIZATION_PACKING,
+      action:
+        phase === "pack"
+          ? "catch_weight_packing_started"
+          : "catch_weight_picking_started",
+      status: nextStatus,
       staff_actor_id: actor,
     }
   )
@@ -48,8 +78,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     order,
     finalization: {
       ...detail.finalization,
-      status: FINALIZATION_PACKING,
+      status: nextStatus,
       started_by: detail.finalization.started_by || actor,
+      packed_by:
+        phase === "pack" ? detail.finalization.packed_by || actor : null,
     },
     lines: detail.lines,
   })
