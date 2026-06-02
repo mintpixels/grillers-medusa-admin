@@ -1,6 +1,10 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { buildWelcomeEmail } from "../lib/emails/templates/welcome"
-import { sendTrackedEmail, upsertCustomerProfile } from "../lib/communications/core"
+import {
+  sendTrackedEmail,
+  smsConsentFromCustomerMetadata,
+  upsertCustomerProfile,
+} from "../lib/communications/core"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 
 type CustomerCreatedEvent = {
@@ -18,7 +22,7 @@ export default async function customerWelcomeEmailHandler({
   try {
     const { data: customers } = await query.graph({
       entity: "customer",
-      fields: ["id", "email", "first_name", "has_account"],
+      fields: ["id", "email", "first_name", "phone", "has_account", "metadata"],
       filters: { id: data.id },
     })
     const customer = customers?.[0]
@@ -38,7 +42,9 @@ export default async function customerWelcomeEmailHandler({
     const profile = await upsertCustomerProfile(db, {
       medusa_customer_id: customer.id,
       email: customer.email,
+      phone: customer.phone,
       first_name: customer.first_name,
+      ...smsConsentFromCustomerMetadata(customer.metadata),
     })
 
     logger.info(

@@ -2,6 +2,7 @@ import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import {
   recordCommunicationEvent,
+  smsConsentFromCustomerMetadata,
   upsertCustomerProfile,
 } from "../lib/communications/core"
 import {
@@ -41,6 +42,24 @@ async function fetchOrderContext(container: any, orderId?: string) {
     filters: { id: orderId },
   })
   return orders?.[0] || null
+}
+
+async function fetchCustomerContext(container: any, customerId?: string) {
+  if (!customerId) return null
+  const query = container.resolve("query")
+  const { data: customers } = await query.graph({
+    entity: "customer",
+    fields: [
+      "id",
+      "email",
+      "first_name",
+      "last_name",
+      "phone",
+      "metadata",
+    ],
+    filters: { id: customerId },
+  })
+  return customers?.[0] || null
 }
 
 async function updateProfileStatsFromOrder(
@@ -92,6 +111,7 @@ export default async function communicationsCommerceEvents({
     const eventName = String(name || "").replace(/\./g, "_")
     let order = null as any
     let customer = null as any
+    let customerRecord = null as any
     let email = data.email
     let medusaCustomerId = data.customer_id
     let orderId = data.order_id
@@ -113,10 +133,25 @@ export default async function communicationsCommerceEvents({
       medusaCustomerId = medusaCustomerId || order?.customer_id
     }
 
+    if (
+      (name === "customer.created" || name === "customer.updated") &&
+      data.id
+    ) {
+      customerRecord = await fetchCustomerContext(container, data.id)
+      if (customerRecord) {
+        email = email || customerRecord.email
+        medusaCustomerId = medusaCustomerId || customerRecord.id
+      }
+    }
+
     if (medusaCustomerId || email) {
       customer = await upsertCustomerProfile(db, {
         medusa_customer_id: medusaCustomerId,
         email,
+        first_name: customerRecord?.first_name,
+        last_name: customerRecord?.last_name,
+        phone: customerRecord?.phone,
+        ...smsConsentFromCustomerMetadata(customerRecord?.metadata),
         customer_type:
           order?.metadata?.customer_type ||
           order?.metadata?.account_type ||

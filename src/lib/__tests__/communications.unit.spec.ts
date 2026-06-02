@@ -4,6 +4,7 @@ import {
   normalizeEmail,
   postmarkMetadata,
   preferenceUrl,
+  smsConsentFromCustomerMetadata,
   verifyServiceApiKey,
 } from "../communications/core"
 import { queuesConfigured } from "../communications/queue"
@@ -23,6 +24,33 @@ describe("communications helpers", () => {
   it("normalizes profile email addresses consistently", () => {
     expect(normalizeEmail("  Avi@Example.COM ")).toBe("avi@example.com")
     expect(normalizeEmail(null)).toBe("")
+  })
+
+  it("maps customer SMS opt-in metadata onto communications profiles", () => {
+    expect(
+      smsConsentFromCustomerMetadata({
+        sms_marketing_opt_in: true,
+        sms_consent_at: "2026-06-02T12:00:00.000Z",
+        sms_consent_source: "account_signup",
+        sms_consent_version: "sms-v1-2026-06-02",
+        sms_consent_phone: "4045550100",
+        sms_consent_provider: "twilio",
+        sms_program: "grillers_pride_text_updates",
+      })
+    ).toEqual({
+      sms_consent: true,
+      sms_consent_at: "2026-06-02T12:00:00.000Z",
+      metadata: {
+        sms_consent_source: "account_signup",
+        sms_consent_version: "sms-v1-2026-06-02",
+        sms_consent_text: null,
+        sms_consent_phone: "4045550100",
+        sms_consent_provider: "twilio",
+        sms_program: "grillers_pride_text_updates",
+      },
+    })
+
+    expect(smsConsentFromCustomerMetadata({})).toEqual({})
   })
 
   it("caps Postmark metadata at the provider limit without empty fields", () => {

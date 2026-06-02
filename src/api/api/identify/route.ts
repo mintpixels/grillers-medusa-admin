@@ -27,10 +27,13 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const profile = await upsertCustomerProfile(db, {
     medusa_customer_id: body.user_id || body.customer_id,
     email: traits.email || body.email,
+    phone: traits.phone || body.phone,
     first_name: traits.first_name,
     last_name: traits.last_name,
     customer_type: traits.customer_type,
     route_market: traits.route_market,
+    sms_consent: traits.sms_consent,
+    sms_consent_at: traits.sms_consent_at,
     metadata: traits,
   })
 

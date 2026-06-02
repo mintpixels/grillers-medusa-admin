@@ -45,6 +45,8 @@ export type CustomerProfileInput = {
   customer_type?: string | null
   route_market?: string | null
   email_consent?: boolean
+  sms_consent?: boolean
+  sms_consent_at?: Date | string | null
   preferences?: Record<string, any> | null
   metadata?: Record<string, any> | null
 }
@@ -110,6 +112,43 @@ function jsonObject(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, any>)
     : {}
+}
+
+function truthyConsentValue(value: unknown): boolean {
+  if (value === true) return true
+  if (typeof value !== "string") return false
+  return ["true", "1", "yes", "on", "subscribed", "opted_in"].includes(
+    value.trim().toLowerCase()
+  )
+}
+
+export function smsConsentFromCustomerMetadata(
+  metadata: unknown
+): Partial<CustomerProfileInput> {
+  const record = jsonObject(metadata)
+  const consented =
+    truthyConsentValue(record.sms_marketing_opt_in) ||
+    truthyConsentValue(record.sms_consent) ||
+    truthyConsentValue(record.sms_consent_status)
+
+  if (!consented) return {}
+
+  return {
+    sms_consent: true,
+    sms_consent_at:
+      typeof record.sms_consent_at === "string" ||
+      record.sms_consent_at instanceof Date
+        ? record.sms_consent_at
+        : undefined,
+    metadata: {
+      sms_consent_source: record.sms_consent_source || null,
+      sms_consent_version: record.sms_consent_version || null,
+      sms_consent_text: record.sms_consent_text || null,
+      sms_consent_phone: record.sms_consent_phone || null,
+      sms_consent_provider: record.sms_consent_provider || null,
+      sms_program: record.sms_program || null,
+    },
+  }
 }
 
 function resolveDb(container: MedusaContainer): KnexLike {
@@ -231,6 +270,12 @@ export async function upsertCustomerProfile(
         input.email_consent && !existing.email_consent_at
           ? now
           : existing.email_consent_at,
+      sms_consent:
+        input.sms_consent === undefined ? existing.sms_consent : input.sms_consent,
+      sms_consent_at:
+        input.sms_consent && !existing.sms_consent_at
+          ? asDate(input.sms_consent_at || now)
+          : existing.sms_consent_at,
       preferences,
       preference_token: existing.preference_token || newPreferenceToken(),
       last_active_at: now,
@@ -259,6 +304,10 @@ export async function upsertCustomerProfile(
     lifecycle_stage: "lead",
     email_consent: Boolean(input.email_consent),
     email_consent_at: input.email_consent ? now : null,
+    sms_consent: Boolean(input.sms_consent),
+    sms_consent_at: input.sms_consent
+      ? asDate(input.sms_consent_at || now)
+      : null,
     preferences,
     preference_token: newPreferenceToken(),
     last_active_at: now,
