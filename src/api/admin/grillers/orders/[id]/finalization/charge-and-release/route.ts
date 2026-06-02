@@ -202,6 +202,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         replacement_qbd_list_id: line.replacement_qbd_list_id || null,
         replacement_reason: line.replacement_reason || null,
         short_reason: line.short_reason || null,
+        metadata: line.metadata || null,
+        staff_added_line:
+          metadataObject(line.metadata).staff_added_line === true || false,
       })),
       catch_weight_packages: preview.packages || [],
     }

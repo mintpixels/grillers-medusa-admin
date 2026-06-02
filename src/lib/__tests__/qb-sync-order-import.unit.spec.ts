@@ -185,6 +185,52 @@ describe("qb-sync order import subscriber", () => {
     })
   })
 
+  it("adds staff-entered finalization lines to the QuickBooks posting payload", () => {
+    const order = normalizeOrderForQbSync({
+      id: "order_staff_added_line",
+      total: 24,
+      subtotal: 24,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      metadata: {
+        catch_weight_final_lines: [
+          {
+            line_item_id: "gpfinadd_123",
+            customer_title: "Chicken Soup",
+            qbd_list_id: "QBD-SOUP",
+            pricing_mode: "fixed_price",
+            actual_quantity: 2,
+            actual_piece_count: 2,
+            actual_unit_price: 12,
+            final_line_subtotal: 24,
+            final_line_total: 24,
+            metadata: {
+              staff_added_line: true,
+            },
+          },
+        ],
+      },
+      items: [],
+    })
+
+    expect(order.items).toHaveLength(1)
+    expect((order.items as any[])[0]).toMatchObject({
+      id: "gpfinadd_123",
+      title: "Chicken Soup",
+      quantity: 2,
+      subtotal: 24,
+      total: 24,
+      metadata: {
+        qbd_list_id: "QBD-SOUP",
+        catch_weight_staff_added_line: true,
+        catch_weight_actual_quantity: 2,
+        catch_weight_final_line_subtotal: 24,
+        catch_weight_customer_title: "Chicken Soup",
+      },
+    })
+  })
+
   it("uses legacy item maps as a fallback when current product metadata is missing", () => {
     const order = normalizeOrderForQbSync(
       {

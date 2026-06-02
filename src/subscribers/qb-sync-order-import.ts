@@ -220,6 +220,66 @@ function finalLinesByLineItemId(
   return byId
 }
 
+function quantityForFinalLine(line: Record<string, unknown>): number {
+  const pricingMode = textValue(line.pricing_mode)
+  const quantity =
+    pricingMode === "per_lb"
+      ? firstNumeric(line.actual_weight_total)
+      : firstNumeric(line.actual_quantity, line.actual_piece_count)
+
+  return quantity && quantity > 0 ? quantity : 1
+}
+
+function syntheticItemForFinalLine(
+  line: Record<string, unknown>
+): Record<string, unknown> | null {
+  const metadata = objectRecord(line.metadata)
+  const staffAdded =
+    line.staff_added_line === true || metadata.staff_added_line === true
+  if (!staffAdded) {
+    return null
+  }
+
+  const qbdListId = textValue(line.qbd_list_id)
+  const customerTitle =
+    textValue(line.customer_title) || textValue(line.title_snapshot)
+  const lineItemId = textValue(line.line_item_id)
+  if (!lineItemId || !qbdListId || !customerTitle) {
+    return null
+  }
+
+  const quantity = quantityForFinalLine(line)
+  const subtotal = firstNumeric(line.final_line_subtotal) ?? 0
+  const total = firstNumeric(line.final_line_total) ?? subtotal
+
+  return {
+    id: lineItemId,
+    title: customerTitle,
+    product_id: textValue(line.product_id),
+    variant_id: textValue(line.variant_id),
+    variant_sku: textValue(line.sku),
+    sku: textValue(line.sku),
+    quantity,
+    subtotal,
+    total,
+    unit_price: firstNumeric(line.actual_unit_price),
+    metadata: {
+      qbd_list_id: qbdListId,
+      catch_weight_staff_added_line: true,
+      catch_weight_actual_quantity:
+        line.actual_quantity ?? line.actual_piece_count ?? null,
+      catch_weight_actual_piece_count: line.actual_piece_count ?? null,
+      catch_weight_actual_weight_total: line.actual_weight_total ?? null,
+      catch_weight_final_line_subtotal: line.final_line_subtotal ?? null,
+      catch_weight_final_line_total: line.final_line_total ?? null,
+      catch_weight_customer_title: customerTitle,
+      catch_weight_line_note: line.note ?? null,
+      catch_weight_replacement_reason:
+        line.replacement_reason ?? line.short_reason ?? null,
+    },
+  }
+}
+
 function fallbackQbdListId(
   item: Record<string, unknown>,
   fallbacks: QbdListIdFallbacks
@@ -239,6 +299,7 @@ export function normalizeOrderForQbSync(
   qbdListIdFallbacks: QbdListIdFallbacks = {}
 ): Record<string, unknown> {
   const finalLines = finalLinesByLineItemId(order)
+  const seenFinalLineIds = new Set<string>()
   const items = Array.isArray(order.items)
     ? order.items.map((rawItem) => {
         if (!rawItem || typeof rawItem !== "object") {
@@ -254,6 +315,9 @@ export function normalizeOrderForQbSync(
         const finalLine = textValue(item.id)
           ? finalLines.get(textValue(item.id)!)
           : undefined
+        if (finalLine && textValue(item.id)) {
+          seenFinalLineIds.add(textValue(item.id)!)
+        }
         const qbdListId =
           textValue(finalLine?.qbd_list_id) ||
           itemQbdListId(item) ||
@@ -327,7 +391,12 @@ export function normalizeOrderForQbSync(
           subtotal,
           total,
         }
-      })
+      }).concat(
+        Array.from(finalLines.entries())
+          .filter(([lineItemId]) => !seenFinalLineIds.has(lineItemId))
+          .map(([, finalLine]) => syntheticItemForFinalLine(finalLine))
+          .filter((item): item is Record<string, unknown> => Boolean(item))
+      )
     : order.items
 
   const itemTotal = Array.isArray(items)

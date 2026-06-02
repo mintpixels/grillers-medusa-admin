@@ -110,6 +110,25 @@ type FinalizationLinePatch = {
   metadata?: Record<string, any> | null
 }
 
+export type FinalizationAddedLineInput = {
+  product_id?: string | null
+  variant_id?: string | null
+  sku?: string | null
+  qbd_list_id?: string | null
+  title?: string | null
+  customer_title?: string | null
+  variant_title?: string | null
+  pricing_mode?: string | null
+  unit_price?: number | string | null
+  actual_unit_price?: number | string | null
+  actual_quantity?: number | string | null
+  actual_piece_count?: number | string | null
+  actual_weight_total?: number | string | null
+  actual_unit_weights?: Array<number | string | null> | string | null
+  note?: string | null
+  metadata?: Record<string, any> | null
+}
+
 export type FinalizationPackageInput = {
   package_type?: string | null
   shipper_qbd_list_id?: string | null
@@ -1458,6 +1477,114 @@ const normalizedLinePatch = (body: FinalizationLinePatch) => {
   }
 
   return patch
+}
+
+export async function addFinalizationLine(
+  db: CatchWeightDb,
+  order: Record<string, any>,
+  body: FinalizationAddedLineInput,
+  actorId?: string | null
+) {
+  const detail = await ensureFinalizationForOrder(db, order)
+  const title = cleanText(body.customer_title) || cleanText(body.title)
+  const variantId = cleanText(body.variant_id)
+  const unitPrice = nullableNumber(body.actual_unit_price ?? body.unit_price)
+  const actualQuantity = nullableNumber(body.actual_quantity)
+  const actualPieceCount = nullableNumber(
+    body.actual_piece_count ?? body.actual_quantity
+  )
+  const unitWeights = normalizeUnitWeights(body.actual_unit_weights)
+  const actualWeightTotal =
+    nullableNumber(body.actual_weight_total) ??
+    (unitWeights.length
+      ? Math.round(
+          unitWeights.reduce((sum, weight) => sum + weight, 0) * 1000
+        ) / 1000
+      : null)
+
+  if (!title) {
+    throw new Error("Added item needs a customer-facing title.")
+  }
+  if (!variantId) {
+    throw new Error("Added item needs a Medusa variant ID.")
+  }
+
+  const lineItemId = id("gpfinadd")
+  const pseudoItem = {
+    id: lineItemId,
+    product_id: cleanText(body.product_id),
+    variant_id: variantId,
+    variant_sku: cleanText(body.sku),
+    title,
+    product_title: title,
+    quantity: 0,
+    unit_price: unitPrice || 0,
+    subtotal: 0,
+    total: 0,
+    metadata: {
+      ...metadataObject(body.metadata),
+      pricing_mode: cleanText(body.pricing_mode),
+      qbd_list_id: cleanText(body.qbd_list_id),
+      customer_title: title,
+      staff_added_line: true,
+      staff_added_by: actorId || null,
+      staff_added_at: new Date().toISOString(),
+    },
+  }
+  const snapshot = buildFinalizationLineSnapshot(
+    order,
+    pseudoItem,
+    detail.finalization.id
+  )
+  const pricingMode = snapshot.pricing_mode || "fixed_price"
+  const quantityForReadiness =
+    pricingMode === "per_lb"
+      ? unitWeights.length || actualPieceCount || actualQuantity || 0
+      : actualQuantity || actualPieceCount || 0
+  const line = {
+    ...snapshot,
+    ordered_quantity: 0,
+    estimated_line_total: 0,
+    estimated_weight_total: null,
+    actual_quantity:
+      pricingMode === "per_lb"
+        ? unitWeights.length || actualQuantity || null
+        : actualQuantity || null,
+    actual_piece_count: unitWeights.length || actualPieceCount || null,
+    actual_weight_total: actualWeightTotal,
+    actual_unit_price: unitPrice || snapshot.actual_unit_price,
+    final_line_subtotal: null,
+    final_line_total: null,
+    delta_line_total: null,
+    status: quantityForReadiness > 0 ? "ready" : FINALIZATION_LINE_NEEDS_PICK,
+    note: cleanText(body.note) || null,
+    metadata: {
+      ...metadataObject(snapshot.metadata),
+      actual_unit_weights_lb: unitWeights,
+      staff_added_line: true,
+      staff_added_by: actorId || null,
+      staff_added_at: new Date().toISOString(),
+    },
+    created_at: new Date(),
+    updated_at: new Date(),
+  }
+
+  await db("gp_order_finalization_line").insert(line)
+  const currentStatus = detail.finalization.status || FINALIZATION_PENDING_PICK
+  const pickingStatuses = new Set([
+    FINALIZATION_PENDING_PICK,
+    FINALIZATION_PICKING,
+    FINALIZATION_PENDING_PACK,
+  ])
+  const nextStatus = pickingStatuses.has(currentStatus)
+    ? FINALIZATION_PICKING
+    : FINALIZATION_PACKED_PENDING_REVIEW
+  await db("gp_order_finalization").where({ id: detail.finalization.id }).update({
+    status: nextStatus,
+    updated_at: new Date(),
+  })
+
+  return line
 }
 
 export async function updateFinalizationLine(

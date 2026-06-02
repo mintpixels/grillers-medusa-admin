@@ -4,6 +4,7 @@ import {
   FINALIZATION_PACKED_PENDING_REVIEW,
   PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
   amountInMinorUnits,
+  addFinalizationLine,
   buildFinalizationLineSnapshot,
   ensureFinalizationForOrder,
   finalChargeOrderMetadata,
@@ -273,6 +274,57 @@ describe("catch-weight finalization helpers", () => {
     ])
     expect(preview.lines[0].final_line_total).toBeNull()
     expect(preview.totals.final_order_total).toBeNull()
+  })
+
+  it("adds a staff-entered fixed-price item as a ready finalization line", async () => {
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_added",
+          order_id: "order_added",
+          status: "picking",
+          estimated_order_total: 0,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const line = await addFinalizationLine(
+      db,
+      {
+        id: "order_added",
+        total: 0,
+        item_subtotal: 0,
+        tax_total: 0,
+        shipping_total: 0,
+        discount_total: 0,
+        items: [],
+      },
+      {
+        product_id: "prod_soup",
+        variant_id: "variant_soup",
+        sku: "10-01-11-0",
+        qbd_list_id: "QBD-SOUP",
+        title: "Chicken Soup",
+        pricing_mode: "fixed_price",
+        actual_unit_price: 12,
+        actual_quantity: 2,
+      },
+      "staff_123"
+    )
+
+    expect(line.line_item_id).toMatch(/^gpfinadd_/)
+    expect(line.status).toBe("ready")
+    expect(line.ordered_quantity).toBe(0)
+    expect(line.actual_quantity).toBe(2)
+    expect(line.metadata).toMatchObject({
+      staff_added_line: true,
+      staff_added_by: "staff_123",
+    })
+    expect(db.tables.gp_order_finalization_line).toHaveLength(1)
   })
 
   it("uses the true per-pound rate for final catch-weight math", async () => {
