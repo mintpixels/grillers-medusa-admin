@@ -1335,11 +1335,18 @@ export async function previewFinalization(
   const finalTaxTotal = totalsComplete
     ? roundMoney(numberOrZero(recalculatedLineTax) + numberOrZero(fixedNonLineTax))
     : null
+  const estimatedNonItemTotal = totalsComplete
+    ? roundMoney(
+        breakdown.estimated_order_total -
+          breakdown.estimated_item_total -
+          breakdown.estimated_tax_total
+      )
+    : null
   const finalShippingTotal = totalsComplete
-    ? breakdown.estimated_shipping_total
+    ? Math.max(0, numberOrZero(estimatedNonItemTotal))
     : null
   const finalDiscountTotal = totalsComplete
-    ? breakdown.estimated_discount_total
+    ? Math.max(0, -numberOrZero(estimatedNonItemTotal))
     : null
   const finalOrderTotal = totalsComplete
     ? roundMoney(

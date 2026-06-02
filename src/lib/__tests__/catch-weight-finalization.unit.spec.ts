@@ -181,6 +181,67 @@ describe("catch-weight finalization helpers", () => {
     expect(preview.errors).toEqual([])
   })
 
+  it("does not double-count free-shipping discounts in final totals", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_ups" },
+      {
+        id: "item_bulk",
+        title: "Bulk Beef Pack ~10 lb. $10/lb.",
+        variant_id: "variant_bulk",
+        variant_sku: "BULK-10",
+        quantity: 1,
+        unit_price: 100,
+        subtotal: 100,
+        total: 100,
+        metadata: {
+          qbd_list_id: "QB-BULK-10",
+        },
+      },
+      "gpfin_ups"
+    )
+
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_ups",
+          order_id: "order_ups",
+          status: "packing",
+          estimated_order_total: 100,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          ...line,
+          status: "ready",
+          actual_weight_total: 11,
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const preview = await previewFinalization(
+      db,
+      {
+        id: "order_ups",
+        total: 100,
+        item_subtotal: 100,
+        tax_total: 0,
+        shipping_total: 0,
+        discount_total: 20,
+        items: [],
+      },
+      { persist: true }
+    )
+
+    expect(preview.totals.final_item_total).toBe(110)
+    expect(preview.totals.final_shipping_total).toBe(0)
+    expect(preview.totals.final_discount_total).toBe(0)
+    expect(preview.totals.final_order_total).toBe(110)
+  })
+
   it("normalizes Medusa detail line quantities and infers per-lb pricing from customer copy", () => {
     const line = buildFinalizationLineSnapshot(
       { id: "order_123" },
