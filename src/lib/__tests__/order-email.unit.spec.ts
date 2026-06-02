@@ -475,7 +475,7 @@ describe("order email rendering", () => {
     expect(email.html).not.toContain("8-10 lb")
   })
 
-  it("shows the Stripe-authorized total when tax is present", () => {
+  it("shows the estimated saved-card total when tax is present", () => {
     const order = normalizeOrderForEmail({
       id: "order_email_tax",
       display_id: 43,
@@ -512,11 +512,11 @@ describe("order email rendering", () => {
     const email = buildOrderPlacedEmail(order)
     expect(email.html).toContain("Taxes (estimated)")
     expect(email.html).toContain("$6.58")
-    expect(email.html).toContain("Total (authorized)")
+    expect(email.html).toContain("Estimated total")
     expect(email.html).toContain("$91.48")
     expect(email.html).toContain("Qty 1 &times; $84.90")
     expect(email.text).toContain("Taxes (estimated): $6.58")
-    expect(email.text).toContain("Total (authorized): $91.48")
+    expect(email.text).toContain("Estimated total: $91.48")
   })
 
   it("uses the payment authorization amount when event-time order totals are pre-tax", () => {
@@ -559,7 +559,7 @@ describe("order email rendering", () => {
     expect(email.html).toContain("$6.58")
     expect(email.html).toContain("$91.48")
     expect(email.text).toContain("Taxes (estimated): $6.58")
-    expect(email.text).toContain("Total (authorized): $91.48")
+    expect(email.text).toContain("Estimated total: $91.48")
   })
 
   it("subtracts shipping method amount before deriving tax from payment total", () => {
@@ -614,7 +614,7 @@ describe("order email rendering", () => {
     expect(email.text).toContain("Subtotal: $50.98")
     expect(email.text).toContain("Shipping: $40.00")
     expect(email.text).toContain("Taxes (estimated): $3.95")
-    expect(email.text).toContain("Total (authorized): $94.93")
+    expect(email.text).toContain("Estimated total: $94.93")
     expect(email.text).not.toContain("Taxes (estimated): $43.95")
   })
 

@@ -612,6 +612,57 @@ const estimatedWeightEachFromItem = (item: Record<string, any>) => {
   return null
 }
 
+const pricePerPoundFromText = (text: string) => {
+  const match = text.match(
+    /\$\s*(\d+(?:\.\d+)?)\s*(?:\/\s*)?(?:lb|lbs|pound|pounds)\b/i
+  )
+  if (!match) return null
+
+  const price = Number(match[1])
+  return Number.isFinite(price) && price > 0 ? price : null
+}
+
+const pricePerPoundFromMetadata = (item: Record<string, any>) => {
+  const metadata = combinedLineMetadata(item)
+  const value = metadataValue(metadata, [
+    "price_per_lb",
+    "price_per_pound",
+    "unit_price_per_lb",
+    "current_uom_price",
+    "CurrentUomPrice",
+    "catch_weight_unit_price",
+  ])
+
+  if (typeof value === "string") {
+    const explicit = pricePerPoundFromText(value)
+    if (explicit !== null) return explicit
+  }
+
+  const numeric = nullableNumber(value)
+  return numeric !== null && numeric > 0 ? numeric : null
+}
+
+const finalUnitPriceForLine = (
+  item: Record<string, any>,
+  estimate: { unitPrice: number; subtotal: number },
+  pricingMode: string,
+  estimatedWeightTotal: number | null
+) => {
+  if (pricingMode !== "per_lb") return estimate.unitPrice
+
+  const metadataRate = pricePerPoundFromMetadata(item)
+  if (metadataRate !== null) return metadataRate
+
+  const textRate = pricePerPoundFromText(itemSearchText(item))
+  if (textRate !== null) return textRate
+
+  if (estimatedWeightTotal && estimatedWeightTotal > 0 && estimate.subtotal > 0) {
+    return roundMoney(estimate.subtotal / estimatedWeightTotal)
+  }
+
+  return estimate.unitPrice
+}
+
 const orderBreakdown = (order: Record<string, any>) => {
   const estimatedItemTotal = fieldAmount(order, [
     "item_subtotal",
@@ -693,6 +744,12 @@ export const buildFinalizationLineSnapshot = (
       ? roundMoney(estimatedWeightEach * estimate.quantity)
       : null
   const pricingMode = pricingModeFromItem(item)
+  const finalUnitPrice = finalUnitPriceForLine(
+    item,
+    estimate,
+    pricingMode,
+    estimatedWeightTotal
+  )
 
   return {
     id: id("gpfinline"),
@@ -706,15 +763,15 @@ export const buildFinalizationLineSnapshot = (
     title_snapshot: item.title || item.product_title || item.subtitle || null,
     customer_title: customerTitleFromItem(item),
     pricing_mode: pricingMode,
-    unit_price: estimate.unitPrice,
-    estimated_unit_price: estimate.unitPrice,
+    unit_price: finalUnitPrice,
+    estimated_unit_price: finalUnitPrice,
     estimated_line_total: estimate.total,
     ordered_quantity: estimate.quantity,
     estimated_weight_each: estimatedWeightEach,
     estimated_weight_total: estimatedWeightTotal,
     actual_quantity: estimate.quantity,
     actual_piece_count: estimate.quantity,
-    actual_unit_price: estimate.unitPrice,
+    actual_unit_price: finalUnitPrice,
     final_line_subtotal: pricingMode === "per_lb" ? null : estimate.subtotal,
     final_line_total: pricingMode === "per_lb" ? null : estimate.total,
     delta_line_total: pricingMode === "per_lb" ? null : 0,
@@ -748,6 +805,7 @@ const existingLineRepairPatch = (
     "ordered_quantity",
     "estimated_weight_each",
     "estimated_weight_total",
+    "actual_unit_price",
   ]
 
   for (const field of copyIfMissingOrZero) {
@@ -788,6 +846,26 @@ const existingLineRepairPatch = (
     patch.delta_line_total = null
     if (!nullableNumber(existing.actual_weight_total)) {
       patch.status = "needs_weight"
+    }
+  }
+
+  if (snapshot.pricing_mode === "per_lb") {
+    const nextUnitPrice = nullableNumber(
+      snapshot.actual_unit_price ?? snapshot.unit_price
+    )
+    const currentUnitPrice = nullableNumber(
+      existing.actual_unit_price ?? existing.unit_price
+    )
+
+    if (
+      nextUnitPrice !== null &&
+      nextUnitPrice > 0 &&
+      (currentUnitPrice === null ||
+        Math.abs(currentUnitPrice - nextUnitPrice) >= 0.005)
+    ) {
+      patch.unit_price = snapshot.unit_price
+      patch.estimated_unit_price = snapshot.estimated_unit_price
+      patch.actual_unit_price = snapshot.actual_unit_price
     }
   }
 

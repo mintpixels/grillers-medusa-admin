@@ -115,6 +115,72 @@ describe("catch-weight finalization helpers", () => {
     expect(line.qbd_list_id).toBe("80000001-123")
   })
 
+  it("uses the true per-pound rate for final catch-weight math", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_123" },
+      {
+        id: "item_brisket",
+        title:
+          "First Cut Brisket (2-3 lb) American Angus Uncooked, Kosher for Passover. $14.99 lb.",
+        variant_id: "variant_brisket",
+        variant_sku: "1-03-15-0",
+        quantity: 1,
+        unit_price: 37.47,
+        subtotal: 37.47,
+        total: 40.373925,
+        tax_total: 2.903925,
+        metadata: {
+          qbd_list_id: "970000-1105657033",
+        },
+      },
+      "gpfin_123"
+    )
+
+    expect(line.pricing_mode).toBe("per_lb")
+    expect(line.actual_unit_price).toBe(14.99)
+    expect(line.estimated_line_total).toBe(40.373925)
+
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_123",
+          order_id: "order_123",
+          status: "packing",
+          estimated_order_total: 40.373925,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          ...line,
+          status: "ready",
+          actual_weight_total: 2.6,
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const preview = await previewFinalization(
+      db,
+      {
+        id: "order_123",
+        total: 40.373925,
+        item_subtotal: 37.47,
+        tax_total: 2.903925,
+        shipping_total: 0,
+        discount_total: 0,
+        items: [],
+      },
+      { persist: true }
+    )
+
+    expect(preview.lines[0].final_line_subtotal).toBe(38.97)
+    expect(preview.lines[0].final_line_total).toBe(41.99)
+    expect(preview.errors).toEqual([])
+  })
+
   it("normalizes Medusa detail line quantities and infers per-lb pricing from customer copy", () => {
     const line = buildFinalizationLineSnapshot(
       { id: "order_123" },
