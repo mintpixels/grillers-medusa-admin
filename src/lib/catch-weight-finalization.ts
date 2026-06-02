@@ -1650,7 +1650,15 @@ const calculateLine = (line: Record<string, any>) => {
   const unitPrice = numberOrZero(line.actual_unit_price ?? line.unit_price)
   const unitWeights = unitWeightsFromLine(line)
   const actualQuantity =
-    unitWeights.length || numberOrZero(line.actual_quantity)
+    numberOrZero(line.actual_quantity) || unitWeights.length
+  const expectedUnitWeights =
+    pricingMode === "per_lb" && actualQuantity > 0
+      ? Math.ceil(actualQuantity)
+      : 0
+  const missingEnteredUnitWeights =
+    expectedUnitWeights > 0 &&
+    unitWeights.length > 0 &&
+    unitWeights.length < expectedUnitWeights
   const actualWeightTotal = lineWeightTotal(line)
 
   const persistedFinalSubtotal = nullableNumber(line.final_line_subtotal)
@@ -1689,6 +1697,9 @@ const calculateLine = (line: Record<string, any>) => {
       if (!actualWeightTotal || actualWeightTotal <= 0) {
         finalSubtotal = null
         errors.push("Actual weight is required for per-lb items.")
+      } else if (missingEnteredUnitWeights) {
+        finalSubtotal = null
+        errors.push("Enter a weight for each fulfilled per-lb item.")
       } else {
         finalSubtotal = roundMoney(actualWeightTotal * unitPrice)
       }
@@ -1709,6 +1720,9 @@ const calculateLine = (line: Record<string, any>) => {
     if (!actualWeightTotal || actualWeightTotal <= 0) {
       finalSubtotal = null
       errors.push("Actual weight is required for per-lb items.")
+    } else if (missingEnteredUnitWeights) {
+      finalSubtotal = null
+      errors.push("Enter a weight for each fulfilled per-lb item.")
     } else {
       finalSubtotal = roundMoney(actualWeightTotal * unitPrice)
     }

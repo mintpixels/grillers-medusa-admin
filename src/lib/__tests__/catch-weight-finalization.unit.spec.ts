@@ -457,6 +457,71 @@ describe("catch-weight finalization helpers", () => {
     expect(previewLine.final_line_subtotal).toBe(109.46)
   })
 
+  it("requires one entered weight for each fulfilled per-lb item", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_ground_beef" },
+      {
+        id: "item_ground_beef",
+        title: "Ground Beef Extra Lean 90/10 - 1 lb Pack $10.69/lb.",
+        variant_id: "variant_ground_beef",
+        variant_sku: "1-00-11-1",
+        quantity: 2,
+        unit_price: 10.69,
+        subtotal: 21.38,
+        total: 21.38,
+        metadata: {
+          qbd_list_id: "QBD-GROUND-BEEF",
+        },
+      },
+      "gpfin_ground_beef"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_ground_beef",
+          order_id: "order_ground_beef",
+          status: "packing",
+          estimated_order_total: 21.38,
+          metadata: {},
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [{ ...line, deleted_at: null }],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+    const order = {
+      id: "order_ground_beef",
+      total: 21.38,
+      item_subtotal: 21.38,
+      tax_total: 0,
+      shipping_total: 0,
+      discount_total: 0,
+      items: [],
+    }
+
+    await updateFinalizationLine(db, order.id, line.line_item_id, {
+      status: "ready",
+      actual_quantity: 2,
+      actual_piece_count: 2,
+      actual_unit_weights: ["1.08"],
+    })
+
+    const preview = await previewFinalization(db, order, { persist: true })
+    const previewLine = preview.lines[0] as Record<string, any>
+
+    expect(preview.errors).toEqual([
+      {
+        line_item_id: "item_ground_beef",
+        message: "Enter a weight for each fulfilled per-lb item.",
+      },
+    ])
+    expect(previewLine.actual_quantity).toBe(2)
+    expect(previewLine.actual_weight_total).toBe(1.08)
+    expect(previewLine.final_line_total).toBeNull()
+    expect(preview.totals.final_order_total).toBeNull()
+  })
+
   it("does not double-count free-shipping discounts in final totals", async () => {
     const line = buildFinalizationLineSnapshot(
       { id: "order_ups" },
