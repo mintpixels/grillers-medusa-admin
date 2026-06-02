@@ -141,8 +141,9 @@ export function postmarkMetadata(
   for (const [key, value] of Object.entries(input)) {
     if (Object.keys(metadata).length >= 10) break
     const normalized = compactMetadataValue(value).trim()
-    if (!key || !normalized) continue
-    metadata[key] = normalized.slice(0, 500)
+    const normalizedKey = key.replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 20)
+    if (!normalizedKey || !normalized || metadata[normalizedKey]) continue
+    metadata[normalizedKey] = normalized.slice(0, 500)
   }
 
   return metadata

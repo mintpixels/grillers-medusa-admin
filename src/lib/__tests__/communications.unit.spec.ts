@@ -39,17 +39,20 @@ describe("communications helpers", () => {
       total: 42.45,
       display_id: 102,
       extra_1: "kept",
+      preference_center_url: "https://grillerspride.com/prefs",
       extra_2: "dropped",
       nested: { too: "late" },
     })
 
     expect(Object.keys(metadata)).toHaveLength(10)
+    expect(Object.keys(metadata).every((key) => key.length <= 20)).toBe(true)
     expect(metadata.cart_id).toBeUndefined()
     expect(metadata.campaign_id).toBeUndefined()
     expect(metadata.flow_id).toBeUndefined()
     expect(metadata.total).toBe("42.45")
     expect(metadata.extra_1).toBe("kept")
-    expect(metadata.extra_2).toBe("dropped")
+    expect(metadata.preference_center_ur).toBe("https://grillerspride.com/prefs")
+    expect(metadata.extra_2).toBeUndefined()
     expect(metadata.nested).toBeUndefined()
   })
 
