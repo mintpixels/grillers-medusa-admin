@@ -956,6 +956,22 @@ const existingLineRepairPatch = (
   const estimatedTotal = nullableNumber(
     existing.estimated_line_total ?? existingMetadata.estimated_line_total
   )
+  const untouchedFixedQuantityDefault =
+    snapshot.pricing_mode !== "per_lb" &&
+    ["needs_pick", "needs_weight", "packing", "pending_pack"].includes(
+      existing.status || FINALIZATION_LINE_NEEDS_PICK
+    ) &&
+    numberOrZero(existing.actual_quantity) ===
+      numberOrZero(existing.ordered_quantity) &&
+    numberOrZero(existing.actual_piece_count) ===
+      numberOrZero(existing.ordered_quantity) &&
+    !existing.actual_weight_total &&
+    !existing.note &&
+    !existing.replacement_variant_id &&
+    !existing.replacement_qbd_list_id &&
+    !existing.replacement_reason &&
+    !existing.short_reason &&
+    !existing.exception_reason
   const oldFixedReadyDefault =
     snapshot.pricing_mode !== "per_lb" &&
     (existing.status || "ready") === "ready" &&
@@ -1031,7 +1047,7 @@ const existingLineRepairPatch = (
     }
   }
 
-  if (oldFixedReadyDefault) {
+  if (untouchedFixedQuantityDefault || oldFixedReadyDefault) {
     patch.actual_quantity = 0
     patch.actual_piece_count = 0
     patch.final_line_subtotal = null
@@ -1507,7 +1523,7 @@ const calculateLine = (line: Record<string, any>) => {
   const unitPrice = numberOrZero(line.actual_unit_price ?? line.unit_price)
   const unitWeights = unitWeightsFromLine(line)
   const actualQuantity =
-    unitWeights.length || numberOrZero(line.actual_quantity ?? line.ordered_quantity)
+    unitWeights.length || numberOrZero(line.actual_quantity)
   const actualWeightTotal = lineWeightTotal(line)
 
   const persistedFinalSubtotal = nullableNumber(line.final_line_subtotal)

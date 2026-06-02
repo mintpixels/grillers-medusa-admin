@@ -150,6 +150,131 @@ describe("catch-weight finalization helpers", () => {
     expect(line.final_line_total).toBeNull()
   })
 
+  it("repairs untouched fixed-price lines that were defaulted to ordered quantity", async () => {
+    const item = {
+      id: "item_boerewors",
+      title: "KosherBoeries Classic Beef Boerewors (6x4 oz)",
+      variant_id: "variant_boerewors",
+      variant_sku: "1-09-11-1",
+      quantity: 1,
+      unit_price: 27.98,
+      subtotal: 27.98,
+      total: 27.98,
+      metadata: {
+        pricing_mode: "fixed",
+        qbd_list_id: "DA0000-1130097021",
+      },
+    }
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_fixed_repair" },
+      item,
+      "gpfin_fixed_repair"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_fixed_repair",
+          order_id: "order_fixed_repair",
+          status: "pending_pick",
+          estimated_order_total: 27.98,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          ...line,
+          actual_quantity: 1,
+          actual_piece_count: 1,
+          status: "needs_pick",
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const detail = await ensureFinalizationForOrder(db, {
+      id: "order_fixed_repair",
+      total: 27.98,
+      item_subtotal: 27.98,
+      tax_total: 0,
+      shipping_total: 0,
+      discount_total: 0,
+      items: [item],
+    })
+
+    expect(detail.lines[0].actual_quantity).toBe(0)
+    expect(detail.lines[0].actual_piece_count).toBe(0)
+    expect(db.tables.gp_order_finalization_line[0].actual_quantity).toBe(0)
+    expect(db.tables.gp_order_finalization_line[0].actual_piece_count).toBe(0)
+  })
+
+  it("does not use ordered fixed-price quantity as fulfilled quantity in preview", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_fixed_missing_actual" },
+      {
+        id: "item_soup_missing_actual",
+        title: "Chicken Soup",
+        variant_id: "variant_soup",
+        variant_sku: "10-01-11-0",
+        quantity: 1,
+        unit_price: 12,
+        subtotal: 12,
+        total: 12,
+        metadata: {
+          pricing_mode: "fixed",
+          qbd_list_id: "QBD-SOUP",
+        },
+      },
+      "gpfin_fixed_missing_actual"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_fixed_missing_actual",
+          order_id: "order_fixed_missing_actual",
+          status: "packing",
+          estimated_order_total: 12,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          ...line,
+          actual_quantity: null,
+          actual_piece_count: null,
+          status: "ready",
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const preview = await previewFinalization(
+      db,
+      {
+        id: "order_fixed_missing_actual",
+        total: 12,
+        item_subtotal: 12,
+        tax_total: 0,
+        shipping_total: 0,
+        discount_total: 0,
+        items: [],
+      },
+      { persist: true }
+    )
+
+    expect(preview.errors).toEqual([
+      {
+        line_item_id: "item_soup_missing_actual",
+        message: "Fulfilled quantity must be greater than zero.",
+      },
+    ])
+    expect(preview.lines[0].final_line_total).toBeNull()
+    expect(preview.totals.final_order_total).toBeNull()
+  })
+
   it("uses the true per-pound rate for final catch-weight math", async () => {
     const line = buildFinalizationLineSnapshot(
       { id: "order_123" },
