@@ -1,4 +1,5 @@
 import {
+  CATCH_WEIGHT_ORDER_FIELDS,
   FINALIZATION_CHARGED_READY_TO_SHIP,
   FINALIZATION_PACKED_PENDING_CHARGE,
   FINALIZATION_PACKED_PENDING_REVIEW,
@@ -95,6 +96,17 @@ describe("catch-weight finalization helpers", () => {
     expect(amountInMinorUnits(1200, "jpy")).toBe(1200)
   })
 
+  it("requests current catalog titles for catch-weight line display", () => {
+    expect(CATCH_WEIGHT_ORDER_FIELDS).toEqual(
+      expect.arrayContaining([
+        "items.product_title",
+        "items.variant_title",
+        "items.variant.title",
+        "items.variant.product.title",
+      ])
+    )
+  })
+
   it("creates per-lb line snapshots that start in the picking queue", () => {
     const line = buildFinalizationLineSnapshot(
       { id: "order_123" },
@@ -151,6 +163,43 @@ describe("catch-weight finalization helpers", () => {
     expect(line.actual_quantity).toBe(0)
     expect(line.actual_piece_count).toBe(0)
     expect(line.final_line_total).toBeNull()
+  })
+
+  it("prefers current customer catalog titles over legacy line titles", () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_catalog_title" },
+      {
+        id: "item_catalog_title",
+        title:
+          "KosherBoeries Authentic South African Beef Grilling Sausages, NO Nitrates, CLASSIC, 6 pcs. ~24 oz.",
+        variant_id: "variant_catalog_title",
+        variant_sku: "1-09-11-1",
+        quantity: 1,
+        unit_price: 27.98,
+        subtotal: 27.98,
+        total: 27.98,
+        variant: {
+          title: "Default",
+          metadata: {
+            qbd_list_id: "DA0000-1130097021",
+          },
+          product: {
+            title: "KosherBoeries Classic Beef Boerewors (6x4 oz)",
+          },
+        },
+        metadata: {
+          pricing_mode: "fixed",
+        },
+      },
+      "gpfin_catalog_title"
+    )
+
+    expect(line.customer_title).toBe(
+      "KosherBoeries Classic Beef Boerewors (6x4 oz)"
+    )
+    expect(line.title_snapshot).toContain(
+      "South African Beef Grilling Sausages"
+    )
   })
 
   it("repairs untouched fixed-price lines that were defaulted to ordered quantity", async () => {
@@ -210,6 +259,79 @@ describe("catch-weight finalization helpers", () => {
     expect(detail.lines[0].actual_piece_count).toBe(0)
     expect(db.tables.gp_order_finalization_line[0].actual_quantity).toBe(0)
     expect(db.tables.gp_order_finalization_line[0].actual_piece_count).toBe(0)
+  })
+
+  it("repairs legacy customer titles from current catalog titles", async () => {
+    const legacyTitle =
+      "KosherBoeries Authentic South African Beef Grilling Sausages, NO Nitrates, CLASSIC, 6 pcs. ~24 oz."
+    const item = {
+      id: "item_legacy_title_repair",
+      title: legacyTitle,
+      variant_id: "variant_legacy_title_repair",
+      variant_sku: "1-09-11-1",
+      quantity: 1,
+      unit_price: 27.98,
+      subtotal: 27.98,
+      total: 27.98,
+      variant: {
+        title: "Default",
+        metadata: {
+          qbd_list_id: "DA0000-1130097021",
+        },
+        product: {
+          title: "KosherBoeries Classic Beef Boerewors (6x4 oz)",
+        },
+      },
+      metadata: {
+        pricing_mode: "fixed",
+      },
+    }
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_legacy_title_repair" },
+      {
+        ...item,
+        variant: undefined,
+      },
+      "gpfin_legacy_title_repair"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_legacy_title_repair",
+          order_id: "order_legacy_title_repair",
+          status: "pending_pick",
+          estimated_order_total: 27.98,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          ...line,
+          customer_title: legacyTitle,
+          title_snapshot: legacyTitle,
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const detail = await ensureFinalizationForOrder(db, {
+      id: "order_legacy_title_repair",
+      total: 27.98,
+      item_subtotal: 27.98,
+      tax_total: 0,
+      shipping_total: 0,
+      discount_total: 0,
+      items: [item],
+    })
+
+    expect(detail.lines[0].customer_title).toBe(
+      "KosherBoeries Classic Beef Boerewors (6x4 oz)"
+    )
+    expect(db.tables.gp_order_finalization_line[0].customer_title).toBe(
+      "KosherBoeries Classic Beef Boerewors (6x4 oz)"
+    )
   })
 
   it("does not use ordered fixed-price quantity as fulfilled quantity in preview", async () => {

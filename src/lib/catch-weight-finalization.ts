@@ -54,7 +54,9 @@ export const CATCH_WEIGHT_ORDER_FIELDS = [
   "items.title",
   "items.subtitle",
   "items.product_id",
+  "items.product_title",
   "items.variant_id",
+  "items.variant_title",
   "items.variant_sku",
   "items.quantity",
   "items.unit_price",
@@ -79,8 +81,10 @@ export const CATCH_WEIGHT_ORDER_FIELDS = [
   "items.detail.raw_total",
   "items.variant.id",
   "items.variant.sku",
+  "items.variant.title",
   "items.variant.metadata",
   "items.variant.product.id",
+  "items.variant.product.title",
   "items.variant.product.metadata",
   "payment_collections.id",
   "payment_collections.payments.id",
@@ -463,6 +467,9 @@ const stripLegacyDescriptors = (value: string): string =>
     .replace(/\bKosher\s+for\s+Passover\b\.?/gi, " ")
     .replace(/\bKFP\b\.?/gi, " ")
     .replace(/\bNO\s+MSG\b\.?/gi, " ")
+    .replace(/\bNO\s+Nitr(?:ates|ites)\b\.?/gi, " ")
+    .replace(/\bNet\s+Wt\.?\s*[^,.]*[,.]?/gi, " ")
+    .replace(/\b\d+\s*(?:pcs?|pieces?)\.?\s*~?\s*\d+(?:\.\d+)?\s*oz\.?/gi, " ")
     .replace(/\bNOT\s+Gluten\s+Free\.?/gi, " ")
     .replace(/\bFresh\s+Beef\s+Choice\s+Per\s+LB\b\.?/gi, " ")
     .replace(/\bProduced\s+from\b[^,.]*[,.]?/gi, " ")
@@ -530,6 +537,9 @@ const looksLikeAccountingTitle = (value: string | null): boolean => {
     /\bkosher\s+for\s+passover\b/.test(title) ||
     /\bnot kosher for passover\b/.test(title) ||
     /\bno\s+msg\b/.test(title) ||
+    /\bno\s+nitr(?:ates|ites)\b/.test(title) ||
+    /\bnet\s+wt\b/.test(title) ||
+    /\b\d+\s*(?:pcs?|pieces?)\b/.test(title) ||
     /\bnot\s+gluten\s+free\b/.test(title) ||
     /\bamerican\s+angus\b/.test(title) ||
     /\bproduced\s+from\b/.test(title) ||
@@ -1160,6 +1170,8 @@ const customerTitleRepairPatch = (
       currentCustomerTitle === currentTitleSnapshot ||
       currentCustomerTitle === nextTitleSnapshot ||
       looksLikeAccountingTitle(currentCustomerTitle) ||
+      looksLikeAccountingTitle(currentTitleSnapshot) ||
+      cleanLegacyCustomerTitle(currentTitleSnapshot) !== currentTitleSnapshot ||
       cleanLegacyCustomerTitle(currentCustomerTitle) !== currentCustomerTitle)
   ) {
     patch.customer_title = nextCustomerTitle
