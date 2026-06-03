@@ -12,6 +12,7 @@ import {
   orderPlacedFinalizationMetadata,
   prepareFinalizationLinesForPacking,
   previewFinalization,
+  unclaimFinalizationPick,
   updateFinalizationLine,
   updateFinalizationPackages,
 } from "../catch-weight-finalization"
@@ -430,6 +431,82 @@ describe("catch-weight finalization helpers", () => {
     expect(db.tables.gp_order_finalization_line[0].short_reason).toBe(
       "out_of_stock"
     )
+  })
+
+  it("unclaims a picked order without wiping picked line work", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_unclaim_pick" },
+      {
+        id: "item_unclaim_pick",
+        title: "Chicken Soup",
+        variant_id: "variant_soup",
+        variant_sku: "10-01-11-0",
+        quantity: 2,
+        unit_price: 12,
+        subtotal: 24,
+        total: 24,
+        metadata: {
+          pricing_mode: "fixed",
+          qbd_list_id: "QBD-SOUP",
+        },
+      },
+      "gpfin_unclaim_pick"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_unclaim_pick",
+          order_id: "order_unclaim_pick",
+          status: "picking",
+          started_at: new Date("2026-06-03T14:00:00.000Z"),
+          started_by: "staff_original",
+          metadata: {},
+          estimated_order_total: 24,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          ...line,
+          actual_quantity: 1,
+          actual_piece_count: 1,
+          status: "ready",
+          short_reason: "out_of_stock",
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const detail = await unclaimFinalizationPick(
+      db,
+      {
+        id: "order_unclaim_pick",
+        total: 24,
+        item_subtotal: 24,
+        tax_total: 0,
+        shipping_total: 0,
+        discount_total: 0,
+        items: [],
+      },
+      "staff_next",
+      "Switching picker"
+    )
+
+    expect(detail.finalization.status).toBe("pending_pick")
+    expect(detail.finalization.started_at).toBeNull()
+    expect(detail.finalization.started_by).toBeNull()
+    expect(detail.finalization.metadata).toMatchObject({
+      pick_unclaimed_by: "staff_next",
+      pick_unclaimed_reason: "Switching picker",
+    })
+    expect(db.tables.gp_order_finalization_line[0]).toMatchObject({
+      actual_quantity: 1,
+      actual_piece_count: 1,
+      status: "ready",
+      short_reason: "out_of_stock",
+    })
   })
 
   it("snapshots picked quantity and resets packer confirmation when packing starts", async () => {

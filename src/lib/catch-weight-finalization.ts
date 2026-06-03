@@ -1415,6 +1415,47 @@ export async function markFinalizationReadyForPacking(
   }
 }
 
+export async function unclaimFinalizationPick(
+  db: CatchWeightDb,
+  order: Record<string, any>,
+  actorId?: string | null,
+  reason?: string | null
+) {
+  const detail = await ensureFinalizationForOrder(db, order)
+
+  if (detail.finalization.status !== FINALIZATION_PICKING) {
+    throw new Error("Only a claimed pick can be unclaimed.")
+  }
+
+  const metadata = {
+    ...metadataObject(detail.finalization.metadata),
+    pick_unclaimed_at: new Date().toISOString(),
+    pick_unclaimed_by: actorId || null,
+    pick_unclaimed_reason: cleanText(reason) || null,
+  }
+
+  await db("gp_order_finalization")
+    .where({ id: detail.finalization.id })
+    .update({
+      status: FINALIZATION_PENDING_PICK,
+      started_at: null,
+      started_by: null,
+      metadata,
+      updated_at: new Date(),
+    })
+
+  return {
+    ...detail,
+    finalization: {
+      ...detail.finalization,
+      status: FINALIZATION_PENDING_PICK,
+      started_at: null,
+      started_by: null,
+      metadata,
+    },
+  }
+}
+
 export async function returnFinalizationToPicking(
   db: CatchWeightDb,
   order: Record<string, any>,
