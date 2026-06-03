@@ -17,6 +17,8 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     order,
     finalization: detail.finalization,
     lines: detail.lines,
+    package_capture_required: detail.package_capture_required,
+    packages: detail.packages,
     payment_setup: detail.payment_setup,
     charge_attempts: detail.charge_attempts,
     errors: detail.errors,
