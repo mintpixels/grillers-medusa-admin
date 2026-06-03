@@ -522,6 +522,59 @@ describe("catch-weight finalization helpers", () => {
     expect(preview.totals.final_order_total).toBeNull()
   })
 
+  it("does not surface packing-only weight errors while picking is still open", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_open_pick" },
+      {
+        id: "item_ground_beef_pick",
+        title: "Ground Beef 85/15 - 1 lb Pack $10.69/lb.",
+        variant_id: "variant_ground_beef_pick",
+        variant_sku: "1-00-12-1",
+        quantity: 1,
+        unit_price: 10.69,
+        subtotal: 10.69,
+        total: 10.69,
+        metadata: {
+          qbd_list_id: "QBD-GROUND-BEEF-PICK",
+        },
+      },
+      "gpfin_open_pick"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_open_pick",
+          order_id: "order_open_pick",
+          status: "pending_pick",
+          estimated_order_total: 10.69,
+          metadata: {},
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [{ ...line, deleted_at: null }],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const preview = await previewFinalization(
+      db,
+      {
+        id: "order_open_pick",
+        total: 10.69,
+        item_subtotal: 10.69,
+        tax_total: 0,
+        shipping_total: 0,
+        discount_total: 0,
+        items: [],
+      },
+      { persist: false }
+    )
+
+    expect(preview.errors).toEqual([])
+    expect(preview.lines[0].errors).toEqual([])
+    expect(preview.totals.final_order_total).toBeNull()
+  })
+
   it("does not double-count free-shipping discounts in final totals", async () => {
     const line = buildFinalizationLineSnapshot(
       { id: "order_ups" },

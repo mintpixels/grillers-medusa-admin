@@ -1771,6 +1771,23 @@ const calculateLine = (line: Record<string, any>) => {
   }
 }
 
+const packingValidationStatuses = new Set([
+  FINALIZATION_PACKING,
+  FINALIZATION_PACKED_PENDING_REVIEW,
+  FINALIZATION_PACKED_PENDING_CHARGE,
+  FINALIZATION_CHARGE_ATTEMPTING,
+  FINALIZATION_CHARGE_FAILED_HOLD,
+  FINALIZATION_CHARGED_READY_TO_SHIP,
+  FINALIZATION_RELEASED_TO_FULFILLMENT,
+])
+
+const shouldSurfacePackingValidation = (
+  finalization: Record<string, any>,
+  options: { persist?: boolean }
+) =>
+  Boolean(options.persist) ||
+  packingValidationStatuses.has(finalization.status || "")
+
 export async function previewFinalization(
   db: CatchWeightDb,
   order: Record<string, any>,
@@ -1779,19 +1796,29 @@ export async function previewFinalization(
   const detail = await getFinalizationDetail(db, order)
   const breakdown = orderBreakdown(order)
   const calculatedLines = detail.lines.map(calculateLine)
-  const lineErrors = calculatedLines.flatMap((line) =>
-    line.errors.map((message) => ({
-      line_item_id: line.line.line_item_id,
-      message,
-    }))
+  const surfacePackingValidation = shouldSurfacePackingValidation(
+    detail.finalization,
+    options
   )
-  const lineWarnings = calculatedLines.flatMap((line) =>
-    line.warnings.map((message) => ({
-      line_item_id: line.line.line_item_id,
-      message,
-    }))
-  )
-  const workflowErrors = packageCaptureErrors(order, detail.finalization)
+  const lineErrors = surfacePackingValidation
+    ? calculatedLines.flatMap((line) =>
+        line.errors.map((message) => ({
+          line_item_id: line.line.line_item_id,
+          message,
+        }))
+      )
+    : []
+  const lineWarnings = surfacePackingValidation
+    ? calculatedLines.flatMap((line) =>
+        line.warnings.map((message) => ({
+          line_item_id: line.line.line_item_id,
+          message,
+        }))
+      )
+    : []
+  const workflowErrors = surfacePackingValidation
+    ? packageCaptureErrors(order, detail.finalization)
+    : []
   const errors = [...lineErrors, ...workflowErrors]
   const totalsComplete =
     errors.length === 0 &&
@@ -1903,8 +1930,8 @@ export async function previewFinalization(
       final_line_tax_total: calculated.final_line_tax_total,
       final_line_total: calculated.final_line_total,
       delta_line_total: calculated.delta_line_total,
-      errors: calculated.errors,
-      warnings: calculated.warnings,
+      errors: surfacePackingValidation ? calculated.errors : [],
+      warnings: surfacePackingValidation ? calculated.warnings : [],
     })),
     package_capture_required: orderRequiresPackageCapture(order),
     packages: finalizationPackages(detail.finalization),
