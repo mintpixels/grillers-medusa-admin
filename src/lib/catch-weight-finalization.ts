@@ -15,6 +15,7 @@ export const FINALIZATION_CHARGE_FAILED_HOLD = "charge_failed_hold"
 export const FINALIZATION_CHARGED_READY_TO_SHIP = "charged_ready_to_ship"
 export const FINALIZATION_RELEASED_TO_FULFILLMENT = "released_to_fulfillment"
 export const FINALIZATION_LINE_NEEDS_PICK = "needs_pick"
+export const FINALIZATION_SHORTAGE_OUT_OF_STOCK = "out_of_stock"
 
 export const CATCH_WEIGHT_ORDER_FIELDS = [
   "id",
@@ -1418,6 +1419,44 @@ export async function markFinalizationReadyForPacking(
   }
 }
 
+export async function returnFinalizationToPicking(
+  db: CatchWeightDb,
+  order: Record<string, any>,
+  actorId?: string | null,
+  reason?: string | null
+) {
+  const detail = await ensureFinalizationForOrder(db, order)
+  const metadata = {
+    ...metadataObject(detail.finalization.metadata),
+    returned_to_picking_at: new Date().toISOString(),
+    returned_to_picking_by: actorId || null,
+    returned_to_picking_reason: cleanText(reason) || null,
+  }
+
+  await db("gp_order_finalization")
+    .where({ id: detail.finalization.id })
+    .update({
+      status: FINALIZATION_PICKING,
+      packed_at: null,
+      packed_by: null,
+      reviewed_at: null,
+      reviewed_by: null,
+      metadata,
+      updated_at: new Date(),
+    })
+
+  return {
+    ...detail,
+    finalization: {
+      ...detail.finalization,
+      status: FINALIZATION_PICKING,
+      packed_at: null,
+      packed_by: null,
+      metadata,
+    },
+  }
+}
+
 const normalizedLinePatch = (body: FinalizationLinePatch) => {
   const patch: Record<string, any> = {}
   const metadataPatch = metadataObject(body.metadata)
@@ -1477,6 +1516,146 @@ const normalizedLinePatch = (body: FinalizationLinePatch) => {
   }
 
   return patch
+}
+
+const lineActualQuantity = (line: Record<string, any>) =>
+  numberOrZero(line.actual_quantity) || unitWeightsFromLine(line).length
+
+const pickedQuantityFromLine = (line: Record<string, any>) => {
+  const metadata = metadataObject(line.metadata)
+  return (
+    numberOrZero(metadata.picked_quantity) ||
+    numberOrZero(line.actual_quantity) ||
+    unitWeightsFromLine(line).length
+  )
+}
+
+const packingLineStatusForReset = (line: Record<string, any>) => {
+  if (line.status === "substituted") return "substituted"
+  return line.pricing_mode === "per_lb" ? "needs_weight" : FINALIZATION_LINE_NEEDS_PICK
+}
+
+export async function prepareFinalizationLinesForPacking(
+  db: CatchWeightDb,
+  lines: Record<string, any>[],
+  actorId?: string | null
+) {
+  const now = new Date()
+  const prepared = await Promise.all(
+    (lines || []).map(async (line) => {
+      if (line.status === "removed") return line
+
+      const metadata = metadataObject(line.metadata)
+      const lineHasAlreadyBeenReset =
+        metadata.packing_confirmation_started_at &&
+        lineActualQuantity(line) <= 0 &&
+        !unitWeightsFromLine(line).length
+
+      if (lineHasAlreadyBeenReset) return line
+
+      const pickedQuantity = lineActualQuantity(line)
+      const pickedPieceCount =
+        numberOrZero(line.actual_piece_count) || pickedQuantity
+      const pickedWeightTotal = nullableNumber(line.actual_weight_total)
+      const nextMetadata = {
+        ...metadata,
+        picked_quantity: pickedQuantity,
+        picked_piece_count: pickedPieceCount,
+        picked_weight_total: pickedWeightTotal,
+        picked_status: line.status || null,
+        picked_short_reason: line.short_reason || null,
+        actual_unit_weights_lb: [],
+        packing_confirmation_started_at: now.toISOString(),
+        packing_confirmation_started_by: actorId || null,
+      }
+      const patch = {
+        actual_quantity: 0,
+        actual_piece_count: 0,
+        actual_weight_each: null,
+        actual_weight_total: null,
+        final_line_subtotal: null,
+        final_line_total: null,
+        delta_line_total: null,
+        status: packingLineStatusForReset(line),
+        metadata: nextMetadata,
+        updated_at: now,
+      }
+
+      await db("gp_order_finalization_line").where({ id: line.id }).update(patch)
+      return { ...line, ...patch }
+    })
+  )
+
+  return prepared
+}
+
+const applyShortageReasonPatch = (
+  line: Record<string, any>,
+  patch: Record<string, any>
+) => {
+  const orderedQuantity = numberOrZero(line.ordered_quantity)
+  if (orderedQuantity <= 0) return patch
+  if (
+    patch.status === "substituted" ||
+    line.status === "substituted" ||
+    patch.replacement_variant_id ||
+    line.replacement_variant_id
+  ) {
+    return patch
+  }
+
+  const nextLine: Record<string, any> = {
+    ...line,
+    ...patch,
+    metadata: patch.metadata
+      ? {
+          ...metadataObject(line.metadata),
+          ...metadataObject(patch.metadata),
+        }
+      : line.metadata,
+  }
+  const actualQuantity = lineActualQuantity(nextLine)
+  const pickedQuantity = pickedQuantityFromLine(nextLine)
+  if (
+    metadataObject(nextLine.metadata).packing_phase &&
+    pickedQuantity > 0 &&
+    actualQuantity < pickedQuantity &&
+    patch.status !== "removed"
+  ) {
+    return {
+      ...patch,
+      status:
+        nextLine.pricing_mode === "per_lb"
+          ? "needs_weight"
+          : FINALIZATION_LINE_NEEDS_PICK,
+    }
+  }
+  const hasShortage = actualQuantity >= 0 && actualQuantity < orderedQuantity
+
+  if (!hasShortage) {
+    if (
+      (patch.short_reason === undefined &&
+        line.short_reason === FINALIZATION_SHORTAGE_OUT_OF_STOCK) ||
+      patch.short_reason === FINALIZATION_SHORTAGE_OUT_OF_STOCK
+    ) {
+      return { ...patch, short_reason: null }
+    }
+    return patch
+  }
+
+  return {
+    ...patch,
+    status:
+      actualQuantity > 0
+        ? patch.status && patch.status !== FINALIZATION_LINE_NEEDS_PICK
+          ? patch.status
+          : "ready"
+        : "removed",
+    short_reason:
+      patch.short_reason ||
+      line.short_reason ||
+      FINALIZATION_SHORTAGE_OUT_OF_STOCK,
+  }
 }
 
 export async function addFinalizationLine(
@@ -1593,7 +1772,7 @@ export async function updateFinalizationLine(
   lineId: string,
   body: FinalizationLinePatch
 ) {
-  const patch: Record<string, any> = {
+  let patch: Record<string, any> = {
     ...normalizedLinePatch(body),
     updated_at: new Date(),
   }
@@ -1612,6 +1791,12 @@ export async function updateFinalizationLine(
       ...metadataObject(line.metadata),
       ...metadataObject(patch.metadata),
     }
+  }
+  patch = applyShortageReasonPatch(line, patch)
+  if (patch.metadata && "packing_phase" in patch.metadata) {
+    const nextMetadata = { ...metadataObject(patch.metadata) }
+    delete nextMetadata.packing_phase
+    patch.metadata = nextMetadata
   }
 
   await db("gp_order_finalization_line").where({ id: line.id }).update(patch)
@@ -1651,9 +1836,10 @@ const calculateLine = (line: Record<string, any>) => {
   const unitWeights = unitWeightsFromLine(line)
   const actualQuantity =
     numberOrZero(line.actual_quantity) || unitWeights.length
+  const pickedQuantity = pickedQuantityFromLine(line)
   const expectedUnitWeights =
-    pricingMode === "per_lb" && actualQuantity > 0
-      ? Math.ceil(actualQuantity)
+    pricingMode === "per_lb" && Math.max(actualQuantity, pickedQuantity) > 0
+      ? Math.ceil(Math.max(actualQuantity, pickedQuantity))
       : 0
   const missingEnteredUnitWeights =
     expectedUnitWeights > 0 &&
@@ -1699,7 +1885,7 @@ const calculateLine = (line: Record<string, any>) => {
         errors.push("Actual weight is required for per-lb items.")
       } else if (missingEnteredUnitWeights) {
         finalSubtotal = null
-        errors.push("Enter a weight for each fulfilled per-lb item.")
+        errors.push("Enter a weight for each picked per-lb item.")
       } else {
         finalSubtotal = roundMoney(actualWeightTotal * unitPrice)
       }
@@ -1722,7 +1908,7 @@ const calculateLine = (line: Record<string, any>) => {
       errors.push("Actual weight is required for per-lb items.")
     } else if (missingEnteredUnitWeights) {
       finalSubtotal = null
-      errors.push("Enter a weight for each fulfilled per-lb item.")
+      errors.push("Enter a weight for each picked per-lb item.")
     } else {
       finalSubtotal = roundMoney(actualWeightTotal * unitPrice)
     }

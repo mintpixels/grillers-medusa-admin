@@ -10,6 +10,7 @@ import {
   finalChargeOrderMetadata,
   fulfillmentGateAllowsShipment,
   orderPlacedFinalizationMetadata,
+  prepareFinalizationLinesForPacking,
   previewFinalization,
   updateFinalizationLine,
   updateFinalizationPackages,
@@ -327,6 +328,304 @@ describe("catch-weight finalization helpers", () => {
     expect(db.tables.gp_order_finalization_line).toHaveLength(1)
   })
 
+  it("marks a zero-fulfilled ordered line as out of stock", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_zero_shortage" },
+      {
+        id: "item_pies_zero_shortage",
+        title: "Chicken and Mushroom Pocket Pies",
+        variant_id: "variant_pies",
+        variant_sku: "10-08-11-1",
+        quantity: 1,
+        unit_price: 12,
+        subtotal: 12,
+        total: 12,
+        metadata: {
+          pricing_mode: "fixed",
+          qbd_list_id: "QBD-PIES",
+        },
+      },
+      "gpfin_zero_shortage"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_zero_shortage",
+          order_id: "order_zero_shortage",
+          status: "picking",
+          estimated_order_total: 12,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [{ ...line, deleted_at: null }],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const updated = await updateFinalizationLine(
+      db,
+      "order_zero_shortage",
+      line.line_item_id,
+      {
+        status: "needs_pick",
+        actual_quantity: 0,
+        actual_piece_count: 0,
+      }
+    )
+
+    expect(updated.status).toBe("removed")
+    expect(updated.short_reason).toBe("out_of_stock")
+    expect(db.tables.gp_order_finalization_line[0].status).toBe("removed")
+    expect(db.tables.gp_order_finalization_line[0].short_reason).toBe(
+      "out_of_stock"
+    )
+  })
+
+  it("adds an out-of-stock reason for partially fulfilled ordered lines", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_partial_shortage" },
+      {
+        id: "item_partial_shortage",
+        title: "Chicken Soup",
+        variant_id: "variant_soup",
+        variant_sku: "10-01-11-0",
+        quantity: 3,
+        unit_price: 12,
+        subtotal: 36,
+        total: 36,
+        metadata: {
+          pricing_mode: "fixed",
+          qbd_list_id: "QBD-SOUP",
+        },
+      },
+      "gpfin_partial_shortage"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_partial_shortage",
+          order_id: "order_partial_shortage",
+          status: "picking",
+          estimated_order_total: 36,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [{ ...line, deleted_at: null }],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const updated = await updateFinalizationLine(
+      db,
+      "order_partial_shortage",
+      line.line_item_id,
+      {
+        actual_quantity: 2,
+        actual_piece_count: 2,
+      }
+    )
+
+    expect(updated.status).toBe("ready")
+    expect(updated.short_reason).toBe("out_of_stock")
+    expect(db.tables.gp_order_finalization_line[0].short_reason).toBe(
+      "out_of_stock"
+    )
+  })
+
+  it("snapshots picked quantity and resets packer confirmation when packing starts", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_pack_reset" },
+      {
+        id: "item_ground_pack_reset",
+        title: "Ground Beef Extra Lean 90/10 - 1 lb Pack",
+        variant_id: "variant_ground_pack_reset",
+        variant_sku: "1-00-11-1",
+        quantity: 2,
+        unit_price: 21.38,
+        subtotal: 21.38,
+        total: 21.38,
+        metadata: {
+          pricing_mode: "per_lb",
+          qbd_list_id: "QBD-GROUND",
+          approximate_pack_weight: "1 lb",
+        },
+      },
+      "gpfin_pack_reset"
+    )
+    const pickedLine = {
+      ...line,
+      status: "ready",
+      actual_quantity: 2,
+      actual_piece_count: 2,
+      deleted_at: null,
+    }
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [],
+      gp_order_finalization_line: [pickedLine],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const [prepared] = await prepareFinalizationLinesForPacking(
+      db,
+      [pickedLine],
+      "staff_packer"
+    )
+
+    expect(prepared.actual_quantity).toBe(0)
+    expect(prepared.actual_piece_count).toBe(0)
+    expect(prepared.actual_weight_total).toBeNull()
+    expect(prepared.status).toBe("needs_weight")
+    expect(prepared.metadata).toMatchObject({
+      picked_quantity: 2,
+      picked_piece_count: 2,
+      picked_status: "ready",
+      packing_confirmation_started_by: "staff_packer",
+      actual_unit_weights_lb: [],
+    })
+    expect(db.tables.gp_order_finalization_line[0].metadata).toMatchObject({
+      picked_quantity: 2,
+      packing_confirmation_started_by: "staff_packer",
+    })
+  })
+
+  it("requires one packer-entered weight for each picked per-lb item", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_missing_packed_weight" },
+      {
+        id: "item_missing_packed_weight",
+        title: "Ground Beef Extra Lean 90/10 - 1 lb Pack",
+        variant_id: "variant_missing_packed_weight",
+        variant_sku: "1-00-11-1",
+        quantity: 2,
+        unit_price: 21.38,
+        subtotal: 21.38,
+        total: 21.38,
+        metadata: {
+          pricing_mode: "per_lb",
+          qbd_list_id: "QBD-GROUND",
+          approximate_pack_weight: "1 lb",
+        },
+      },
+      "gpfin_missing_packed_weight"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_missing_packed_weight",
+          order_id: "order_missing_packed_weight",
+          status: "packed_pending_review",
+          estimated_order_total: 21.38,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          ...line,
+          status: "ready",
+          actual_quantity: 1,
+          actual_piece_count: 1,
+          actual_weight_total: 1.1,
+          metadata: {
+            ...line.metadata,
+            picked_quantity: 2,
+            actual_unit_weights_lb: [1.1],
+          },
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const preview = await previewFinalization(
+      db,
+      {
+        id: "order_missing_packed_weight",
+        total: 21.38,
+        item_subtotal: 21.38,
+        tax_total: 0,
+        shipping_total: 0,
+        discount_total: 0,
+        items: [],
+      },
+      { persist: true }
+    )
+
+    expect(preview.errors).toContainEqual({
+      line_item_id: line.line_item_id,
+      message: "Enter a weight for each picked per-lb item.",
+    })
+    expect(preview.totals.final_order_total).toBeNull()
+  })
+
+  it("does not turn an untouched packer confirmation line into an out-of-stock removal", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_pack_autosave" },
+      {
+        id: "item_pack_autosave",
+        title: "Ground Beef Extra Lean 90/10 - 1 lb Pack",
+        variant_id: "variant_pack_autosave",
+        variant_sku: "1-00-11-1",
+        quantity: 2,
+        unit_price: 21.38,
+        subtotal: 21.38,
+        total: 21.38,
+        metadata: {
+          pricing_mode: "per_lb",
+          qbd_list_id: "QBD-GROUND",
+          approximate_pack_weight: "1 lb",
+        },
+      },
+      "gpfin_pack_autosave"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_pack_autosave",
+          order_id: "order_pack_autosave",
+          status: "packing",
+          estimated_order_total: 21.38,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          ...line,
+          status: "needs_weight",
+          actual_quantity: 0,
+          actual_piece_count: 0,
+          metadata: {
+            ...line.metadata,
+            picked_quantity: 2,
+            packing_confirmation_started_at: "2026-06-02T12:00:00.000Z",
+          },
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const updated = await updateFinalizationLine(
+      db,
+      "order_pack_autosave",
+      line.line_item_id,
+      {
+        actual_quantity: 0,
+        actual_piece_count: 0,
+        status: "needs_weight",
+        metadata: { packing_phase: true },
+      }
+    )
+
+    expect(updated.status).toBe("needs_weight")
+    expect(updated.short_reason).toBeUndefined()
+    expect(db.tables.gp_order_finalization_line[0].status).toBe("needs_weight")
+    expect(db.tables.gp_order_finalization_line[0].short_reason).toBeUndefined()
+    expect(db.tables.gp_order_finalization_line[0].metadata.packing_phase).toBeUndefined()
+  })
+
   it("uses the true per-pound rate for final catch-weight math", async () => {
     const line = buildFinalizationLineSnapshot(
       { id: "order_123" },
@@ -513,7 +812,7 @@ describe("catch-weight finalization helpers", () => {
     expect(preview.errors).toEqual([
       {
         line_item_id: "item_ground_beef",
-        message: "Enter a weight for each fulfilled per-lb item.",
+        message: "Enter a weight for each picked per-lb item.",
       },
     ])
     expect(previewLine.actual_quantity).toBe(2)

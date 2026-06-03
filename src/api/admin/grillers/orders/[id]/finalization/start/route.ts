@@ -7,6 +7,7 @@ import {
   appendStaffAudit,
   ensureFinalizationForOrder,
   metadataObject,
+  prepareFinalizationLinesForPacking,
 } from "../../../../../../../lib/catch-weight-finalization"
 import {
   jsonError,
@@ -49,6 +50,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     )
   }
 
+  const lines =
+    phase === "pack"
+      ? await prepareFinalizationLinesForPacking(db, detail.lines, actor)
+      : detail.lines
+
   await db("gp_order_finalization")
     .where({ id: detail.finalization.id })
     .update({
@@ -89,6 +95,6 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       packed_by:
         phase === "pack" ? detail.finalization.packed_by || actor : null,
     },
-    lines: detail.lines,
+    lines,
   })
 }
