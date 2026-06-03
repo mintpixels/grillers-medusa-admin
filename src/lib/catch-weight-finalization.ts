@@ -276,7 +276,7 @@ const normalizeFinalizationPackages = (
       id: String((pkg as Record<string, any>).id || id("gpfinpkg")),
       package_type: String(pkg.package_type || "").trim(),
       shipper_qbd_list_id: String(pkg.shipper_qbd_list_id || "").trim() || null,
-      count: positiveNumber(pkg.count),
+      count: 1,
       packed_weight_lb: positiveNumber(pkg.packed_weight_lb),
       dry_ice_lb: nullableNumber(pkg.dry_ice_lb),
       note: String(pkg.note || "").trim() || null,
@@ -285,7 +285,6 @@ const normalizeFinalizationPackages = (
       (pkg) =>
         pkg.package_type ||
         pkg.shipper_qbd_list_id ||
-        pkg.count !== null ||
         pkg.packed_weight_lb !== null ||
         pkg.dry_ice_lb !== null ||
         pkg.note
@@ -303,7 +302,7 @@ export const packageCaptureErrors = (
     return [
       {
         message:
-          "Shipping orders need package size, count, and packed weight before charging.",
+          "Add at least one box or cooler with a package type and full packed weight.",
       },
     ]
   }
@@ -312,9 +311,6 @@ export const packageCaptureErrors = (
     const errors: Array<{ message: string }> = []
     if (!String(pkg.package_type || "").trim()) {
       errors.push({ message: `Package ${index + 1} needs a size or type.` })
-    }
-    if (!positiveNumber(pkg.count)) {
-      errors.push({ message: `Package ${index + 1} needs a count.` })
     }
     if (!positiveNumber(pkg.packed_weight_lb)) {
       errors.push({ message: `Package ${index + 1} needs packed weight.` })

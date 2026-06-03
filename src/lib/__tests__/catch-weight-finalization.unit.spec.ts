@@ -1318,7 +1318,7 @@ describe("catch-weight finalization helpers", () => {
     expect(blocked.errors).toEqual([
       {
         message:
-          "Shipping orders need package size, count, and packed weight before charging.",
+          "Add at least one box or cooler with a package type and full packed weight.",
       },
     ])
     expect(blocked.totals.final_order_total).toBeNull()
@@ -1330,7 +1330,6 @@ describe("catch-weight finalization helpers", () => {
         {
           package_type: "Shipper-345-Large",
           shipper_qbd_list_id: "8000085C-1415899425",
-          count: 1,
           packed_weight_lb: 42,
           dry_ice_lb: 10,
         },
