@@ -1180,6 +1180,117 @@ const customerTitleRepairPatch = (
   return patch
 }
 
+const isPrePickOrderEditSyncStatus = (status?: string | null) => {
+  const normalized = String(status || FINALIZATION_PENDING_PICK).toLowerCase()
+  return (
+    normalized === FINALIZATION_PENDING_PICK ||
+    normalized === FINALIZATION_PENDING_PACK
+  )
+}
+
+const valuesDiffer = (current: unknown, next: unknown) => {
+  const currentNumber = nullableNumber(current)
+  const nextNumber = nullableNumber(next)
+  if (currentNumber !== null || nextNumber !== null) {
+    return currentNumber !== nextNumber
+  }
+  return String(current ?? "") !== String(next ?? "")
+}
+
+const prePickOrderEditRepairPatch = (
+  existing: Record<string, any>,
+  snapshot: Record<string, any>
+) => {
+  const basePatch = existingLineRepairPatch(existing, snapshot)
+  const snapshotFields = [
+    "product_id",
+    "variant_id",
+    "sku",
+    "qbd_list_id",
+    "title_snapshot",
+    "customer_title",
+    "pricing_mode",
+    "unit_price",
+    "estimated_unit_price",
+    "estimated_line_total",
+    "ordered_quantity",
+    "estimated_weight_each",
+    "estimated_weight_total",
+    "actual_unit_price",
+  ]
+  const orderSnapshotChanged = snapshotFields.some((field) =>
+    valuesDiffer(existing[field], snapshot[field])
+  )
+
+  if (!orderSnapshotChanged) return basePatch
+
+  const patch: Record<string, any> = { ...basePatch }
+  snapshotFields.forEach((field) => {
+    patch[field] = snapshot[field] ?? null
+  })
+  patch.actual_quantity = 0
+  patch.actual_piece_count = 0
+  patch.actual_weight_total = null
+  patch.final_line_subtotal = null
+  patch.final_line_total = null
+  patch.delta_line_total = null
+  patch.status = FINALIZATION_LINE_NEEDS_PICK
+  patch.replacement_variant_id = null
+  patch.replacement_qbd_list_id = null
+  patch.replacement_reason = null
+  patch.short_reason = null
+  patch.exception_reason = null
+
+  const existingMetadata = metadataObject(existing.metadata)
+  const snapshotMetadata = metadataObject(snapshot.metadata)
+  patch.metadata = {
+    ...existingMetadata,
+    ...snapshotMetadata,
+    source_line_metadata: {
+      ...metadataObject(existingMetadata.source_line_metadata),
+      ...metadataObject(snapshotMetadata.source_line_metadata),
+    },
+    order_edit_synced_at: new Date().toISOString(),
+    previous_ordered_quantity: existing.ordered_quantity,
+  }
+  patch.updated_at = new Date()
+  return patch
+}
+
+const removedByPrePickOrderEditPatch = (line: Record<string, any>) => {
+  if (
+    line.status === "removed" &&
+    numberOrZero(line.ordered_quantity) === 0 &&
+    numberOrZero(line.actual_quantity) === 0 &&
+    line.short_reason === "staff_order_edit_removed"
+  ) {
+    return {}
+  }
+
+  return {
+    ordered_quantity: 0,
+    actual_quantity: 0,
+    actual_piece_count: 0,
+    actual_weight_total: null,
+    final_line_subtotal: null,
+    final_line_total: null,
+    delta_line_total: null,
+    status: "removed",
+    replacement_variant_id: null,
+    replacement_qbd_list_id: null,
+    replacement_reason: null,
+    short_reason: "staff_order_edit_removed",
+    exception_reason: "Removed from the order before picking started.",
+    metadata: {
+      ...metadataObject(line.metadata),
+      removed_by_order_edit: true,
+      order_edit_synced_at: new Date().toISOString(),
+      previous_ordered_quantity: line.ordered_quantity,
+    },
+    updated_at: new Date(),
+  }
+}
+
 export async function ensurePaymentSetup(
   db: CatchWeightDb,
   input: {
@@ -1283,8 +1394,10 @@ export async function ensureFinalizationForOrder(
   const existingLineIds = new Set(
     (existingLines || []).map((line: Record<string, any>) => line.line_item_id)
   )
+  const orderItems = Array.isArray(order.items) ? order.items : []
+  const orderItemsCanRemoveMissingLines = orderItems.length > 0
   const itemsById = new Map(
-    (order.items || [])
+    orderItems
       .filter((item: Record<string, any>) => item?.id)
       .map((item: Record<string, any>) => [item.id, item])
   )
@@ -1296,13 +1409,37 @@ export async function ensureFinalizationForOrder(
     FINALIZATION_PACKING,
     FINALIZATION_PACKED_PENDING_REVIEW,
   ])
+  const canSyncPrePickOrderEdits = isPrePickOrderEditSyncStatus(
+    finalization.status
+  )
   const repairedLines = await Promise.all(
     (existingLines || []).map(async (line: Record<string, any>) => {
       const item = itemsById.get(line.line_item_id)
-      if (!item) return line
+      if (!item) {
+        if (!canSyncPrePickOrderEdits || !orderItemsCanRemoveMissingLines) {
+          return line
+        }
+        const patch = removedByPrePickOrderEditPatch(line)
+        if (!Object.keys(patch).length) return line
+        await db("gp_order_finalization_line")
+          .where({ id: line.id })
+          .update(patch)
+        return { ...line, ...patch }
+      }
+
+      if (canSyncPrePickOrderEdits && numberOrZero(item.quantity) <= 0) {
+        const patch = removedByPrePickOrderEditPatch(line)
+        if (!Object.keys(patch).length) return line
+        await db("gp_order_finalization_line")
+          .where({ id: line.id })
+          .update(patch)
+        return { ...line, ...patch }
+      }
 
       const snapshot = buildFinalizationLineSnapshot(order, item, finalization.id)
-      const patch = repairableStatuses.has(finalization.status)
+      const patch = canSyncPrePickOrderEdits
+        ? prePickOrderEditRepairPatch(line, snapshot)
+        : repairableStatuses.has(finalization.status)
         ? existingLineRepairPatch(line, snapshot)
         : customerTitleRepairPatch(line, snapshot)
       if (!Object.keys(patch).length) return line
@@ -1311,7 +1448,7 @@ export async function ensureFinalizationForOrder(
       return { ...line, ...patch }
     })
   )
-  const newLines = (order.items || [])
+  const newLines = orderItems
     .filter((item: Record<string, any>) => item?.id && !existingLineIds.has(item.id))
     .map((item: Record<string, any>) =>
       buildFinalizationLineSnapshot(order, item, finalization.id)
@@ -1501,6 +1638,42 @@ export async function returnFinalizationToPicking(
       status: FINALIZATION_PICKING,
       packed_at: null,
       packed_by: null,
+      metadata,
+    },
+  }
+}
+
+export async function returnFinalizationToPacking(
+  db: CatchWeightDb,
+  order: Record<string, any>,
+  actorId?: string | null,
+  reason?: string | null
+) {
+  const detail = await ensureFinalizationForOrder(db, order)
+  const metadata = {
+    ...metadataObject(detail.finalization.metadata),
+    returned_to_packing_at: new Date().toISOString(),
+    returned_to_packing_by: actorId || null,
+    returned_to_packing_reason: cleanText(reason) || null,
+  }
+
+  await db("gp_order_finalization")
+    .where({ id: detail.finalization.id })
+    .update({
+      status: FINALIZATION_PACKED_PENDING_REVIEW,
+      reviewed_at: null,
+      reviewed_by: null,
+      metadata,
+      updated_at: new Date(),
+    })
+
+  return {
+    ...detail,
+    finalization: {
+      ...detail.finalization,
+      status: FINALIZATION_PACKED_PENDING_REVIEW,
+      reviewed_at: null,
+      reviewed_by: null,
       metadata,
     },
   }

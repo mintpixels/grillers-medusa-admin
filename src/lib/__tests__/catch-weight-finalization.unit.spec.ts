@@ -13,6 +13,7 @@ import {
   orderPlacedFinalizationMetadata,
   prepareFinalizationLinesForPacking,
   previewFinalization,
+  returnFinalizationToPacking,
   unclaimFinalizationPick,
   updateFinalizationLine,
   updateFinalizationPackages,
@@ -334,6 +335,240 @@ describe("catch-weight finalization helpers", () => {
     )
   })
 
+  it("syncs pre-pick order quantity edits into finalization lines", async () => {
+    const originalItem = {
+      id: "item_quantity_edit",
+      title: "Ground Beef Extra Lean 90/10 - 1 lb Pack",
+      variant_id: "variant_ground",
+      variant_sku: "1-00-11-1",
+      quantity: 1,
+      unit_price: 11.52,
+      subtotal: 11.52,
+      total: 11.52,
+      metadata: {
+        pricing_mode: "per_lb",
+        qbd_list_id: "QBD-GROUND",
+        approximate_pack_weight: "1 lb",
+      },
+    }
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_quantity_edit" },
+      originalItem,
+      "gpfin_quantity_edit"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_quantity_edit",
+          order_id: "order_quantity_edit",
+          status: "pending_pick",
+          estimated_order_total: 11.52,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          ...line,
+          actual_quantity: 1,
+          actual_piece_count: 1,
+          final_line_total: 11.52,
+          status: "ready",
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const detail = await ensureFinalizationForOrder(db, {
+      id: "order_quantity_edit",
+      total: 34.56,
+      item_subtotal: 34.56,
+      tax_total: 0,
+      shipping_total: 0,
+      discount_total: 0,
+      items: [{ ...originalItem, quantity: 3, subtotal: 34.56, total: 34.56 }],
+    })
+
+    expect(detail.lines[0].ordered_quantity).toBe(3)
+    expect(detail.lines[0].actual_quantity).toBe(0)
+    expect(detail.lines[0].actual_piece_count).toBe(0)
+    expect(detail.lines[0].final_line_total).toBeNull()
+    expect(detail.lines[0].status).toBe("needs_pick")
+    expect(detail.lines[0].metadata).toMatchObject({
+      previous_ordered_quantity: 1,
+    })
+  })
+
+  it("does not overwrite an actively claimed pick with order edits", async () => {
+    const originalItem = {
+      id: "item_claimed_quantity_edit",
+      title: "Chicken Soup",
+      variant_id: "variant_soup",
+      variant_sku: "10-01-11-0",
+      quantity: 1,
+      unit_price: 12,
+      subtotal: 12,
+      total: 12,
+      metadata: {
+        pricing_mode: "fixed",
+        qbd_list_id: "QBD-SOUP",
+      },
+    }
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_claimed_quantity_edit" },
+      originalItem,
+      "gpfin_claimed_quantity_edit"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_claimed_quantity_edit",
+          order_id: "order_claimed_quantity_edit",
+          status: "picking",
+          estimated_order_total: 12,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [{ ...line, deleted_at: null }],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const detail = await ensureFinalizationForOrder(db, {
+      id: "order_claimed_quantity_edit",
+      total: 24,
+      item_subtotal: 24,
+      tax_total: 0,
+      shipping_total: 0,
+      discount_total: 0,
+      items: [{ ...originalItem, quantity: 2, subtotal: 24, total: 24 }],
+    })
+
+    expect(detail.lines[0].ordered_quantity).toBe(1)
+    expect(db.tables.gp_order_finalization_line[0].ordered_quantity).toBe(1)
+  })
+
+  it("marks removed order items as removed only while pre-pick", async () => {
+    const item = {
+      id: "item_removed_before_pick",
+      title: "Chicken and Mushroom Pocket Pies",
+      variant_id: "variant_pies",
+      variant_sku: "10-08-11-1",
+      quantity: 2,
+      unit_price: 12,
+      subtotal: 24,
+      total: 24,
+      metadata: {
+        pricing_mode: "fixed",
+        qbd_list_id: "QBD-PIES",
+      },
+    }
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_removed_before_pick" },
+      item,
+      "gpfin_removed_before_pick"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_removed_before_pick",
+          order_id: "order_removed_before_pick",
+          status: "pending_pick",
+          estimated_order_total: 24,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [{ ...line, deleted_at: null }],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const detail = await ensureFinalizationForOrder(db, {
+      id: "order_removed_before_pick",
+      total: 12,
+      item_subtotal: 12,
+      tax_total: 0,
+      shipping_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "item_still_on_order",
+          title: "Chicken Soup",
+          variant_id: "variant_soup",
+          variant_sku: "10-01-11-0",
+          quantity: 1,
+          unit_price: 12,
+          subtotal: 12,
+          total: 12,
+          metadata: {
+            pricing_mode: "fixed",
+            qbd_list_id: "QBD-SOUP",
+          },
+        },
+      ],
+    })
+
+    expect(detail.lines[0].ordered_quantity).toBe(0)
+    expect(detail.lines[0].actual_quantity).toBe(0)
+    expect(detail.lines[0].status).toBe("removed")
+    expect(detail.lines[0].short_reason).toBe("staff_order_edit_removed")
+    expect(detail.lines[0].metadata).toMatchObject({
+      removed_by_order_edit: true,
+      previous_ordered_quantity: 2,
+    })
+  })
+
+  it("marks zero-quantity order items as removed while pre-pick", async () => {
+    const item = {
+      id: "item_zero_quantity_order_edit",
+      title: "Chicken Soup",
+      variant_id: "variant_soup",
+      variant_sku: "10-01-11-0",
+      quantity: 1,
+      unit_price: 12,
+      subtotal: 12,
+      total: 12,
+      metadata: {
+        pricing_mode: "fixed",
+        qbd_list_id: "QBD-SOUP",
+      },
+    }
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_zero_quantity_order_edit" },
+      item,
+      "gpfin_zero_quantity_order_edit"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_zero_quantity_order_edit",
+          order_id: "order_zero_quantity_order_edit",
+          status: "pending_pick",
+          estimated_order_total: 12,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [{ ...line, deleted_at: null }],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const detail = await ensureFinalizationForOrder(db, {
+      id: "order_zero_quantity_order_edit",
+      total: 0,
+      item_subtotal: 0,
+      tax_total: 0,
+      shipping_total: 0,
+      discount_total: 0,
+      items: [{ ...item, quantity: 0, subtotal: 0, total: 0 }],
+    })
+
+    expect(detail.lines[0].ordered_quantity).toBe(0)
+    expect(detail.lines[0].status).toBe("removed")
+    expect(detail.lines[0].short_reason).toBe("staff_order_edit_removed")
+  })
+
   it("does not use ordered fixed-price quantity as fulfilled quantity in preview", async () => {
     const line = buildFinalizationLineSnapshot(
       { id: "order_fixed_missing_actual" },
@@ -628,6 +863,103 @@ describe("catch-weight finalization helpers", () => {
       actual_piece_count: 1,
       status: "ready",
       short_reason: "out_of_stock",
+    })
+  })
+
+  it("returns a ready-to-charge order to packing review without resetting pack data", async () => {
+    const line = buildFinalizationLineSnapshot(
+      { id: "order_return_pack" },
+      {
+        id: "item_return_pack",
+        title: "Ribeye Roast",
+        variant_id: "variant_return_pack",
+        variant_sku: "1-03-11-4",
+        quantity: 1,
+        unit_price: 43.09,
+        subtotal: 43.09,
+        total: 43.09,
+        metadata: {
+          pricing_mode: "per_lb",
+          qbd_list_id: "QBD-RIBEYE",
+        },
+      },
+      "gpfin_return_pack"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_return_pack",
+          order_id: "order_return_pack",
+          status: FINALIZATION_PACKED_PENDING_CHARGE,
+          packed_at: new Date("2026-06-03T14:00:00.000Z"),
+          packed_by: "staff_pack",
+          reviewed_at: new Date("2026-06-03T14:30:00.000Z"),
+          reviewed_by: "staff_office",
+          metadata: {
+            packages: [
+              {
+                package_type: "Micro - 16x14x13 OD",
+                packed_weight_lb: 12,
+              },
+            ],
+          },
+          estimated_order_total: 43.09,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [
+        {
+          ...line,
+          actual_quantity: 1,
+          actual_piece_count: 1,
+          actual_weight_total: 1.2,
+          status: "ready",
+          deleted_at: null,
+        },
+      ],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const detail = await returnFinalizationToPacking(
+      db,
+      {
+        id: "order_return_pack",
+        total: 43.09,
+        item_subtotal: 43.09,
+        tax_total: 0,
+        shipping_total: 0,
+        discount_total: 0,
+        items: [],
+      },
+      "staff_office",
+      "Check the cooler count"
+    )
+
+    expect(detail.finalization.status).toBe(FINALIZATION_PACKED_PENDING_REVIEW)
+    expect(detail.finalization.reviewed_at).toBeNull()
+    expect(detail.finalization.reviewed_by).toBeNull()
+    expect(detail.finalization.metadata).toMatchObject({
+      returned_to_packing_by: "staff_office",
+      returned_to_packing_reason: "Check the cooler count",
+      packages: [
+        {
+          package_type: "Micro - 16x14x13 OD",
+          packed_weight_lb: 12,
+        },
+      ],
+    })
+    expect(db.tables.gp_order_finalization[0]).toMatchObject({
+      status: FINALIZATION_PACKED_PENDING_REVIEW,
+      reviewed_at: null,
+      reviewed_by: null,
+      packed_by: "staff_pack",
+    })
+    expect(db.tables.gp_order_finalization_line[0]).toMatchObject({
+      actual_quantity: 1,
+      actual_piece_count: 1,
+      actual_weight_total: 1.2,
+      status: "ready",
     })
   })
 
