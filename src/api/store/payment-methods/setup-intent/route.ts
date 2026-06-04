@@ -2,7 +2,7 @@ import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { Modules } from "@medusajs/framework/utils";
 import {
   STRIPE_PROVIDER_ID,
-  getAuthenticatedCustomer,
+  getPaymentContextCustomer,
   getOrCreateStripeAccountHolder,
   handleRouteError,
   jsonError,
@@ -10,7 +10,7 @@ import {
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   try {
-    const customer = await getAuthenticatedCustomer(req);
+    const { customer } = await getPaymentContextCustomer(req);
     if (!customer) {
       return jsonError(res, 401, "You must be signed in to add a card.");
     }
@@ -32,7 +32,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     const clientSecret = setupIntent?.data?.client_secret;
     if (!clientSecret) {
-      return jsonError(res, 500, "Could not start a card setup. Please try again.");
+      return jsonError(
+        res,
+        500,
+        "Could not start a card setup. Please try again.",
+      );
     }
 
     res.json({
@@ -40,6 +44,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       account_holder_id: accountHolder.id,
     });
   } catch (error) {
-    handleRouteError(req, res, error, "Could not start a card setup. Please try again.");
+    handleRouteError(
+      req,
+      res,
+      error,
+      "Could not start a card setup. Please try again.",
+    );
   }
 };

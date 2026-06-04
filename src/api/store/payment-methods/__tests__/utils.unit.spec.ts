@@ -1,26 +1,36 @@
-import { Modules } from "@medusajs/framework/utils"
+import { Modules } from "@medusajs/framework/utils";
 import {
   DEFAULT_PAYMENT_METHOD_METADATA_KEY,
+  STAFF_TARGET_CUSTOMER_ID_HEADER,
   STRIPE_PROVIDER_ID,
   assertPaymentMethodBelongsToCustomer,
+  getPaymentContextCustomer,
   getOrCreateStripeAccountHolder,
   getStripeAccountHolder,
   getStripeCustomerId,
   listStripePaymentMethods,
   setCustomerDefaultPaymentMethod,
-} from "../utils"
+} from "../utils";
 
-function makeReq(resolvers: Record<string, unknown>) {
+function makeReq(
+  resolvers: Record<string, unknown>,
+  options: {
+    actorId?: string;
+    headers?: Record<string, string>;
+  } = {},
+) {
   return {
+    auth_context: options.actorId ? { actor_id: options.actorId } : undefined,
+    headers: options.headers || {},
     scope: {
       resolve: jest.fn((key: string) => {
         if (!(key in resolvers)) {
-          throw new Error(`Unexpected resolver: ${key}`)
+          throw new Error(`Unexpected resolver: ${key}`);
         }
-        return resolvers[key]
+        return resolvers[key];
       }),
     },
-  } as any
+  } as any;
 }
 
 describe("payment-method route utils", () => {
@@ -29,28 +39,32 @@ describe("payment-method route utils", () => {
       id: "cus_local",
       account_holders: [
         { id: "ach_other", provider_id: "pp_other", external_id: "other" },
-        { id: "ach_stripe", provider_id: STRIPE_PROVIDER_ID, external_id: "cus_123" },
+        {
+          id: "ach_stripe",
+          provider_id: STRIPE_PROVIDER_ID,
+          external_id: "cus_123",
+        },
       ],
-    }
+    };
 
     expect(getStripeAccountHolder(customer as any)).toMatchObject({
       id: "ach_stripe",
       external_id: "cus_123",
-    })
-  })
+    });
+  });
 
   it("prefers provider data id over external id for Stripe customer id", () => {
     expect(
       getStripeCustomerId({
         external_id: "cus_external",
         data: { id: "cus_from_data" },
-      })
-    ).toBe("cus_from_data")
+      }),
+    ).toBe("cus_from_data");
 
     expect(getStripeCustomerId({ external_id: "cus_external" })).toBe(
-      "cus_external"
-    )
-  })
+      "cus_external",
+    );
+  });
 
   it("lists Stripe payment methods and marks the stored default", async () => {
     const paymentModule = {
@@ -58,20 +72,22 @@ describe("payment-method route utils", () => {
         { id: "pm_1", data: { card: { last4: "4242" } } },
         { id: "pm_2", data: { card: { last4: "1881" } } },
       ]),
-    }
-    const req = makeReq({ [Modules.PAYMENT]: paymentModule })
+    };
+    const req = makeReq({ [Modules.PAYMENT]: paymentModule });
     const accountHolder = {
       id: "ach_stripe",
       provider_id: STRIPE_PROVIDER_ID,
       data: { id: "cus_stripe" },
-    }
+    };
     const customer = {
       id: "cus_local",
       metadata: { [DEFAULT_PAYMENT_METHOD_METADATA_KEY]: "pm_2" },
       account_holders: [accountHolder],
-    }
+    };
 
-    await expect(listStripePaymentMethods(req, customer as any)).resolves.toEqual([
+    await expect(
+      listStripePaymentMethods(req, customer as any),
+    ).resolves.toEqual([
       {
         id: "pm_1",
         provider_id: STRIPE_PROVIDER_ID,
@@ -84,7 +100,7 @@ describe("payment-method route utils", () => {
         is_default: true,
         data: { card: { last4: "1881" } },
       },
-    ])
+    ]);
 
     expect(paymentModule.listPaymentMethods).toHaveBeenCalledWith({
       provider_id: STRIPE_PROVIDER_ID,
@@ -92,75 +108,85 @@ describe("payment-method route utils", () => {
         account_holder: accountHolder,
         customer,
       },
-    })
-  })
+    });
+  });
 
   it("checks payment method ownership from the authenticated customer's methods", async () => {
     const paymentModule = {
-      listPaymentMethods: jest.fn().mockResolvedValue([
-        { id: "pm_owner", data: {} },
-      ]),
-    }
-    const req = makeReq({ [Modules.PAYMENT]: paymentModule })
+      listPaymentMethods: jest
+        .fn()
+        .mockResolvedValue([{ id: "pm_owner", data: {} }]),
+    };
+    const req = makeReq({ [Modules.PAYMENT]: paymentModule });
     const customer = {
       id: "cus_local",
       metadata: {},
       account_holders: [
-        { id: "ach_stripe", provider_id: STRIPE_PROVIDER_ID, data: { id: "cus_stripe" } },
+        {
+          id: "ach_stripe",
+          provider_id: STRIPE_PROVIDER_ID,
+          data: { id: "cus_stripe" },
+        },
       ],
-    }
+    };
 
     await expect(
-      assertPaymentMethodBelongsToCustomer(req, customer as any, "pm_owner")
-    ).resolves.toBe(true)
+      assertPaymentMethodBelongsToCustomer(req, customer as any, "pm_owner"),
+    ).resolves.toBe(true);
     await expect(
-      assertPaymentMethodBelongsToCustomer(req, customer as any, "pm_other")
-    ).resolves.toBe(false)
-  })
+      assertPaymentMethodBelongsToCustomer(req, customer as any, "pm_other"),
+    ).resolves.toBe(false);
+  });
 
   it("updates and clears the default payment method metadata without dropping other metadata", async () => {
     const customerModule = {
       updateCustomers: jest.fn().mockResolvedValue(undefined),
-    }
-    const req = makeReq({ [Modules.CUSTOMER]: customerModule })
+    };
+    const req = makeReq({ [Modules.CUSTOMER]: customerModule });
     const customer = {
       id: "cus_local",
       metadata: {
         source: "test",
         [DEFAULT_PAYMENT_METHOD_METADATA_KEY]: "pm_old",
       },
-    }
+    };
 
-    await setCustomerDefaultPaymentMethod(req, customer as any, "pm_new")
-    expect(customerModule.updateCustomers).toHaveBeenLastCalledWith("cus_local", {
-      metadata: {
-        source: "test",
-        [DEFAULT_PAYMENT_METHOD_METADATA_KEY]: "pm_new",
+    await setCustomerDefaultPaymentMethod(req, customer as any, "pm_new");
+    expect(customerModule.updateCustomers).toHaveBeenLastCalledWith(
+      "cus_local",
+      {
+        metadata: {
+          source: "test",
+          [DEFAULT_PAYMENT_METHOD_METADATA_KEY]: "pm_new",
+        },
       },
-    })
+    );
 
-    await setCustomerDefaultPaymentMethod(req, customer as any)
-    expect(customerModule.updateCustomers).toHaveBeenLastCalledWith("cus_local", {
-      metadata: { source: "test" },
-    })
-  })
+    await setCustomerDefaultPaymentMethod(req, customer as any);
+    expect(customerModule.updateCustomers).toHaveBeenLastCalledWith(
+      "cus_local",
+      {
+        metadata: { source: "test" },
+      },
+    );
+  });
 
   it("creates and links a Stripe account holder when the customer does not have one", async () => {
     const accountHolder = {
       id: "ach_new",
       provider_id: STRIPE_PROVIDER_ID,
       data: { id: "cus_new" },
-    }
+    };
     const paymentModule = {
       createAccountHolder: jest.fn().mockResolvedValue(accountHolder),
-    }
+    };
     const link = {
       create: jest.fn().mockResolvedValue(undefined),
-    }
+    };
     const req = makeReq({
       [Modules.PAYMENT]: paymentModule,
       link,
-    })
+    });
     const customer = {
       id: "cus_local",
       email: "customer@example.com",
@@ -169,11 +195,11 @@ describe("payment-method route utils", () => {
       phone: "4045550100",
       company_name: null,
       account_holders: [],
-    }
+    };
 
     await expect(
-      getOrCreateStripeAccountHolder(req, customer as any)
-    ).resolves.toEqual(accountHolder)
+      getOrCreateStripeAccountHolder(req, customer as any),
+    ).resolves.toEqual(accountHolder);
 
     expect(paymentModule.createAccountHolder).toHaveBeenCalledWith({
       provider_id: STRIPE_PROVIDER_ID,
@@ -187,10 +213,103 @@ describe("payment-method route utils", () => {
           company_name: null,
         },
       },
-    })
+    });
     expect(link.create).toHaveBeenCalledWith({
       [Modules.CUSTOMER]: { customer_id: "cus_local" },
       [Modules.PAYMENT]: { account_holder_id: "ach_new" },
-    })
-  })
-})
+    });
+  });
+
+  it("resolves payment context to the authenticated customer by default", async () => {
+    const staffCustomer = {
+      id: "cus_staff",
+      email: "staff@example.com",
+      metadata: { gp_staff_role: "office" },
+    };
+    const query = {
+      graph: jest.fn().mockResolvedValue({ data: [staffCustomer] }),
+    };
+    const req = makeReq({ query }, { actorId: "cus_staff" });
+
+    await expect(getPaymentContextCustomer(req)).resolves.toEqual({
+      customer: staffCustomer,
+      staffCustomer: null,
+      staffTargetCustomerId: null,
+    });
+
+    expect(query.graph).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entity: "customer",
+        filters: { id: "cus_staff" },
+      }),
+    );
+  });
+
+  it("lets staff resolve payment context to the impersonated customer", async () => {
+    const staffCustomer = {
+      id: "cus_staff",
+      email: "staff@example.com",
+      metadata: { gp_staff_role: "office" },
+    };
+    const targetCustomer = {
+      id: "cus_target",
+      email: "meyer@example.com",
+      metadata: {},
+    };
+    const customers = {
+      cus_staff: staffCustomer,
+      cus_target: targetCustomer,
+    } as Record<string, unknown>;
+    const query = {
+      graph: jest.fn(({ filters }: any) => ({
+        data: customers[filters.id] ? [customers[filters.id]] : [],
+      })),
+    };
+    const req = makeReq(
+      { query },
+      {
+        actorId: "cus_staff",
+        headers: { [STAFF_TARGET_CUSTOMER_ID_HEADER]: "cus_target" },
+      },
+    );
+
+    await expect(getPaymentContextCustomer(req)).resolves.toEqual({
+      customer: targetCustomer,
+      staffCustomer,
+      staffTargetCustomerId: "cus_target",
+    });
+  });
+
+  it("blocks customer-context payment access for non-staff customers", async () => {
+    const normalCustomer = {
+      id: "cus_normal",
+      email: "normal@example.com",
+      metadata: {},
+    };
+    const targetCustomer = {
+      id: "cus_target",
+      email: "meyer@example.com",
+      metadata: {},
+    };
+    const customers = {
+      cus_normal: normalCustomer,
+      cus_target: targetCustomer,
+    } as Record<string, unknown>;
+    const query = {
+      graph: jest.fn(({ filters }: any) => ({
+        data: customers[filters.id] ? [customers[filters.id]] : [],
+      })),
+    };
+    const req = makeReq(
+      { query },
+      {
+        actorId: "cus_normal",
+        headers: { [STAFF_TARGET_CUSTOMER_ID_HEADER]: "cus_target" },
+      },
+    );
+
+    await expect(getPaymentContextCustomer(req)).rejects.toThrow(
+      "Staff access required",
+    );
+  });
+});

@@ -3,6 +3,7 @@ import { Modules } from "@medusajs/framework/utils";
 
 export const STRIPE_PROVIDER_ID = "pp_stripe_stripe";
 export const DEFAULT_PAYMENT_METHOD_METADATA_KEY = "default_payment_method_id";
+export const STAFF_TARGET_CUSTOMER_ID_HEADER = "x-gp-staff-target-customer-id";
 
 type StoreCustomerWithAccountHolders = {
   id: string;
@@ -20,10 +21,92 @@ type StoreCustomerWithAccountHolders = {
   }>;
 };
 
+const STAFF_TRUE_VALUES = new Set([
+  "1",
+  "true",
+  "yes",
+  "y",
+  "staff",
+  "admin",
+  "ops",
+  "operator",
+  "customer_service",
+]);
+
+const STAFF_ROLES = new Set([
+  "staff",
+  "office",
+  "picker",
+  "packer",
+  "manager",
+  "admin",
+  "ops",
+  "operator",
+  "customer_service",
+  "customer-service",
+  "phone_orders",
+  "phone-orders",
+  "super_admin",
+  "super-admin",
+  "owner",
+]);
+
+const BOOTSTRAP_SUPER_ADMIN_EMAILS = new Set([
+  "aviswerdlow@gmail.com",
+  "peter@grillerspride.com",
+]);
+
+function normalizedHeaderValue(req: MedusaRequest, name: string) {
+  const value = req.headers?.[name] || req.headers?.[name.toLowerCase()];
+  if (Array.isArray(value)) return String(value[0] || "").trim();
+  return String(value || "").trim();
+}
+
+function normalizedEmail(email: unknown) {
+  return String(email || "")
+    .trim()
+    .toLowerCase();
+}
+
+function truthyStaffValue(value: unknown) {
+  if (value === true) return true;
+  if (typeof value === "number") return value === 1;
+  if (typeof value !== "string") return false;
+  return STAFF_TRUE_VALUES.has(value.trim().toLowerCase());
+}
+
+function isStaffCustomer(customer: StoreCustomerWithAccountHolders | null) {
+  if (!customer) return false;
+  if (BOOTSTRAP_SUPER_ADMIN_EMAILS.has(normalizedEmail(customer.email))) {
+    return true;
+  }
+
+  const metadata = customer.metadata || {};
+  const role = String(
+    metadata.gp_staff_role ||
+      metadata.staff_role ||
+      metadata.role ||
+      metadata.account_role ||
+      "",
+  )
+    .trim()
+    .toLowerCase();
+
+  if (STAFF_ROLES.has(role)) return true;
+
+  return [
+    metadata.is_staff,
+    metadata.staff,
+    metadata.gp_staff,
+    metadata.staff_access,
+    metadata.phone_order_staff,
+  ].some(truthyStaffValue);
+}
+
 export function jsonError(
   res: { status: (code: number) => { json: (body: unknown) => void } },
   status: number,
-  message: string
+  message: string,
 ) {
   res.status(status).json({ message });
 }
@@ -32,7 +115,7 @@ export function handleRouteError(
   req: MedusaRequest,
   res: { status: (code: number) => { json: (body: unknown) => void } },
   error: unknown,
-  fallbackMessage: string
+  fallbackMessage: string,
 ) {
   const logger = req.scope.resolve("logger") as {
     error: (message: string) => void;
@@ -42,8 +125,7 @@ export function handleRouteError(
   jsonError(res, 500, fallbackMessage);
 }
 
-export async function getAuthenticatedCustomer(req: MedusaRequest) {
-  const customerId = (req as any).auth_context?.actor_id;
+async function getCustomerById(req: MedusaRequest, customerId: string) {
   if (!customerId) {
     return null;
   }
@@ -70,15 +152,54 @@ export async function getAuthenticatedCustomer(req: MedusaRequest) {
   return (data?.[0] || null) as StoreCustomerWithAccountHolders | null;
 }
 
-export function getStripeAccountHolder(customer: StoreCustomerWithAccountHolders) {
+export async function getAuthenticatedCustomer(req: MedusaRequest) {
+  return getCustomerById(req, (req as any).auth_context?.actor_id);
+}
+
+export async function getPaymentContextCustomer(req: MedusaRequest) {
+  const authenticatedCustomer = await getAuthenticatedCustomer(req);
+  const targetCustomerId = normalizedHeaderValue(
+    req,
+    STAFF_TARGET_CUSTOMER_ID_HEADER,
+  );
+
+  if (!targetCustomerId) {
+    return {
+      customer: authenticatedCustomer,
+      staffCustomer: null as StoreCustomerWithAccountHolders | null,
+      staffTargetCustomerId: null as string | null,
+    };
+  }
+
+  if (!authenticatedCustomer || !isStaffCustomer(authenticatedCustomer)) {
+    throw new Error(
+      "Staff access required for customer-context payment methods.",
+    );
+  }
+
+  const targetCustomer = await getCustomerById(req, targetCustomerId);
+  if (!targetCustomer) {
+    throw new Error("Customer context target could not be loaded.");
+  }
+
+  return {
+    customer: targetCustomer,
+    staffCustomer: authenticatedCustomer,
+    staffTargetCustomerId: targetCustomerId,
+  };
+}
+
+export function getStripeAccountHolder(
+  customer: StoreCustomerWithAccountHolders,
+) {
   return customer.account_holders?.find(
-    (holder) => holder.provider_id === STRIPE_PROVIDER_ID
+    (holder) => holder.provider_id === STRIPE_PROVIDER_ID,
   );
 }
 
 export async function getOrCreateStripeAccountHolder(
   req: MedusaRequest,
-  customer: StoreCustomerWithAccountHolders
+  customer: StoreCustomerWithAccountHolders,
 ) {
   const existing = getStripeAccountHolder(customer);
   if (existing) return existing;
@@ -115,7 +236,7 @@ export async function getOrCreateStripeAccountHolder(
 export async function listStripePaymentMethods(
   req: MedusaRequest,
   customer: StoreCustomerWithAccountHolders,
-  accountHolder = getStripeAccountHolder(customer)
+  accountHolder = getStripeAccountHolder(customer),
 ) {
   if (!accountHolder) return [];
 
@@ -142,16 +263,18 @@ export async function listStripePaymentMethods(
 export async function assertPaymentMethodBelongsToCustomer(
   req: MedusaRequest,
   customer: StoreCustomerWithAccountHolders,
-  paymentMethodId: string
+  paymentMethodId: string,
 ) {
   const methods = await listStripePaymentMethods(req, customer);
-  return methods.some((method: { id: string }) => method.id === paymentMethodId);
+  return methods.some(
+    (method: { id: string }) => method.id === paymentMethodId,
+  );
 }
 
 export async function setCustomerDefaultPaymentMethod(
   req: MedusaRequest,
   customer: StoreCustomerWithAccountHolders,
-  paymentMethodId?: string
+  paymentMethodId?: string,
 ) {
   const customerModule = req.scope.resolve(Modules.CUSTOMER) as any;
   const metadata = { ...(customer.metadata || {}) };
@@ -167,7 +290,7 @@ export async function setCustomerDefaultPaymentMethod(
 
 export async function stripeFormRequest<T>(
   path: string,
-  body: Record<string, string>
+  body: Record<string, string>,
 ): Promise<T> {
   const apiKey = process.env.STRIPE_API_KEY;
   if (!apiKey) {

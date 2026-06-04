@@ -1,7 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import {
   assertPaymentMethodBelongsToCustomer,
-  getAuthenticatedCustomer,
+  getPaymentContextCustomer,
   getStripeAccountHolder,
   getStripeCustomerId,
   handleRouteError,
@@ -12,9 +12,13 @@ import {
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   try {
-    const customer = await getAuthenticatedCustomer(req);
+    const { customer } = await getPaymentContextCustomer(req);
     if (!customer) {
-      return jsonError(res, 401, "You must be signed in to manage payment methods.");
+      return jsonError(
+        res,
+        401,
+        "You must be signed in to manage payment methods.",
+      );
     }
 
     const paymentMethodId = req.params.id;
@@ -25,14 +29,16 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     const belongsToCustomer = await assertPaymentMethodBelongsToCustomer(
       req,
       customer,
-      paymentMethodId
+      paymentMethodId,
     );
     if (!belongsToCustomer) {
       return jsonError(res, 404, "Payment method not found.");
     }
 
     const accountHolder = getStripeAccountHolder(customer);
-    const stripeCustomerId = accountHolder ? getStripeCustomerId(accountHolder) : null;
+    const stripeCustomerId = accountHolder
+      ? getStripeCustomerId(accountHolder)
+      : null;
     if (stripeCustomerId) {
       await stripeFormRequest(`/v1/customers/${stripeCustomerId}`, {
         "invoice_settings[default_payment_method]": paymentMethodId,

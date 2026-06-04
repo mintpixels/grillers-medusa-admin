@@ -1,6 +1,6 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import {
-  getAuthenticatedCustomer,
+  getPaymentContextCustomer,
   handleRouteError,
   jsonError,
   listStripePaymentMethods,
@@ -8,9 +8,13 @@ import {
 
 export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
   try {
-    const customer = await getAuthenticatedCustomer(req);
+    const { customer } = await getPaymentContextCustomer(req);
     if (!customer) {
-      return jsonError(res, 401, "You must be signed in to manage payment methods.");
+      return jsonError(
+        res,
+        401,
+        "You must be signed in to manage payment methods.",
+      );
     }
 
     const paymentMethods = await listStripePaymentMethods(req, customer);
