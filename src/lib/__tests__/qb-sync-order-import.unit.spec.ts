@@ -1,6 +1,7 @@
 import {
   ORDER_FIELDS,
   buildQbSyncSignature,
+  importOrderToQbSync,
   legacyQbdListIdFallbacksForOrder,
   normalizeOrderForQbSync,
   postOrderToQbSync,
@@ -31,6 +32,68 @@ describe("qb-sync order import subscriber", () => {
         }),
         body: JSON.stringify({ order: { id: "order_1" } }),
       })
+    )
+  })
+
+  it("imports order placement before final catch-weight charge so QuickBooks can create the estimated sales order", async () => {
+    const previousEndpoint = process.env.QB_SYNC_ORDER_IMPORT_URL
+    const previousToken = process.env.QB_SYNC_ORDER_IMPORT_TOKEN
+    const previousFetch = global.fetch
+    const fetchMock = jest.fn(async () => new Response("{}", { status: 200 }))
+    const logger = { warn: jest.fn(), info: jest.fn(), error: jest.fn() }
+    const query = {
+      graph: jest.fn(async () => ({
+        data: [
+          {
+            id: "order_pending_catch",
+            metadata: {
+              payment_workflow: "setup_then_final_charge",
+              final_charge_status: "not_started",
+            },
+            items: [],
+          },
+        ],
+      })),
+    }
+    const db = jest.fn()
+    const container = {
+      resolve: jest.fn((key: string) => {
+        if (key === "logger") {
+          return logger
+        }
+        if (key === "query") {
+          return query
+        }
+        return db
+      }),
+    }
+
+    process.env.QB_SYNC_ORDER_IMPORT_URL =
+      "https://sync.example.test/api/medusa/orders"
+    process.env.QB_SYNC_ORDER_IMPORT_TOKEN = "sync-token"
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    try {
+      await importOrderToQbSync({
+        orderId: "order_pending_catch",
+        container: container as any,
+        source: "order.placed",
+      })
+    } finally {
+      process.env.QB_SYNC_ORDER_IMPORT_URL = previousEndpoint
+      process.env.QB_SYNC_ORDER_IMPORT_TOKEN = previousToken
+      global.fetch = previousFetch
+    }
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://sync.example.test/api/medusa/orders",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("order_pending_catch"),
+      })
+    )
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("imported order=order_pending_catch")
     )
   })
 
