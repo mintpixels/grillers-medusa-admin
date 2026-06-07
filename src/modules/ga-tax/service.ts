@@ -1,50 +1,40 @@
 import { ITaxProvider, Logger } from "@medusajs/framework/types"
 import type { TaxTypes } from "@medusajs/framework/types"
 
-import zipToCounty from "./data/ga-zip-to-county.json"
-import countyRates from "./data/ga-county-rates.json"
+import {
+  georgiaCountyForPostalCode,
+  normalizeProvinceCode,
+  resolveGeorgiaFoodTaxForPostalCode,
+} from "./rules"
 
 type InjectedDependencies = {
   logger: Logger
 }
 
-const DEFAULT_GA_RATE = 8.0
-
 export default class GeorgiaTaxProvider implements ITaxProvider {
   static identifier = "ga-tax"
 
   protected logger_: Logger
-  protected zipToCounty_: Record<string, string>
-  protected countyRates_: Record<string, number>
 
   constructor({ logger }: InjectedDependencies) {
     this.logger_ = logger
-    this.zipToCounty_ = zipToCounty as Record<string, string>
-    this.countyRates_ = countyRates as Record<string, number>
   }
 
   getIdentifier(): string {
     return GeorgiaTaxProvider.identifier
   }
 
-  private getGeorgiaRate(postalCode?: string): number | null {
+  private getGeorgiaFoodRate(postalCode?: string): number | null {
     if (!postalCode) return null
 
     const zip = postalCode.trim().substring(0, 5)
-    const county = this.zipToCounty_[zip]
+    const county = georgiaCountyForPostalCode(zip)
 
     if (!county) {
-      this.logger_.warn(`GA Tax: No county found for zip ${zip}, using default ${DEFAULT_GA_RATE}%`)
-      return DEFAULT_GA_RATE
+      this.logger_.warn(`GA Tax: No county found for zip ${zip}, using default food tax rate`)
     }
 
-    const rate = this.countyRates_[county]
-    if (rate == null) {
-      this.logger_.warn(`GA Tax: No rate found for county ${county}, using default ${DEFAULT_GA_RATE}%`)
-      return DEFAULT_GA_RATE
-    }
-
-    return rate
+    return resolveGeorgiaFoodTaxForPostalCode(postalCode).itemRate
   }
 
   async getTaxLines(
@@ -52,19 +42,23 @@ export default class GeorgiaTaxProvider implements ITaxProvider {
     shippingLines: TaxTypes.ShippingTaxCalculationLine[],
     context: TaxTypes.TaxCalculationContext
   ): Promise<(TaxTypes.ItemTaxLineDTO | TaxTypes.ShippingTaxLineDTO)[]> {
-    const provinceCode = context.address?.province_code?.toLowerCase()
+    const provinceCode = normalizeProvinceCode(context.address?.province_code)
     const postalCode = context.address?.postal_code
 
-    const gaRate = provinceCode === "ga"
-      ? this.getGeorgiaRate(postalCode)
-      : null
+    const itemRate = provinceCode === "GA"
+      ? this.getGeorgiaFoodRate(postalCode)
+      : 0
+    const itemName =
+      provinceCode === "GA" && itemRate != null
+        ? `GA Food Tax (${itemRate}%)`
+        : "Out-of-state Tax Exempt"
 
     const taxLines: (TaxTypes.ItemTaxLineDTO | TaxTypes.ShippingTaxLineDTO)[] =
       itemLines.flatMap((l) =>
         l.rates.map((r) => ({
           rate_id: r.id,
-          rate: gaRate ?? r.rate ?? 0,
-          name: gaRate != null ? `GA Tax (${gaRate}%)` : r.name,
+          rate: itemRate ?? r.rate ?? 0,
+          name: itemName,
           code: r.code,
           line_item_id: l.line_item.id,
           provider_id: this.getIdentifier(),
@@ -74,8 +68,8 @@ export default class GeorgiaTaxProvider implements ITaxProvider {
     const shippingTaxLines = shippingLines.flatMap((l) =>
       l.rates.map((r) => ({
         rate_id: r.id,
-        rate: gaRate ?? r.rate ?? 0,
-        name: gaRate != null ? `GA Tax (${gaRate}%)` : r.name,
+        rate: 0,
+        name: "Shipping Tax Exempt",
         code: r.code,
         shipping_line_id: l.shipping_line.id,
         provider_id: this.getIdentifier(),

@@ -470,4 +470,70 @@ describe("qb-sync order import subscriber", () => {
     expect(order.total).toBe(80.97)
     expect(order.subtotal).toBe(40.97)
   })
+
+  it("adds Georgia food tax metadata for QuickBooks native sales tax mapping", () => {
+    const order = normalizeOrderForQbSync({
+      id: "order_ga_tax_profile",
+      shipping_total: 20,
+      tax_total: 1.6,
+      discount_total: 0,
+      shipping_address: {
+        province: "GA",
+        postal_code: "30062",
+      },
+      metadata: {},
+      items: [
+        {
+          title: "Brisket Burger Patties",
+          quantity: 2,
+          unit_price: 16,
+          total: 32,
+          subtotal: 32,
+        },
+      ],
+    })
+
+    expect(order.metadata).toMatchObject({
+      qbd_tax_state: "GA",
+      qbd_tax_county: "Cobb",
+      qbd_tax_rate: 2,
+      qbd_sales_tax_code_full_name: "Tax",
+      qbd_shipping_sales_tax_code_full_name: "Non",
+      qbd_tax_item_list_id: "30000-1102267195",
+      qbd_tax_item_full_name: "CB",
+    })
+  })
+
+  it("adds out-of-state non-taxable metadata for QuickBooks", () => {
+    const order = normalizeOrderForQbSync({
+      id: "order_out_of_state_tax_profile",
+      shipping_total: 40,
+      tax_total: 0,
+      discount_total: 0,
+      shipping_address: {
+        province: "NY",
+        postal_code: "10024",
+      },
+      metadata: {},
+      items: [
+        {
+          title: "Ground Beef",
+          quantity: 1,
+          unit_price: 12,
+          total: 12,
+          subtotal: 12,
+        },
+      ],
+    })
+
+    expect(order.metadata).toMatchObject({
+      qbd_tax_state: "NY",
+      qbd_tax_county: null,
+      qbd_tax_rate: 0,
+      qbd_sales_tax_code_full_name: "Non",
+      qbd_shipping_sales_tax_code_full_name: "Non",
+      qbd_tax_item_list_id: "10000-1101503700",
+      qbd_tax_item_full_name: "OS",
+    })
+  })
 })

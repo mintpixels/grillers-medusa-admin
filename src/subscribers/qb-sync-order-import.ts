@@ -2,6 +2,8 @@ import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { createHmac } from "node:crypto"
 
+import { resolveFoodTaxForAddress } from "../modules/ga-tax/rules"
+
 export const ORDER_FIELDS = [
   "id",
   "display_id",
@@ -428,9 +430,37 @@ export function normalizeOrderForQbSync(
     (itemSubtotal !== null && itemSubtotal > 0 ? itemSubtotal : null) ??
     (itemTotal !== null && itemTotal > 0 ? itemTotal : null) ??
     numeric(order.subtotal)
+  const shippingAddress = objectRecord(order.shipping_address)
+  const province =
+    textValue(shippingAddress.province) ||
+    textValue(shippingAddress.province_code)
+  const qbdTaxMetadata: Record<string, unknown> = {}
+
+  if (province) {
+    const taxResolution = resolveFoodTaxForAddress(
+      province,
+      textValue(shippingAddress.postal_code)
+    )
+    qbdTaxMetadata.qbd_tax_state = taxResolution.state
+    qbdTaxMetadata.qbd_tax_county = taxResolution.county
+    qbdTaxMetadata.qbd_tax_rate = taxResolution.itemRate
+    qbdTaxMetadata.qbd_sales_tax_code_full_name =
+      taxResolution.qbdSalesTaxCodeFullName
+    qbdTaxMetadata.qbd_shipping_sales_tax_code_full_name =
+      taxResolution.qbdShippingSalesTaxCodeFullName
+
+    if (taxResolution.qbdTaxItem) {
+      qbdTaxMetadata.qbd_tax_item_list_id = taxResolution.qbdTaxItem.listId
+      qbdTaxMetadata.qbd_tax_item_full_name = taxResolution.qbdTaxItem.fullName
+    }
+  }
 
   return {
     ...order,
+    metadata: {
+      ...objectRecord(order.metadata),
+      ...qbdTaxMetadata,
+    },
     items,
     subtotal,
     total,
