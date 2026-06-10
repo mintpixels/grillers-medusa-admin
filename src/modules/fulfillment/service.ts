@@ -33,6 +33,125 @@ type Options = {
   endpoint?: string;
 };
 
+type FulfillmentServiceDefinition = {
+  id: string;
+  name: string;
+  code: string;
+};
+
+const FULFILLMENT_SERVICES: FulfillmentServiceDefinition[] = [
+  {
+    id: "pickup",
+    name: "Pickup From Plant Premises in Atlanta, GA",
+    code: "PICKUP",
+  },
+  {
+    id: "atlanta",
+    name: "Metro Atlanta Delivery",
+    code: "ATLANTA_DELIVERY",
+  },
+  {
+    id: "scheduled",
+    name: "Scheduled Delivery",
+    code: "SCHEDULED_DELIVERY",
+  },
+  {
+    id: "ground",
+    name: "UPS Ground Estimated Shipping",
+    code: "GROUND",
+  },
+  {
+    id: "ups_3_day_select",
+    name: "UPS 3 Day Select Estimated Shipping",
+    code: "3_DAY_SELECT",
+  },
+  {
+    id: "ups_2nd_day_air",
+    name: "UPS 2nd Day Air Estimated Shipping",
+    code: "2ND_DAY_AIR",
+  },
+  {
+    id: "overnight",
+    name: "UPS Overnight Estimated Shipping",
+    code: "OVERNIGHT",
+  },
+];
+
+const SHIPPING_ZONE_CODE_ALIASES: Record<string, string[]> = {
+  GROUND: ["FedexGround", "UPSGround", "UPS Ground", "GROUND"],
+  "3_DAY_SELECT": [
+    "Fedex3Day",
+    "Fedex3DaySelect",
+    "UPS3Day",
+    "UPS3DaySelect",
+    "UPS 3 Day Select",
+    "3_DAY_SELECT",
+  ],
+  "2ND_DAY_AIR": [
+    "Fedex2Day",
+    "FedexSecondDay",
+    "UPS2Day",
+    "UPSSecondDay",
+    "UPS 2nd Day Air",
+    "2ND_DAY_AIR",
+  ],
+  OVERNIGHT: ["FedexOvernight", "UPSOvernight", "UPS Overnight", "OVERNIGHT"],
+};
+
+const EXPEDITED_UPS_SERVICE_CODES = new Set([
+  "3_DAY_SELECT",
+  "2ND_DAY_AIR",
+  "OVERNIGHT",
+]);
+
+function normalizeServiceCode(serviceCode: unknown): string {
+  const normalized = String(serviceCode || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[-\s]+/g, "_");
+
+  if (!normalized) return "";
+  if (normalized.includes("GROUND")) return "GROUND";
+  if (
+    normalized.includes("OVERNIGHT") ||
+    normalized.includes("NEXT_DAY") ||
+    normalized.includes("NEXTDAY")
+  ) {
+    return "OVERNIGHT";
+  }
+  if (
+    normalized.includes("2ND_DAY") ||
+    normalized.includes("SECOND_DAY") ||
+    normalized.includes("TWO_DAY") ||
+    normalized.includes("2DAY")
+  ) {
+    return "2ND_DAY_AIR";
+  }
+  if (
+    normalized.includes("3_DAY") ||
+    normalized.includes("3RD_DAY") ||
+    normalized.includes("THIRD_DAY") ||
+    normalized.includes("THREE_DAY") ||
+    normalized.includes("3DAY")
+  ) {
+    return "3_DAY_SELECT";
+  }
+
+  return normalized;
+}
+
+function normalizeZoneCode(zoneCode: unknown): string {
+  return String(zoneCode || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[-\s]+/g, "");
+}
+
+function zoneCodeMatches(zoneCode: unknown, aliases: string[]): boolean {
+  const normalized = normalizeZoneCode(zoneCode);
+  return aliases.some((alias) => normalizeZoneCode(alias) === normalized);
+}
+
 function strapiRow<T extends Record<string, unknown>>(row: unknown): T | null {
   if (!row || typeof row !== "object") return null;
   const value = row as Record<string, unknown>;
@@ -88,7 +207,7 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         const state: string = optionData?.shipping_address?.province;
         // @ts-ignore
         const zip: string = optionData?.shipping_address?.postal_code;
-        const serviceCode: string | any = optionData?.service_code;
+        const serviceCode = normalizeServiceCode(optionData?.service_code);
         const items = Array.isArray(optionData?.items) ? optionData.items : [];
 
         const eligibleSubtotal = eligibleSubtotalAmount(items);
@@ -141,6 +260,8 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
 
         let tierSet: any[] = [];
         let zoneIsPercent = false;
+        let expeditedFallback: any | null = null;
+        let expeditedFallbackIsPercent = false;
         const zones = (await response.json())?.data;
         for (let i = 0; i < zones.length; i++) {
           const z = zones[i];
@@ -157,13 +278,21 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
             z.State == state
           ) {
             validZone = true;
-          } else if (serviceCode == "GROUND" && z.ZoneCode == "FedexGround") {
-            validZone = true;
           } else if (
-            serviceCode == "OVERNIGHT" &&
-            z.ZoneCode == "FedexOvernight"
+            SHIPPING_ZONE_CODE_ALIASES[serviceCode] &&
+            zoneCodeMatches(z.ZoneCode, SHIPPING_ZONE_CODE_ALIASES[serviceCode])
           ) {
             validZone = true;
+          }
+
+          if (
+            EXPEDITED_UPS_SERVICE_CODES.has(serviceCode) &&
+            zoneCodeMatches(z.ZoneCode, SHIPPING_ZONE_CODE_ALIASES.OVERNIGHT)
+          ) {
+            expeditedFallback = z;
+            expeditedFallbackIsPercent =
+              z.Description &&
+              z.Description.toUpperCase().includes("PERCENT");
           }
 
           if (validZone) {
@@ -173,6 +302,14 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
               z.Description.toUpperCase().includes("PERCENT");
             break;
           }
+        }
+
+        if (
+          tierSet.length === 0 &&
+          expeditedFallback?.ShippingZoneBreakpoints?.length
+        ) {
+          tierSet = expeditedFallback.ShippingZoneBreakpoints;
+          zoneIsPercent = expeditedFallbackIsPercent;
         }
 
         let price = -10;
@@ -189,7 +326,7 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
           }
 
           const isUPSTier =
-            serviceCode === "GROUND" || serviceCode === "OVERNIGHT";
+            serviceCode === "GROUND" || EXPEDITED_UPS_SERVICE_CODES.has(serviceCode);
 
           if (zoneIsPercent) {
             price = (matchedTier.ShippingRate / 100) * eligibleSubtotal;
@@ -215,33 +352,7 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         { name: "label", url: "https://labels.example/SHIP-123.pdf" },
       ],
       getServices: async () => {
-        return [
-          {
-            id: "pickup",
-            name: "Pickup From Plant Premises in Atlanta, GA",
-            code: "PICKUP",
-          },
-          {
-            id: "atlanta",
-            name: "Metro Atlanta Delivery",
-            code: "ATLANTA_DELIVERY",
-          },
-          {
-            id: "scheduled",
-            name: "Scheduled Delivery",
-            code: "SCHEDULED_DELIVERY",
-          },
-          {
-            id: "ground",
-            name: "Ground Estimated Shipping",
-            code: "GROUND",
-          },
-          {
-            id: "overnight",
-            name: "Overnight Estimated Shipping",
-            code: "OVERNIGHT",
-          },
-        ];
+        return FULFILLMENT_SERVICES;
       },
     };
   }
