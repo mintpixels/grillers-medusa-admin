@@ -10,6 +10,282 @@ import {
   metadataObject,
 } from "../../lib/catch-weight-finalization"
 
+const STAFF_SOURCES = new Set([
+  "staff",
+  "staff_phone_order",
+  "staff_impersonation",
+  "admin_staff_reorder",
+])
+const IN_REGION_STATES = new Set(["GA", "TN", "TX", "NC", "FL", "SC", "AL"])
+const ATLANTA_DELIVERY_ZIPS = new Set([
+  "30005",
+  "30009",
+  "30022",
+  "30033",
+  "30062",
+  "30067",
+  "30068",
+  "30071",
+  "30075",
+  "30079",
+  "30092",
+  "30093",
+  "30097",
+  "30319",
+  "30322",
+  "30324",
+  "30326",
+  "30327",
+  "30328",
+  "30329",
+  "30338",
+  "30339",
+  "30340",
+  "30341",
+  "30342",
+  "30345",
+  "30346",
+  "30350",
+  "30360",
+])
+
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim()
+    if (typeof value === "number" && Number.isFinite(value)) return String(value)
+  }
+  return ""
+}
+
+function numberValue(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") return null
+  const parsed =
+    typeof value === "object" && value !== null && "value" in value
+      ? Number((value as Record<string, unknown>).value)
+      : Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function roundMoney(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100
+}
+
+function normalizeZip(value: unknown): string {
+  const match = firstText(value).match(/\d{5}/)
+  return match?.[0] || ""
+}
+
+function normalizeRouteMarket(value: unknown): string | null {
+  const text = firstText(value).toLowerCase()
+  if (text === "atlanta_metro" || text === "southeast" || text === "national") {
+    return text
+  }
+  if (text === "core") return "atlanta_metro"
+  if (text === "scheduled_pod") return "southeast"
+  return null
+}
+
+function sourceForAnalytics(metadata: Record<string, any>): "staff" | "web" {
+  if (STAFF_SOURCES.has(firstText(metadata.source))) return "staff"
+  if (metadata.staff_phone_order === true) return "staff"
+  return "web"
+}
+
+function customerTypeForAnalytics(order: Record<string, any>, metadata: Record<string, any>) {
+  const groups = Array.isArray(order.customer?.groups) ? order.customer.groups : []
+  const institutional = groups.some((group: Record<string, any>) => {
+    const groupMetadata = metadataObject(group?.metadata)
+    return (
+      firstText(group?.name).toLowerCase().includes("institutional") ||
+      firstText(group?.id).toLowerCase().includes("institutional") ||
+      firstText(groupMetadata.customer_type).toLowerCase() === "institutional" ||
+      groupMetadata.institutional === true
+    )
+  })
+
+  if (institutional) return "institutional"
+  if (metadata.customer_type === "institutional") return "institutional"
+  if (metadata.customer_type === "dtc") return "dtc"
+  return "dtc"
+}
+
+function routeMarketForAnalytics(order: Record<string, any>, metadata: Record<string, any>) {
+  const shippingAddress = metadataObject(order.shipping_address)
+  const zip = normalizeZip(
+    shippingAddress.postal_code ||
+      metadata.fulfillmentZip ||
+      metadata.fulfillment_zip ||
+      metadata.shipping_zip
+  )
+  const state = firstText(
+    shippingAddress.province,
+    shippingAddress.province_code,
+    metadata.fulfillmentState,
+    metadata.fulfillment_state,
+    metadata.shipping_state
+  ).toUpperCase()
+
+  if (zip && ATLANTA_DELIVERY_ZIPS.has(zip)) return "atlanta_metro"
+  if (state && IN_REGION_STATES.has(state)) return "southeast"
+  if (state || zip) return "national"
+
+  return normalizeRouteMarket(metadata.route_market) || "unknown"
+}
+
+function latestShippingMethod(order: Record<string, any>) {
+  const methods = Array.isArray(order.shipping_methods)
+    ? order.shipping_methods
+    : []
+  return methods[methods.length - 1] || {}
+}
+
+function normalizeFulfillmentTier(value: unknown): string | null {
+  const text = firstText(value).toLowerCase().replace(/[\s-]+/g, "_")
+  if (!text) return null
+
+  if (text === "plant_pickup") return "plant_pickup"
+  if (text === "atlanta_delivery" || text === "local_delivery") {
+    return "atlanta_delivery"
+  }
+  if (text === "southeast_pickup" || text === "regional_pickup") {
+    return "southeast_pickup"
+  }
+  if (text === "ups_ground" || text === "ground") return "ups_ground"
+  if (
+    text === "ups_3day" ||
+    text === "ups_3_day_select" ||
+    text === "3_day_select" ||
+    text.includes("3_day")
+  ) {
+    return "ups_3day"
+  }
+  if (
+    text === "ups_2da" ||
+    text === "ups_2day" ||
+    text === "ups_2_day" ||
+    text === "ups_2nd_day_air" ||
+    text === "2nd_day_air" ||
+    text === "2_day_air" ||
+    text.includes("2nd_day") ||
+    text.includes("second_day")
+  ) {
+    return "ups_2da"
+  }
+  if (
+    text === "ups_overnight" ||
+    text === "overnight" ||
+    text.includes("next_day")
+  ) {
+    return "ups_overnight"
+  }
+  if (text.includes("southeast") && text.includes("pickup")) {
+    return "southeast_pickup"
+  }
+  if (text.includes("atlanta") && text.includes("delivery")) {
+    return "atlanta_delivery"
+  }
+  if (text.includes("scheduled") && text.includes("delivery")) {
+    return "southeast_pickup"
+  }
+  if (text.includes("pickup")) return "plant_pickup"
+  if (text.includes("ground")) return "ups_ground"
+  if (text.includes("3_day")) return "ups_3day"
+  if (text.includes("2nd_day") || text.includes("second_day")) {
+    return "ups_2da"
+  }
+  if (text.includes("overnight")) return "ups_overnight"
+
+  return null
+}
+
+function fulfillmentTierForAnalytics(order: Record<string, any>, metadata: Record<string, any>) {
+  const method = latestShippingMethod(order)
+  const methodData = metadataObject(method.data)
+  const methodMetadata = metadataObject(method.metadata)
+
+  return (
+    normalizeFulfillmentTier(metadata.fulfillment_tier) ||
+    normalizeFulfillmentTier(metadata.fulfillmentType) ||
+    normalizeFulfillmentTier(metadata.fulfillment_type) ||
+    normalizeFulfillmentTier(methodData.fulfillment_tier) ||
+    normalizeFulfillmentTier(methodData.fulfillmentType) ||
+    normalizeFulfillmentTier(methodData.fulfillment_type) ||
+    normalizeFulfillmentTier(methodData.service_code) ||
+    normalizeFulfillmentTier(methodMetadata.fulfillment_tier) ||
+    normalizeFulfillmentTier(methodMetadata.service_code) ||
+    normalizeFulfillmentTier(method.shipping_option_id) ||
+    normalizeFulfillmentTier(method.name) ||
+    null
+  )
+}
+
+function finalLinesByItemId(metadata: Record<string, any>) {
+  const raw = metadata.catch_weight_final_lines
+  let lines: any[] = []
+  if (Array.isArray(raw)) {
+    lines = raw
+  } else if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw)
+      lines = Array.isArray(parsed) ? parsed : []
+    } catch {
+      lines = []
+    }
+  }
+
+  return new Map(
+    lines
+      .filter((line) => line && typeof line === "object" && line.line_item_id)
+      .map((line) => [String(line.line_item_id), line])
+  )
+}
+
+function finalizedLinePayload(
+  item: Record<string, any>,
+  finalLine: Record<string, any> | undefined
+) {
+  const itemTotal = numberValue(item.total) || 0
+  if (!finalLine) {
+    return {
+      line_item_id: item.id,
+      variant_id: item.variant_id,
+      estimated_total: itemTotal,
+      final_total: itemTotal,
+      delta: 0,
+    }
+  }
+
+  const finalTotal = numberValue(finalLine.final_line_total)
+  const delta = numberValue(finalLine.delta_line_total)
+  const estimatedTotal =
+    numberValue(finalLine.estimated_line_total) ??
+    numberValue(finalLine.estimated_total) ??
+    (finalTotal !== null && delta !== null
+      ? roundMoney(finalTotal - delta)
+      : itemTotal)
+
+  return {
+    line_item_id: item.id,
+    variant_id: item.variant_id,
+    estimated_total: estimatedTotal,
+    final_total: finalTotal ?? itemTotal,
+    delta:
+      delta ??
+      (finalTotal !== null ? roundMoney(finalTotal - estimatedTotal) : 0),
+  }
+}
+
+function medusaEventId(
+  sourceEvent: string,
+  analyticsEvent: string,
+  orderId: string,
+  data: Record<string, any>
+) {
+  const finalizationId = firstText(data.finalization_id, data.payment_intent_id)
+  const suffix = finalizationId ? `:${finalizationId}` : ""
+  return `${sourceEvent}:${orderId}:${analyticsEvent}${suffix}`
+}
+
 export default async function orderPlacedHandler({
   event: { name, data },
   container,
@@ -29,16 +305,25 @@ export default async function orderPlacedHandler({
         "email",
         "currency_code",
         "customer_id",
+        "customer.*",
+        "customer.groups.*",
+        "+customer.metadata",
+        "+customer.groups.metadata",
         "total",
         "subtotal",
         "tax_total",
         "shipping_total",
         "discount_total",
+        "+metadata",
+        "shipping_address.*",
         "items.*",
         "+items.metadata",
         "items.variant.*",
         "items.variant.product.*",
         "shipping_methods.*",
+        "shipping_methods.shipping_option_id",
+        "+shipping_methods.data",
+        "+shipping_methods.metadata",
         "payment_collections.payments.*",
       ],
       filters: { id: orderId },
@@ -47,6 +332,10 @@ export default async function orderPlacedHandler({
     const order = orders?.[0] as any
     if (!order) return
     const metadata = metadataObject(order.metadata)
+    const source = sourceForAnalytics(metadata)
+    const customerType = customerTypeForAnalytics(order, metadata)
+    const routeMarket = routeMarketForAnalytics(order, metadata)
+    const fulfillmentTier = fulfillmentTierForAnalytics(order, metadata)
 
     if (
       name === "order.placed" &&
@@ -67,10 +356,22 @@ export default async function orderPlacedHandler({
             metadata.payment_workflow || PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
           finalization_id: metadata.finalization_id,
           final_charge_status: metadata.final_charge_status || "not_started",
-          source: metadata.source === "staff" ? "staff" : "web",
-          customer_type: metadata.customer_type || "unknown",
-          route_market: metadata.route_market || "unknown",
-          fulfillment_tier: metadata.fulfillment_tier || undefined,
+          source,
+          customer_type: customerType,
+          route_market: routeMarket,
+          fulfillment_tier: fulfillmentTier || undefined,
+          medusa_event_id: medusaEventId(
+            name,
+            "order_received",
+            order.id,
+            data
+          ),
+          idempotency_key: medusaEventId(
+            name,
+            "order_received",
+            order.id,
+            data
+          ),
         },
       })
       return
@@ -81,6 +382,12 @@ export default async function orderPlacedHandler({
     const coupon = (order as any).promotions?.[0]?.code
     const experimentContext = experimentContextFromItems(order.items)
     const experimentIdentity = experimentIdentityFromItems(order.items)
+    const completedMedusaEventId = medusaEventId(
+      name,
+      "order_completed",
+      order.id,
+      data
+    )
 
     await analyticsService.track({
       event: "order_completed",
@@ -105,11 +412,12 @@ export default async function orderPlacedHandler({
         shipping_tier: order.shipping_methods?.[0]?.name,
         payment_method:
           order.payment_collections?.[0]?.payments?.[0]?.provider_id,
-        source: metadata.source === "staff" ? "staff" : "web",
-        customer_type: metadata.customer_type || "unknown",
-        route_market: metadata.route_market || "unknown",
-        fulfillment_tier:
-          metadata.fulfillment_tier || order.shipping_methods?.[0]?.name,
+        source,
+        customer_type: customerType,
+        route_market: routeMarket,
+        fulfillment_tier: fulfillmentTier,
+        medusa_event_id: completedMedusaEventId,
+        idempotency_key: completedMedusaEventId,
         items: order.items?.map((item: any) => ({
           item_id: item.variant?.product_id || item.id,
           item_name: item.title,
@@ -128,6 +436,14 @@ export default async function orderPlacedHandler({
     })
 
     if (name === "order.final_charge_succeeded") {
+      const finalizedMedusaEventId = medusaEventId(
+        name,
+        "order_finalized",
+        order.id,
+        data
+      )
+      const finalLines = finalLinesByItemId(metadata)
+
       await analyticsService.track({
         event: "order_finalized",
         actor_id: customerId,
@@ -145,18 +461,15 @@ export default async function orderPlacedHandler({
           currency: order.currency_code,
           email: order.email,
           customer_id: customerId,
-          source: metadata.source === "staff" ? "staff" : "web",
-          customer_type: metadata.customer_type || "unknown",
-          route_market: metadata.route_market || "unknown",
-          fulfillment_tier:
-            metadata.fulfillment_tier || order.shipping_methods?.[0]?.name,
-          lines: order.items?.map((item: any) => ({
-            line_item_id: item.id,
-            variant_id: item.variant_id,
-            estimated_total: item.total,
-            final_total:
-              metadata[`final_line_total_${item.id}`] || item.total,
-          })),
+          source,
+          customer_type: customerType,
+          route_market: routeMarket,
+          fulfillment_tier: fulfillmentTier,
+          medusa_event_id: finalizedMedusaEventId,
+          idempotency_key: finalizedMedusaEventId,
+          lines: order.items?.map((item: any) =>
+            finalizedLinePayload(item, finalLines.get(String(item.id)))
+          ),
         },
       })
     }
