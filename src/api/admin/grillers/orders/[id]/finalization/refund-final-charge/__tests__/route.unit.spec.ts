@@ -39,6 +39,15 @@ describe("final-charge refund route", () => {
     jest.restoreAllMocks()
   })
 
+  function makeRes() {
+    return {
+      status: jest.fn(function status() {
+        return this
+      }),
+      json: jest.fn(),
+    } as any
+  }
+
   it("refunds the Stripe final PaymentIntent and queues QBD refund posting", async () => {
     process.env.STRIPE_API_KEY = "sk_test_123"
     const stripeFetch = jest.fn(async (_url: string, init: any) => {
@@ -87,12 +96,7 @@ describe("final-charge refund route", () => {
       },
       auth_context: { actor_id: "user_123" },
     } as any
-    const res = {
-      status: jest.fn(function status() {
-        return this
-      }),
-      json: jest.fn(),
-    } as any
+    const res = makeRes()
 
     await POST(req, res)
 
@@ -112,6 +116,14 @@ describe("final-charge refund route", () => {
         qbd_posting_amount: 1250,
         qbd_posting_request_key: "refund:re_final_123",
         stripe_refund_id: "re_final_123",
+        final_charge_refunds: [
+          expect.objectContaining({
+            id: "re_final_123",
+            amount: 12.5,
+            amount_minor: 1250,
+            idempotency_key: "refund-key-123",
+          }),
+        ],
       }),
     })
     expect(eventBus.emit).toHaveBeenCalledWith({
@@ -138,6 +150,161 @@ describe("final-charge refund route", () => {
           }),
         ],
       }),
+    })
+  })
+
+  it("returns an existing final-charge refund for an idempotent replay without touching Stripe", async () => {
+    const stripeFetch = jest.fn()
+    global.fetch = stripeFetch as any
+
+    const orderModule = {
+      retrieveOrder: jest.fn(async () => ({
+        id: "order_123",
+        currency_code: "usd",
+        total: 100,
+        metadata: {
+          final_charge_status: "succeeded",
+          stripe_payment_intent_id: "pi_final_123",
+          final_total: 100,
+          final_charge_refunded_amount: 22.5,
+          final_charge_refunds: [
+            {
+              id: "re_final_123",
+              amount: 12.5,
+              amount_minor: 1250,
+              idempotency_key: "refund-key-123",
+              qbd_posting_request_key: "refund:re_final_123",
+              created_at: "2026-06-12T15:00:00.000Z",
+            },
+          ],
+          qbd_posting_status: "pending_manual",
+          qbd_posting_request_key: "refund:re_final_123",
+        },
+      })),
+      listOrderTransactions: jest.fn(),
+      addOrderTransactions: jest.fn(),
+      updateOrders: jest.fn(),
+    }
+    const eventBus = { emit: jest.fn() }
+    const { db } = makeAllocationDb()
+    const req = {
+      params: { id: "order_123" },
+      headers: { "idempotency-key": "refund-key-123" },
+      body: { amount: 12.5 },
+      scope: {
+        resolve: (key: string) => {
+          if (key === Modules.ORDER) return orderModule
+          if (key === Modules.EVENT_BUS) return eventBus
+          if (key === ContainerRegistrationKeys.PG_CONNECTION) return db
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+    } as any
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(stripeFetch).not.toHaveBeenCalled()
+    expect(orderModule.listOrderTransactions).not.toHaveBeenCalled()
+    expect(orderModule.addOrderTransactions).not.toHaveBeenCalled()
+    expect(orderModule.updateOrders).not.toHaveBeenCalled()
+    expect(eventBus.emit).not.toHaveBeenCalled()
+    expect(res.status).toHaveBeenCalledWith(200)
+    expect(res.json).toHaveBeenCalledWith({
+      payment: expect.objectContaining({
+        refunded_amount: 22.5,
+        refunds: [expect.objectContaining({ id: "re_final_123", amount: 12.5 })],
+      }),
+    })
+  })
+
+  it("blocks final-charge refunds while another QBD posting is pending", async () => {
+    process.env.STRIPE_API_KEY = "sk_test_123"
+    const stripeFetch = jest.fn()
+    global.fetch = stripeFetch as any
+
+    const orderModule = {
+      retrieveOrder: jest.fn(async () => ({
+        id: "order_123",
+        currency_code: "usd",
+        total: 100,
+        metadata: {
+          final_charge_status: "succeeded",
+          stripe_payment_intent_id: "pi_final_123",
+          final_total: 100,
+          qbd_posting_status: "pending_manual",
+          qbd_posting_action: "final_card_charge_accounting_record",
+          qbd_posting_request_key: "final_charge:pi_final_123",
+        },
+      })),
+    }
+    const eventBus = { emit: jest.fn() }
+    const { db } = makeAllocationDb()
+    const req = {
+      params: { id: "order_123" },
+      headers: { "idempotency-key": "refund-key-456" },
+      body: { amount: 10 },
+      scope: {
+        resolve: (key: string) => {
+          if (key === Modules.ORDER) return orderModule
+          if (key === Modules.EVENT_BUS) return eventBus
+          if (key === ContainerRegistrationKeys.PG_CONNECTION) return db
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+    } as any
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(stripeFetch).not.toHaveBeenCalled()
+    expect(res.status).toHaveBeenCalledWith(409)
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        qbd_posting_request_key: "final_charge:pi_final_123",
+      })
+    )
+  })
+
+  it("rejects sub-cent refund amounts before calling Stripe", async () => {
+    process.env.STRIPE_API_KEY = "sk_test_123"
+    const stripeFetch = jest.fn()
+    global.fetch = stripeFetch as any
+
+    const orderModule = {
+      retrieveOrder: jest.fn(async () => ({
+        id: "order_123",
+        currency_code: "usd",
+        total: 100,
+        metadata: {
+          final_charge_status: "succeeded",
+          stripe_payment_intent_id: "pi_final_123",
+          final_total: 100,
+        },
+      })),
+    }
+    const eventBus = { emit: jest.fn() }
+    const { db } = makeAllocationDb()
+    const req = {
+      params: { id: "order_123" },
+      body: { amount: 12.345 },
+      scope: {
+        resolve: (key: string) => {
+          if (key === Modules.ORDER) return orderModule
+          if (key === Modules.EVENT_BUS) return eventBus
+          if (key === ContainerRegistrationKeys.PG_CONNECTION) return db
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+    } as any
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(stripeFetch).not.toHaveBeenCalled()
+    expect(res.status).toHaveBeenCalledWith(422)
+    expect(res.json).toHaveBeenCalledWith({
+      message: "Refund amount cannot include more than 2 decimal places for USD.",
     })
   })
 })
