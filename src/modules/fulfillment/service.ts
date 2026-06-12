@@ -23,6 +23,13 @@ import {
   eligibleSubtotalCents,
   type AtlantaDeliveryZoneRate,
 } from "./rates";
+import {
+  createWwexSpeedshipClientFromEnv,
+  isUpsServiceCode,
+  normalizeGrillersUpsServiceCode,
+  type WwexSpeedshipClient,
+  wwexRateInputFromFulfillmentData,
+} from "./wwex-speedship";
 
 type InjectedDependencies = {
   logger: Logger;
@@ -164,6 +171,7 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
   protected logger_: Logger;
   protected options_: Options;
   protected strapiSvc: any;
+  protected wwexClient: WwexSpeedshipClient | null;
 
   // Example: your external shipper SDK/client
   protected client: {
@@ -192,6 +200,10 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
     this.logger_ = container.logger;
     this.options_ = options;
     this.logger_.info("GrillersFulfillmentProviderService loaded");
+    this.wwexClient = createWwexSpeedshipClientFromEnv(
+      process.env,
+      this.logger_
+    );
     // this.strapiSvc = container.resolve(STRAPI_MODULE) as StrapiModuleService;
 
     // Initialize your third-party client here (SDK, REST wrapper, etc.)
@@ -209,6 +221,16 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         const zip: string = optionData?.shipping_address?.postal_code;
         const serviceCode = normalizeServiceCode(optionData?.service_code);
         const items = Array.isArray(optionData?.items) ? optionData.items : [];
+
+        const wwexAmount = await this.calculateWwexShippingRate({
+          ...optionData,
+          service_code: serviceCode,
+          shipping_address: optionData?.shipping_address,
+          items,
+        });
+        if (wwexAmount !== null) {
+          return wwexAmount;
+        }
 
         const eligibleSubtotal = eligibleSubtotalAmount(items);
         const eligibleSubtotalInCents = eligibleSubtotalCents(items);
@@ -355,6 +377,32 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         return FULFILLMENT_SERVICES;
       },
     };
+  }
+
+  private async calculateWwexShippingRate(
+    data: Record<string, unknown>
+  ): Promise<number | null> {
+    if (!this.wwexClient) return null;
+
+    const serviceCode = normalizeGrillersUpsServiceCode(data.service_code);
+    if (!isUpsServiceCode(serviceCode)) return null;
+
+    const rateInput = wwexRateInputFromFulfillmentData(
+      serviceCode,
+      data as Record<string, any>
+    );
+    if (!rateInput) return null;
+
+    try {
+      const quote = await this.wwexClient.quoteSmallpack(rateInput);
+      return quote.offer.price.value;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger_.warn(
+        `[wwex] live UPS ${serviceCode} quote failed; falling back to Strapi shipping zones: ${message}`
+      );
+      return null;
+    }
   }
 
   async getFulfillmentOptions(): Promise<FulfillmentOption[]> {

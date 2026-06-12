@@ -20,6 +20,10 @@ import {
   staffAuditActorId,
   staffAuditFields,
 } from "../utils"
+import {
+  bookWwexFinalizationShipment,
+  quoteWwexFinalizationShipping,
+} from "../../../../../../../lib/wwex-finalization-shipment"
 
 type ChargeBody = {
   idempotency_key?: string
@@ -51,6 +55,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
   const orderModule = req.scope.resolve(Modules.ORDER)
   const eventBus = req.scope.resolve(Modules.EVENT_BUS)
+  const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
   const body = (req.body || {}) as ChargeBody
   const staffAudit = staffAuditFields(req, body)
   const staffActor = staffAuditActorId(staffAudit)
@@ -82,7 +87,14 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return jsonError(res, 409, "Order does not have a Stripe customer id.")
   }
 
-  const finalOrderTotal = preview.totals.final_order_total
+  const wwexQuote = await quoteWwexFinalizationShipping({
+    order,
+    preview,
+    logger,
+  })
+  const effectiveTotals = wwexQuote?.totals || preview.totals
+
+  const finalOrderTotal = effectiveTotals.final_order_total
   if (finalOrderTotal === null || finalOrderTotal === undefined) {
     return jsonError(
       res,
@@ -133,16 +145,22 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     const finalizationForMetadata = {
       ...preview.finalization,
-      ...preview.totals,
+      ...effectiveTotals,
       status: FINALIZATION_CHARGED_READY_TO_SHIP,
       stripe_payment_intent_id: paymentIntent.id,
       stripe_charge_id: chargeId,
     }
 
+    const wwexBooking = await bookWwexFinalizationShipment({
+      order,
+      quote: wwexQuote,
+      logger,
+    })
+
     await db("gp_order_finalization")
       .where({ id: preview.finalization.id })
       .update({
-        ...preview.totals,
+        ...effectiveTotals,
         status: FINALIZATION_CHARGED_READY_TO_SHIP,
         charged_at: new Date(),
         charged_by: staffActor,
@@ -157,6 +175,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         qbd_posting_status: "pending_manual",
         qbd_posting_action: "final_card_charge_accounting_record",
         qbd_posting_request_key: `final_charge:${paymentIntent.id}`,
+        metadata: {
+          ...metadataObject(preview.finalization.metadata),
+          ...(wwexQuote?.metadata || {}),
+          ...(wwexBooking.metadata || {}),
+        },
         updated_at: new Date(),
       })
 
@@ -189,6 +212,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         actorId: staffActor,
         staffAudit,
       }),
+      ...(wwexQuote?.metadata || {}),
+      ...(wwexBooking.metadata || {}),
       catch_weight_final_lines: preview.lines.map((line: Record<string, any>) => ({
         line_item_id: line.line_item_id,
         product_id: line.product_id,

@@ -96,6 +96,60 @@ products for that region before testing cart pricing. If the first returned
 variant cannot be added to a cart, the script tries additional catalog variants
 before failing the smoke.
 
+## WWEX / Unishippers Speedship Smoke Test
+
+Use this after WWEX staging or production credentials are configured in the
+environment. The script quotes small-parcel UPS services through the same
+Speedship client used by checkout and pack/finalize. It does not print OAuth
+tokens, client secrets, raw API responses, labels, or customer data.
+
+Required environment variables:
+
+- `WWEX_AUTH_URL`
+- `WWEX_API_BASE_URL`
+- `WWEX_CLIENT_ID`
+- `WWEX_CLIENT_SECRET`
+- `WWEX_AUDIENCE`
+- `WWEX_ORIGIN_ADDRESS_1`
+- `WWEX_ORIGIN_CITY`
+- `WWEX_ORIGIN_STATE`
+- `WWEX_ORIGIN_POSTAL_CODE`
+- `WWEX_ORIGIN_PHONE`
+
+Optional booking/label variables:
+
+- `WWEX_BILL_TO_ACCOUNT_NBR`
+- `WWEX_BILL_TO_POSTAL_CODE`
+- `WWEX_BILL_TO_COUNTRY_CODE`
+- `WWEX_BILL_TO_TYPE`
+- `WWEX_BOOK_SHIPMENTS_ON_RELEASE=true`
+- `WWEX_FETCH_LABEL_ON_RELEASE=true`
+- `WWEX_NOTIFICATION_EMAIL`
+
+Optional package-estimation variables:
+
+- `WWEX_DEFAULT_PACKAGE_WEIGHT_LB`
+- `WWEX_MAX_PACKAGE_WEIGHT_LB`
+- `WWEX_DEFAULT_PACKAGE_LENGTH_IN`
+- `WWEX_DEFAULT_PACKAGE_WIDTH_IN`
+- `WWEX_DEFAULT_PACKAGE_HEIGHT_IN`
+- `WWEX_PACKAGE_DIMENSIONS_JSON`
+
+Example:
+
+```bash
+yarn smoke:wwex \
+  --postal-code 75219 \
+  --city "Highland Park" \
+  --state TX \
+  --weight-lb 5 \
+  --service ALL
+```
+
+`WWEX_BOOK_SHIPMENTS_ON_RELEASE` intentionally defaults off. With it off,
+pack/finalize can still use WWEX for final packed-box rates when credentials
+are present, but it will not create a UPS shipment or label.
+
 ## Production Backend Recovery Runner
 
 Once Railway is available again, run the recovery runner from this repo. It
