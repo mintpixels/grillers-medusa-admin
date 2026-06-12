@@ -280,6 +280,41 @@ describe("payment-method route utils", () => {
     });
   });
 
+  it("lets Peter's bootstrap super-admin Gmail resolve payment context", async () => {
+    const staffCustomer = {
+      id: "cus_peter",
+      email: "PeterSwerdlow@gmail.com",
+      metadata: { role: "customer" },
+    };
+    const targetCustomer = {
+      id: "cus_target",
+      email: "meyer@example.com",
+      metadata: {},
+    };
+    const customers = {
+      cus_peter: staffCustomer,
+      cus_target: targetCustomer,
+    } as Record<string, unknown>;
+    const query = {
+      graph: jest.fn(({ filters }: any) => ({
+        data: customers[filters.id] ? [customers[filters.id]] : [],
+      })),
+    };
+    const req = makeReq(
+      { query },
+      {
+        actorId: "cus_peter",
+        headers: { [STAFF_TARGET_CUSTOMER_ID_HEADER]: "cus_target" },
+      },
+    );
+
+    await expect(getPaymentContextCustomer(req)).resolves.toEqual({
+      customer: targetCustomer,
+      staffCustomer,
+      staffTargetCustomerId: "cus_target",
+    });
+  });
+
   it("blocks customer-context payment access for non-staff customers", async () => {
     const normalCustomer = {
       id: "cus_normal",

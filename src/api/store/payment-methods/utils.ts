@@ -53,6 +53,7 @@ const STAFF_ROLES = new Set([
 
 const BOOTSTRAP_SUPER_ADMIN_EMAILS = new Set([
   "aviswerdlow@gmail.com",
+  "peterswerdlow@gmail.com",
   "peter@grillerspride.com",
 ]);
 
