@@ -6,6 +6,7 @@ import {
   PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
   amountInMinorUnits,
   addFinalizationLine,
+  assertStripeFinalPaymentIntentSucceeded,
   buildFinalizationLineSnapshot,
   ensureFinalizationForOrder,
   finalChargeOrderMetadata,
@@ -2089,6 +2090,28 @@ describe("catch-weight finalization helpers", () => {
       staff_actor_email: "packer@example.com",
       staff_actor_name: "Packer Person",
     })
+  })
+
+  it("rejects a final Stripe charge unless the PaymentIntent succeeded", () => {
+    expect(() =>
+      assertStripeFinalPaymentIntentSucceeded({
+        id: "pi_requires_action",
+        status: "requires_action",
+        last_payment_error: {
+          code: "authentication_required",
+          message: "Authentication is required.",
+        },
+      })
+    ).toThrow(
+      "Stripe final charge did not succeed. PaymentIntent pi_requires_action returned status requires_action."
+    )
+
+    expect(() =>
+      assertStripeFinalPaymentIntentSucceeded({
+        id: "pi_succeeded",
+        status: "succeeded",
+      })
+    ).not.toThrow()
   })
 
   it("marks every placed order as catch-weight finalization gated", () => {

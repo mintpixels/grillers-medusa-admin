@@ -6,8 +6,13 @@ import {
   normalizeOrderForQbSync,
   postOrderToQbSync,
 } from "../../subscribers/qb-sync-order-import"
+import { emitOpsAlert } from "../ops-alert"
 import { config as canceledOrderImportConfig } from "../../subscribers/qb-sync-order-canceled-import"
 import { config as refundedPaymentImportConfig } from "../../subscribers/qb-sync-payment-refunded-import"
+
+jest.mock("../ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
 
 describe("qb-sync order import subscriber", () => {
   it("posts order payloads with the shared sync token", async () => {
@@ -100,6 +105,56 @@ describe("qb-sync order import subscriber", () => {
   it("signs order import payloads with a timestamped HMAC", () => {
     expect(buildQbSyncSignature('{"order":{"id":"order_1"}}', "123", "secret"))
       .toHaveLength(64)
+  })
+
+  it("emits an ops alert when the QBD sync service rejects an import", async () => {
+    const previousEndpoint = process.env.QB_SYNC_ORDER_IMPORT_URL
+    const previousToken = process.env.QB_SYNC_ORDER_IMPORT_TOKEN
+    const previousFetch = global.fetch
+    const fetchMock = jest.fn(async () => new Response("bad qbxml", { status: 500 }))
+    const logger = { warn: jest.fn(), info: jest.fn(), error: jest.fn() }
+    const query = {
+      graph: jest.fn(async () => ({
+        data: [{ id: "order_qbd_failed", items: [], metadata: {} }],
+      })),
+    }
+    const db = jest.fn()
+    const container = {
+      resolve: jest.fn((key: string) => {
+        if (key === "logger") return logger
+        if (key === "query") return query
+        return db
+      }),
+    }
+
+    process.env.QB_SYNC_ORDER_IMPORT_URL =
+      "https://sync.example.test/api/medusa/orders"
+    process.env.QB_SYNC_ORDER_IMPORT_TOKEN = "sync-token"
+    global.fetch = fetchMock as unknown as typeof fetch
+    ;(emitOpsAlert as jest.Mock).mockClear()
+
+    try {
+      await importOrderToQbSync({
+        orderId: "order_qbd_failed",
+        container: container as any,
+        source: "order.placed",
+      })
+    } finally {
+      process.env.QB_SYNC_ORDER_IMPORT_URL = previousEndpoint
+      process.env.QB_SYNC_ORDER_IMPORT_TOKEN = previousToken
+      global.fetch = previousFetch
+    }
+
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "qbd_push_failed",
+        path: "src/subscribers/qb-sync-order-import.ts",
+        meta: expect.objectContaining({
+          order_id: "order_qbd_failed",
+          status: 500,
+        }),
+      })
+    )
   })
 
   it("requests order item relations that include Medusa computed quantity and variant data", () => {

@@ -1,6 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { releaseAllocationLineQuantities } from "../../../../../../lib/inventory-allocation"
+import { emitOpsAlert } from "../../../../../../lib/ops-alert"
 
 type RefundBody = {
   amount?: number | string
@@ -103,6 +104,7 @@ async function queueQbdRefundPosting({
   refundAmountValue,
   note,
   actorId,
+  logger,
 }: {
   orderModule: any
   orderId: string
@@ -110,15 +112,42 @@ async function queueQbdRefundPosting({
   refundAmountValue: number
   note?: string
   actorId?: string
+  logger?: any
 }) {
   const order = await orderModule.retrieveOrder(orderId, {
     select: ["id", "metadata"],
   })
   const amountMinor = Math.round(Math.abs(refundAmountValue) * 100)
   const requestKey = `refund:${refund.id}`
+  const existingMetadata = metadataObject(order?.metadata)
+  const existingPostingStatus = String(existingMetadata.qbd_posting_status || "")
+  const existingRequestKey = existingMetadata.qbd_posting_request_key
+
+  if (
+    existingPostingStatus.startsWith("pending") &&
+    existingRequestKey &&
+    existingRequestKey !== requestKey
+  ) {
+    // #251: a refund must not silently overwrite an unconsumed QBD posting request.
+    await emitOpsAlert({
+      alertKind: "qbd_pending_posting_overwritten",
+      title: `Refund ${refund.id} overwrote pending QBD posting for order ${orderId}`,
+      path: "src/api/admin/grillers/payments/[id]/refund/route.ts",
+      source: "medusa",
+      logger,
+      meta: {
+        order_id: orderId,
+        refund_id: refund.id,
+        previous_qbd_posting_status: existingPostingStatus,
+        previous_qbd_posting_request_key: existingRequestKey,
+        next_qbd_posting_request_key: requestKey,
+      },
+    })
+  }
+
   const metadata = appendAuditLog(
     {
-      ...metadataObject(order?.metadata),
+      ...existingMetadata,
       qbd_posting_required: true,
       qbd_posting_status: "pending_manual",
       qbd_posting_action: "card_refund_accounting_record",
@@ -153,6 +182,12 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const eventBus = req.scope.resolve(Modules.EVENT_BUS)
   const query = req.scope.resolve("query")
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+  let logger: any
+  try {
+    logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
+  } catch {
+    logger = undefined
+  }
 
   const before = await paymentModule.retrievePayment(paymentId, {
     select: ["id", "payment_collection_id", "currency_code"],
@@ -208,6 +243,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       refundAmountValue: resolvedRefundAmount,
       note: body.note,
       actorId: (req as any).auth_context?.actor_id,
+      logger,
     })
   }
 

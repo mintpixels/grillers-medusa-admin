@@ -1,6 +1,11 @@
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { POST } from "../[id]/refund/route"
 import { config as refundIssuedEmailConfig } from "../../../../../subscribers/refund-issued-email"
+import { emitOpsAlert } from "../../../../../lib/ops-alert"
+
+jest.mock("../../../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
 
 function makeAllocationDb(rows: any[] = []) {
   const updates: any[] = []
@@ -243,5 +248,88 @@ describe("staff payment refund route", () => {
       ])
     )
     expect(res.status).toHaveBeenCalledWith(200)
+  })
+
+  it("emits an ops alert when a refund overwrites a pending QBD posting request", async () => {
+    const refund = {
+      id: "refund_new",
+      amount: 5,
+      raw_amount: { value: "5" },
+      data: { id: "re_new" },
+    }
+    const paymentModule = {
+      retrievePayment: jest.fn(async () => ({
+        id: "pay_123",
+        payment_collection_id: "paycol_123",
+        currency_code: "usd",
+        refunds: [],
+      })),
+      refundPayment: jest.fn(async () => ({
+        id: "pay_123",
+        payment_collection_id: "paycol_123",
+        currency_code: "usd",
+        refunds: [refund],
+      })),
+    }
+    const orderModule = {
+      listOrderTransactions: jest.fn(async () => []),
+      addOrderTransactions: jest.fn(async () => undefined),
+      retrieveOrder: jest.fn(async () => ({
+        id: "order_123",
+        metadata: {
+          qbd_posting_status: "pending_manual",
+          qbd_posting_request_key: "final_charge:pi_existing",
+        },
+      })),
+      updateOrders: jest.fn(async () => undefined),
+    }
+    const eventBus = {
+      emit: jest.fn(async () => undefined),
+    }
+    const query = {
+      graph: jest.fn(async () => ({
+        data: [{ order_id: "order_123" }],
+      })),
+    }
+    const logger = { warn: jest.fn(), error: jest.fn() }
+    const { db } = makeAllocationDb()
+    const req = {
+      params: { id: "pay_123" },
+      body: { amount: 5, note: "Refund after pending posting" },
+      scope: {
+        resolve: (key: string) => {
+          if (key === Modules.PAYMENT) return paymentModule
+          if (key === Modules.ORDER) return orderModule
+          if (key === Modules.EVENT_BUS) return eventBus
+          if (key === "query") return query
+          if (key === ContainerRegistrationKeys.PG_CONNECTION) return db
+          if (key === ContainerRegistrationKeys.LOGGER) return logger
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+      auth_context: { actor_id: "user_123" },
+    } as any
+    const res = {
+      status: jest.fn(function status() {
+        return this
+      }),
+      json: jest.fn(),
+    } as any
+    ;(emitOpsAlert as jest.Mock).mockClear()
+
+    await POST(req, res)
+
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "qbd_pending_posting_overwritten",
+        path: "src/api/admin/grillers/payments/[id]/refund/route.ts",
+        meta: expect.objectContaining({
+          order_id: "order_123",
+          refund_id: "refund_new",
+          previous_qbd_posting_request_key: "final_charge:pi_existing",
+          next_qbd_posting_request_key: "refund:refund_new",
+        }),
+      })
+    )
   })
 })

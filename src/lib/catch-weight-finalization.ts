@@ -2450,6 +2450,25 @@ export async function createStripeFinalPaymentIntent(input: {
   return json as StripePaymentIntent
 }
 
+export function assertStripeFinalPaymentIntentSucceeded(
+  paymentIntent: StripePaymentIntent
+) {
+  if (paymentIntent.status === "succeeded") {
+    return
+  }
+
+  const status = paymentIntent.status || "unknown"
+  const error = new Error(
+    `Stripe final charge did not succeed. PaymentIntent ${paymentIntent.id} returned status ${status}.`
+  ) as Error & { stripe_error?: Record<string, any> }
+  error.stripe_error = {
+    code: "unexpected_payment_intent_status",
+    message: error.message,
+    payment_intent: paymentIntent,
+  }
+  throw error
+}
+
 export async function recordFinalChargeAttempt(
   db: CatchWeightDb,
   input: {

@@ -7,6 +7,7 @@ import {
   FINALIZATION_CHARGED_READY_TO_SHIP,
   FINALIZATION_PACKED_PENDING_CHARGE,
   appendStaffAudit,
+  assertStripeFinalPaymentIntentSucceeded,
   createStripeFinalPaymentIntent,
   finalChargeOrderMetadata,
   finalChargeSucceeded,
@@ -24,6 +25,10 @@ import {
   bookWwexFinalizationShipment,
   quoteWwexFinalizationShipping,
 } from "../../../../../../../lib/wwex-finalization-shipment"
+import {
+  emitChargeFailedHoldAlert,
+  emitFinalChargeNonSucceededAlert,
+} from "../../../../../../../lib/final-charge-ops-alerts"
 
 type ChargeBody = {
   idempotency_key?: string
@@ -127,6 +132,18 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       finalizationId: preview.finalization.id,
       displayId: (order as any).display_id ? String((order as any).display_id) : null,
     })
+    if (paymentIntent.status && paymentIntent.status !== "succeeded") {
+      // #251: non-succeeded Stripe intents must be visible before the assert trips.
+      await emitFinalChargeNonSucceededAlert({
+        logger,
+        orderId: order.id,
+        finalizationId: preview.finalization.id,
+        paymentIntentId: paymentIntent.id,
+        paymentIntentStatus: paymentIntent.status,
+        amount: finalOrderTotal,
+      })
+    }
+    assertStripeFinalPaymentIntentSucceeded(paymentIntent)
     const chargeId = stripeChargeId(paymentIntent)
     const attempt = await recordFinalChargeAttempt(db, {
       orderId: order.id,
@@ -325,6 +342,17 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         updated_at: new Date(),
       })
     await orderModule.updateOrders(order.id, { metadata })
+    // #251: every charge_failed_hold entry must emit an ops alert.
+    await emitChargeFailedHoldAlert({
+      logger,
+      orderId: order.id,
+      finalizationId: preview.finalization.id,
+      chargeAttemptId: attempt.id,
+      paymentIntentId: stripeError.payment_intent?.id || null,
+      paymentIntentStatus: stripeError.payment_intent?.status || null,
+      failureCode: stripeError.code || null,
+      failureMessage,
+    })
 
     res.status(402).json({
       message: failureMessage,

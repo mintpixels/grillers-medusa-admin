@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Mark start
+        run: echo "CI_STARTED_AT_MS=$(date +%s000)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - name: Unit tests
+        run: yarn test:unit
+      - name: TypeScript
+        run: npx tsc --noEmit
+      - name: Emit ops.ci
+        if: always()
+        env:
+          JITSU_HOST: ${{ secrets.JITSU_HOST }}
+          JITSU_SERVER_SECRET: ${{ secrets.JITSU_SERVER_SECRET }}
+          CI_CONCLUSION: ${{ job.status }}
+        run: node .github/scripts/emit-ops-ci.mjs

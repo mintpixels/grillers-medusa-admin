@@ -3,6 +3,7 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { createHmac } from "node:crypto"
 
 import { resolveFoodTaxForAddress } from "../modules/ga-tax/rules"
+import { emitOpsAlert } from "../lib/ops-alert"
 
 export const ORDER_FIELDS = [
   "id",
@@ -641,6 +642,20 @@ export async function importOrderToQbSync({
       logger.error(
         `[qb-sync-order-import] import failed order=${orderId} source=${source} status=${response.status} body=${body.slice(0, 500)}`
       )
+      // #251: QBD import failures must be queryable even though order flow continues.
+      await emitOpsAlert({
+        alertKind: "qbd_push_failed",
+        title: `QBD order import failed for ${orderId}`,
+        path: "src/subscribers/qb-sync-order-import.ts",
+        source: "medusa",
+        logger,
+        meta: {
+          order_id: orderId,
+          source_event: source,
+          status: response.status,
+          body_preview: body.slice(0, 500),
+        },
+      })
       return
     }
 
@@ -650,6 +665,19 @@ export async function importOrderToQbSync({
     logger.error(
       `[qb-sync-order-import] failed for order ${orderId} source=${source}: ${message}`
     )
+    // #251: QBD import exceptions must not disappear into logs only.
+    await emitOpsAlert({
+      alertKind: "qbd_push_failed",
+      title: `QBD order import exception for ${orderId}`,
+      path: "src/subscribers/qb-sync-order-import.ts",
+      source: "medusa",
+      logger,
+      meta: {
+        order_id: orderId,
+        source_event: source,
+        error: message,
+      },
+    })
   }
 }
 

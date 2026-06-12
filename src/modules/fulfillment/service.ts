@@ -30,6 +30,7 @@ import {
   type WwexSpeedshipClient,
   wwexRateInputFromFulfillmentData,
 } from "./wwex-speedship";
+import { emitOpsAlert } from "../../lib/ops-alert";
 
 type InjectedDependencies = {
   logger: Logger;
@@ -334,7 +335,7 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
           zoneIsPercent = expeditedFallbackIsPercent;
         }
 
-        let price = -10;
+        let price: number | null = null;
         if (tierSet.length > 0) {
           tierSet.sort(
             (a: any, b: any) => a.BreakpointPrice - b.BreakpointPrice
@@ -357,6 +358,12 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
           } else {
             price = matchedTier.ShippingRate;
           }
+        }
+
+        if (price === null) {
+          throw new Error(
+            `No configured shipping rate tier matched service ${serviceCode || "unknown"} for ${zip || city || "unknown destination"}.`
+          );
         }
 
         return price;
@@ -455,6 +462,23 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
       ...data,
       ...context,
     });
+    if (amount === -10) {
+      // #251: the legacy sentinel means shipping failed open.
+      await emitOpsAlert({
+        alertKind: "shipping_calculate_price_sentinel",
+        title: "Shipping calculatePrice returned -10 sentinel",
+        path: "src/modules/fulfillment/service.ts",
+        source: "medusa",
+        logger: this.logger_,
+        meta: {
+          service_code: (optionData as any)?.service_code || null,
+          postal_code:
+            (data as any)?.shipping_address?.postal_code ||
+            (context as any)?.shipping_address?.postal_code ||
+            null,
+        },
+      });
+    }
     return {
       calculated_amount: amount,
       is_calculated_price_tax_inclusive: true,

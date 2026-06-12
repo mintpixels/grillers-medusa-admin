@@ -1,4 +1,9 @@
 import GrillersFulfillmentProviderService from "../service"
+import { emitOpsAlert } from "../../../lib/ops-alert"
+
+jest.mock("../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
 
 const logger = {
   info: jest.fn(),
@@ -164,5 +169,47 @@ describe("GrillersFulfillmentProviderService", () => {
     )
 
     expect(result.calculated_amount).toBe(160)
+  })
+
+  it("fails closed when no Strapi shipping-zone tier matches", async () => {
+    mockShippingZones([])
+
+    await expect(
+      service().calculatePrice(
+        { service_code: "GROUND" } as any,
+        {
+          shipping_address: { postal_code: "30340" },
+          items: [{ unit_price: 100, quantity: 1, metadata: {} }],
+        } as any,
+        {} as any
+      )
+    ).rejects.toThrow(
+      "No configured shipping rate tier matched service GROUND for 30340."
+    )
+  })
+
+  it("emits an ops alert if a shipping provider returns the legacy -10 sentinel", async () => {
+    const svc = service()
+    ;(svc as any).client.calculate = jest.fn(async () => -10)
+
+    const result = await svc.calculatePrice(
+      { service_code: "GROUND" } as any,
+      {
+        shipping_address: { postal_code: "30340" },
+      } as any,
+      {} as any
+    )
+
+    expect(result.calculated_amount).toBe(-10)
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "shipping_calculate_price_sentinel",
+        path: "src/modules/fulfillment/service.ts",
+        meta: expect.objectContaining({
+          service_code: "GROUND",
+          postal_code: "30340",
+        }),
+      })
+    )
   })
 })
