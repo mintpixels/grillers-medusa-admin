@@ -17,6 +17,8 @@
     "seed": "medusa exec ./src/scripts/seed.ts",
     "email:preview": "ts-node --transpile-only src/scripts/preview-emails.ts",
     "communications:worker": "medusa exec ./src/scripts/communications-worker.ts",
+    "promos:free-shipping:verify": "medusa exec ./src/scripts/seed-free-shipping-promotions.ts -- --verify",
+    "promos:free-shipping:write": "medusa exec ./src/scripts/seed-free-shipping-promotions.ts -- --write",
     "recover:production-backend": "node src/scripts/recover-production-backend.mjs",
     "smoke:production-backend": "node src/scripts/smoke-production-backend.mjs",
     "smoke:wwex": "ts-node --transpile-only src/scripts/smoke-wwex-speedship.ts",
