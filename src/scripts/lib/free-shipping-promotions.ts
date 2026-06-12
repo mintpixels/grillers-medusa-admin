@@ -56,7 +56,7 @@ export const FREE_SHIPPING_PROMOTION_SPECS: AutoAppliedPromotionSpec[] = [
     application_method: {
       type: "fixed",
       target_type: "order",
-      value: 15,
+      value: 20,
       currency_code: "usd",
       allocation: "across",
     },

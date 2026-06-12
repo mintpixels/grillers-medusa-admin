@@ -16,13 +16,71 @@ type RefundBody = {
   }>
 }
 
-const numericAmount = (value: unknown): number | undefined => {
+type AllocationRelease = {
+  line_item_id: string
+  quantity: number
+}
+
+type FinalChargeRefundEntry = {
+  id: string
+  amount: number
+  amount_minor: number
+  idempotency_key: string
+  qbd_posting_request_key: string
+  created_at: string
+}
+
+class RequestError extends Error {
+  constructor(
+    message: string,
+    readonly status = 422
+  ) {
+    super(message)
+  }
+}
+
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  "bif",
+  "clp",
+  "djf",
+  "gnf",
+  "jpy",
+  "kmf",
+  "krw",
+  "mga",
+  "pyg",
+  "rwf",
+  "ugx",
+  "vnd",
+  "vuv",
+  "xaf",
+  "xof",
+  "xpf",
+])
+
+function currencyPrecision(currencyCode = "usd") {
+  return ZERO_DECIMAL_CURRENCIES.has(currencyCode.toLowerCase()) ? 0 : 2
+}
+
+function normalizeCurrencyAmount(
+  value: unknown,
+  currencyCode: string,
+  label: string
+): number | undefined {
   if (value === undefined || value === null || value === "") return undefined
   const amount = Number(value)
   if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error("Refund amount must be greater than zero.")
+    throw new RequestError(`${label} must be greater than zero.`)
   }
-  return amount
+  const precision = currencyPrecision(currencyCode)
+  const factor = 10 ** precision
+  const rounded = Math.round(amount * factor) / factor
+  if (Math.abs(amount - rounded) > 1e-9) {
+    throw new RequestError(
+      `${label} cannot include more than ${precision} decimal places for ${currencyCode.toUpperCase()}.`
+    )
+  }
+  return rounded
 }
 
 const appendAuditLog = (
@@ -100,8 +158,104 @@ async function createStripeRefund({
   if (!response.ok) {
     throw new Error(json?.error?.message || "Stripe final-charge refund failed.")
   }
+  if (!json?.id) {
+    throw new Error("Stripe final-charge refund response did not include a refund id.")
+  }
+  if (["failed", "canceled"].includes(String(json.status || ""))) {
+    throw new Error(
+      `Stripe final-charge refund ${json.id} returned status ${json.status}.`
+    )
+  }
 
   return json as Record<string, any>
+}
+
+function finalChargeRefundEntries(
+  metadata: Record<string, any>
+): FinalChargeRefundEntry[] {
+  const raw = metadata.final_charge_refunds
+  return Array.isArray(raw)
+    ? raw.filter(
+        (entry) =>
+          entry &&
+          typeof entry === "object" &&
+          typeof entry.id === "string" &&
+          typeof entry.idempotency_key === "string"
+      )
+    : []
+}
+
+function paymentResponse({
+  paymentIntentId,
+  capturedAmount,
+  refundedAmount,
+  currencyCode,
+  refund,
+  refundAmount,
+}: {
+  paymentIntentId: string
+  capturedAmount: number
+  refundedAmount: number
+  currencyCode: string
+  refund?: Record<string, any> | FinalChargeRefundEntry | null
+  refundAmount?: number
+}) {
+  const amount = refund
+    ? Number(
+        refundAmount ??
+          (refund as any).raw_amount?.value ??
+          (refund as FinalChargeRefundEntry).amount ??
+          0
+      )
+    : 0
+
+  return {
+    payment: {
+      id: `final_charge:${paymentIntentId}`,
+      provider_id: "pp_stripe_final_charge",
+      amount: capturedAmount,
+      refunded_amount: refundedAmount,
+      currency_code: currencyCode,
+      status:
+        refundedAmount >= capturedAmount ? "refunded" : "partially_refunded",
+      refunds: refund
+        ? [
+            {
+              id: refund.id,
+              amount,
+              raw_amount: { value: String(amount) },
+              data: refund,
+              provider_refund_id: refund.id,
+            },
+          ]
+        : [],
+    },
+  }
+}
+
+function normalizeAllocationReleases(
+  releases: RefundBody["allocation_releases"],
+  currencyCode: string
+): { orderId?: string; lines: AllocationRelease[] } {
+  const lines = (releases || [])
+    .filter((line) => line.line_item_id)
+    .map((line) => ({
+      line_item_id: line.line_item_id!,
+      quantity:
+        normalizeCurrencyAmount(
+          line.quantity,
+          currencyCode,
+          "Allocation release quantity"
+        ) || 0,
+    }))
+    .filter((line) => line.quantity > 0)
+  const orderId = (releases || []).find((line) => line.order_id)?.order_id
+
+  return { orderId, lines }
+}
+
+function pendingQbdPosting(metadata: Record<string, any>) {
+  return String(metadata.qbd_posting_status || "").startsWith("pending")
 }
 
 function requestHeader(req: MedusaRequest, name: string): string | undefined {
@@ -119,6 +273,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const orderModule = req.scope.resolve(Modules.ORDER)
   const eventBus = req.scope.resolve(Modules.EVENT_BUS)
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+  let stripeRefund: Record<string, any> | undefined
 
   try {
     const order = await orderModule.retrieveOrder(orderId, {
@@ -142,7 +297,28 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     )
     const alreadyRefunded = Number(metadata.final_charge_refunded_amount || 0)
     const refundableAmount = Math.max(0, capturedAmount - alreadyRefunded)
-    const refundAmount = numericAmount(body.amount) ?? refundableAmount
+    const refundAmount =
+      normalizeCurrencyAmount(body.amount, currencyCode, "Refund amount") ??
+      refundableAmount
+    const idempotencyKey =
+      requestHeader(req, "Idempotency-Key") ||
+      `final-charge-refund:${order.id}:${paymentIntentId}:${refundAmount}`
+    const existingRefundEntry = finalChargeRefundEntries(metadata).find(
+      (entry) => entry.idempotency_key === idempotencyKey
+    )
+
+    if (existingRefundEntry) {
+      return res.status(200).json(
+        paymentResponse({
+          paymentIntentId,
+          capturedAmount,
+          refundedAmount: alreadyRefunded,
+          currencyCode,
+          refund: existingRefundEntry,
+          refundAmount: existingRefundEntry.amount,
+        })
+      )
+    }
 
     if (refundAmount <= 0 || refundAmount > refundableAmount + 0.005) {
       return res.status(422).json({
@@ -150,9 +326,21 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       })
     }
 
-    const idempotencyKey =
-      requestHeader(req, "Idempotency-Key") ||
-      `final-charge-refund:${order.id}:${paymentIntentId}:${refundAmount}`
+    const allocation = normalizeAllocationReleases(
+      body.allocation_releases,
+      currencyCode
+    )
+
+    if (pendingQbdPosting(metadata)) {
+      return res.status(409).json({
+        message:
+          "Order already has a pending QuickBooks posting. Post or clear it before refunding the final charge.",
+        qbd_posting_status: metadata.qbd_posting_status,
+        qbd_posting_action: metadata.qbd_posting_action,
+        qbd_posting_request_key: metadata.qbd_posting_request_key,
+      })
+    }
+
     const refund = await createStripeRefund({
       paymentIntentId,
       amount: refundAmount,
@@ -161,8 +349,13 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       note: body.note,
       idempotencyKey,
     })
+    stripeRefund = refund
     const requestKey = `refund:${refund.id}`
     const amountMinor = amountInMinorUnits(refundAmount, currencyCode)
+    const existingEntries = finalChargeRefundEntries(metadata)
+    const refundRecordedInMetadata =
+      existingEntries.some((entry) => entry.id === refund.id) ||
+      metadata.stripe_refund_id === refund.id
 
     const existingTransactions = await orderModule.listOrderTransactions(
       {
@@ -172,7 +365,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       },
       { select: ["id"] }
     )
-    if (!existingTransactions.length) {
+    const refundAlreadyRecorded =
+      existingTransactions.length > 0 || refundRecordedInMetadata
+
+    if (!refundAlreadyRecorded) {
       await orderModule.addOrderTransactions({
         order_id: order.id,
         amount: -Math.abs(refundAmount),
@@ -181,13 +377,25 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         reference_id: refund.id,
       })
     }
+    const nextRefundedAmount = refundAlreadyRecorded
+      ? alreadyRefunded
+      : Number((alreadyRefunded + refundAmount).toFixed(2))
+    const refundEntry: FinalChargeRefundEntry = {
+      id: refund.id,
+      amount: refundAmount,
+      amount_minor: amountMinor,
+      idempotency_key: idempotencyKey,
+      qbd_posting_request_key: requestKey,
+      created_at: new Date().toISOString(),
+    }
 
     const nextMetadata = appendAuditLog(
       {
         ...metadata,
-        final_charge_refunded_amount: Number(
-          (alreadyRefunded + refundAmount).toFixed(2)
-        ),
+        final_charge_refunded_amount: nextRefundedAmount,
+        final_charge_refunds: refundRecordedInMetadata
+          ? existingEntries
+          : [...existingEntries, refundEntry].slice(-50),
         qbd_posting_required: true,
         qbd_posting_status: "pending_manual",
         qbd_posting_action: "card_refund_accounting_record",
@@ -223,22 +431,12 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       },
     })
 
-    const allocationLines = (body.allocation_releases || [])
-      .filter((line) => line.line_item_id)
-      .map((line) => ({
-        line_item_id: line.line_item_id!,
-        quantity: numericAmount(line.quantity) || 0,
-      }))
-      .filter((line) => line.quantity > 0)
-    const allocationOrderId =
-      (body.allocation_releases || []).find((line) => line.order_id)
-        ?.order_id || order.id
-
-    if (allocationOrderId && allocationLines.length) {
+    const allocationOrderId = allocation.orderId || order.id
+    if (allocationOrderId && allocation.lines.length) {
       await releaseAllocationLineQuantities({
         db,
         orderId: allocationOrderId,
-        lines: allocationLines,
+        lines: allocation.lines,
         reason: "released_refund",
         actorType: "staff",
         actorId: (req as any).auth_context?.actor_id,
@@ -246,32 +444,26 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       })
     }
 
-    res.status(200).json({
-      payment: {
-        id: `final_charge:${paymentIntentId}`,
-        provider_id: "pp_stripe_final_charge",
-        amount: capturedAmount,
-        refunded_amount: alreadyRefunded + refundAmount,
-        currency_code: currencyCode,
-        status:
-          alreadyRefunded + refundAmount >= capturedAmount
-            ? "refunded"
-            : "partially_refunded",
-        refunds: [
-          {
-            id: refund.id,
-            amount: refundAmount,
-            raw_amount: { value: String(refundAmount) },
-            data: refund,
-            provider_refund_id: refund.id,
-          },
-        ],
-      },
-    })
+    res.status(200).json(
+      paymentResponse({
+        paymentIntentId,
+        capturedAmount,
+        refundedAmount: nextRefundedAmount,
+        currencyCode,
+        refund,
+        refundAmount,
+      })
+    )
   } catch (err) {
-    res.status(402).json({
-      message:
-        err instanceof Error ? err.message : "Stripe final-charge refund failed.",
-    })
+    const message =
+      err instanceof Error ? err.message : "Stripe final-charge refund failed."
+    if (stripeRefund?.id) {
+      return res.status(500).json({
+        message: `Stripe refund ${stripeRefund.id} succeeded, but Medusa refund recording failed: ${message}`,
+        stripe_refund_id: stripeRefund.id,
+      })
+    }
+
+    res.status(err instanceof RequestError ? err.status : 402).json({ message })
   }
 }
