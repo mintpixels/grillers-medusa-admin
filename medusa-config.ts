@@ -176,6 +176,10 @@ module.exports = defineConfig({
             options: {
               jitsuHost: process.env.JITSU_HOST,
               jitsuServerSecret: process.env.JITSU_SERVER_SECRET,
+              gpAnalyticsEndpoint: process.env.GP_ANALYTICS_ENDPOINT,
+              gpAnalyticsServerKey: process.env.GP_ANALYTICS_SERVER_KEY,
+              gpAnalyticsDualRun:
+                process.env.GP_ANALYTICS_DUAL_RUN !== "false",
             },
           },
         ],

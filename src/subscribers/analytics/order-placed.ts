@@ -67,6 +67,10 @@ export default async function orderPlacedHandler({
             metadata.payment_workflow || PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
           finalization_id: metadata.finalization_id,
           final_charge_status: metadata.final_charge_status || "not_started",
+          source: metadata.source === "staff" ? "staff" : "web",
+          customer_type: metadata.customer_type || "unknown",
+          route_market: metadata.route_market || "unknown",
+          fulfillment_tier: metadata.fulfillment_tier || undefined,
         },
       })
       return
@@ -101,6 +105,11 @@ export default async function orderPlacedHandler({
         shipping_tier: order.shipping_methods?.[0]?.name,
         payment_method:
           order.payment_collections?.[0]?.payments?.[0]?.provider_id,
+        source: metadata.source === "staff" ? "staff" : "web",
+        customer_type: metadata.customer_type || "unknown",
+        route_market: metadata.route_market || "unknown",
+        fulfillment_tier:
+          metadata.fulfillment_tier || order.shipping_methods?.[0]?.name,
         items: order.items?.map((item: any) => ({
           item_id: item.variant?.product_id || item.id,
           item_name: item.title,
@@ -117,6 +126,40 @@ export default async function orderPlacedHandler({
         })),
       },
     })
+
+    if (name === "order.final_charge_succeeded") {
+      await analyticsService.track({
+        event: "order_finalized",
+        actor_id: customerId,
+        properties: {
+          transaction_id: order.id,
+          display_id: (order as any).display_id,
+          estimated_total: order.total,
+          final_total:
+            data.amount ||
+            Number(metadata.final_total || metadata.final_order_total) ||
+            order.total,
+          catch_weight_delta:
+            Number(metadata.final_total || metadata.final_order_total || order.total) -
+            Number(metadata.estimated_total || order.total),
+          currency: order.currency_code,
+          email: order.email,
+          customer_id: customerId,
+          source: metadata.source === "staff" ? "staff" : "web",
+          customer_type: metadata.customer_type || "unknown",
+          route_market: metadata.route_market || "unknown",
+          fulfillment_tier:
+            metadata.fulfillment_tier || order.shipping_methods?.[0]?.name,
+          lines: order.items?.map((item: any) => ({
+            line_item_id: item.id,
+            variant_id: item.variant_id,
+            estimated_total: item.total,
+            final_total:
+              metadata[`final_line_total_${item.id}`] || item.total,
+          })),
+        },
+      })
+    }
   } catch (err) {
     logger.error(
       `Analytics: Failed to track ${name} for ${orderId}`,
