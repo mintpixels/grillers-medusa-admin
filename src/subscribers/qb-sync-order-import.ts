@@ -693,5 +693,5 @@ export default async function qbSyncOrderImportHandler({
 }
 
 export const config: SubscriberConfig = {
-  event: ["order.placed", "order.final_charge_succeeded"],
+  event: ["order.placed", "order.updated", "order.final_charge_succeeded"],
 }

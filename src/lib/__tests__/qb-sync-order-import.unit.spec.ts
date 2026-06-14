@@ -5,6 +5,7 @@ import {
   legacyQbdListIdFallbacksForOrder,
   normalizeOrderForQbSync,
   postOrderToQbSync,
+  config as orderImportConfig,
 } from "../../subscribers/qb-sync-order-import"
 import { emitOpsAlert } from "../ops-alert"
 import { config as canceledOrderImportConfig } from "../../subscribers/qb-sync-order-canceled-import"
@@ -180,6 +181,16 @@ describe("qb-sync order import subscriber", () => {
 
   it("registers a cancellation subscriber so canceled orders refresh the sync app", () => {
     expect(canceledOrderImportConfig.event).toBe("order.canceled")
+  })
+
+  it("refreshes the sync app when order metadata is updated", () => {
+    expect(orderImportConfig.event).toEqual(
+      expect.arrayContaining([
+        "order.placed",
+        "order.updated",
+        "order.final_charge_succeeded",
+      ])
+    )
   })
 
   it("registers a refund subscriber so staff refunds refresh the sync app", () => {
