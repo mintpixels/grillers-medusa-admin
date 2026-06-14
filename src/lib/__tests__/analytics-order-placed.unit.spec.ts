@@ -1,4 +1,4 @@
-import orderPlacedHandler from "../order-placed"
+import orderPlacedHandler from "../../subscribers/analytics/order-placed"
 
 describe("analytics order placed subscriber", () => {
   const logger = {
