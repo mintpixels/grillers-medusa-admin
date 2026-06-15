@@ -4,6 +4,8 @@ import Attribution from "./models/attribution"
 import CartLifecycle from "./models/cart-lifecycle"
 import CommunicationEvent from "./models/communication-event"
 import CommunicationFlow from "./models/communication-flow"
+import CustomerPhoneObservation from "./models/customer-phone-observation"
+import CustomerPhoneRecommendation from "./models/customer-phone-recommendation"
 import CustomerProfile from "./models/customer-profile"
 import EmailTemplate from "./models/email-template"
 import EventDelivery from "./models/event-delivery"
@@ -12,6 +14,7 @@ import IdentityMap from "./models/identity-map"
 import ImportRun from "./models/import-run"
 import LinkClick from "./models/link-click"
 import MessageLog from "./models/message-log"
+import PhoneNumberIntelligence from "./models/phone-number-intelligence"
 import Segment from "./models/segment"
 import SegmentMember from "./models/segment-member"
 import SuppressionPreference from "./models/suppression-preference"
@@ -22,6 +25,8 @@ class GpCommunicationsModuleService extends MedusaService({
   CartLifecycle,
   CommunicationEvent,
   CommunicationFlow,
+  CustomerPhoneObservation,
+  CustomerPhoneRecommendation,
   CustomerProfile,
   EmailTemplate,
   EventDelivery,
@@ -30,6 +35,7 @@ class GpCommunicationsModuleService extends MedusaService({
   ImportRun,
   LinkClick,
   MessageLog,
+  PhoneNumberIntelligence,
   Segment,
   SegmentMember,
   SuppressionPreference,
