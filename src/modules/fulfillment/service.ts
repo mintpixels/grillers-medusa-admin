@@ -31,6 +31,14 @@ import {
   wwexRateInputFromFulfillmentData,
 } from "./wwex-speedship";
 import { emitOpsAlert } from "../../lib/ops-alert";
+import {
+  forecastShippingCost,
+  forecastModelFileMtimeMs,
+  loadShippingCostForecastModel,
+  loadShippingCostForecastModelResult,
+  shippingForecastInputFromFulfillmentData,
+  type ShippingCostForecastResult,
+} from "../../lib/shipping-cost-forecast";
 
 type InjectedDependencies = {
   logger: Logger;
@@ -166,6 +174,49 @@ function strapiRow<T extends Record<string, unknown>>(row: unknown): T | null {
   return ((value.attributes as T | undefined) || (value as T)) ?? null;
 }
 
+function envNumber(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const parsed = Number(String(value).replace(/[$,]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+// No real UPS small-parcel domestic shipment costs less than this; a forecast
+// charge below it is treated as non-confident (degenerate / out-of-distribution)
+// and falls through to WWEX/Strapi. Operators can override or disable with 0.
+const DEFAULT_MIN_FORECAST_USD = 5;
+
+/**
+ * Turns a model prediction into the dollar amount to charge at checkout, or null
+ * if the forecast is not confident (caller then falls through to WWEX/Strapi).
+ *  - Adds a configurable margin buffer (default p75 residual) so we don't
+ *    under-recover on ~half of orders (the model is mean-unbiased on its own).
+ *  - A non-positive point estimate, or one outside the optional MIN/MAX sanity
+ *    band, is treated as non-confident -> null -> fall through.
+ *  - Deliberately does NOT clamp up to the Strapi tier: that table is inflated
+ *    (~$75 ground vs ~$18 real cost), so clamping would massively overcharge.
+ */
+function resolveForecastCharge(
+  forecast: ShippingCostForecastResult,
+  env: Record<string, string | undefined>
+): number | null {
+  if (!(forecast.amount > 0)) return null;
+  const percentile = String(
+    env.GRILLERS_SHIPPING_FORECAST_SAFETY_PERCENTILE || "p75"
+  ).toLowerCase();
+  const buffer =
+    percentile === "p90"
+      ? forecast.confidence.residual_p90
+      : percentile === "p50" || percentile === "none"
+        ? 0
+        : forecast.confidence.residual_p75;
+  const charge = Math.round((forecast.amount + buffer + Number.EPSILON) * 100) / 100;
+  const minUsd = envNumber(env.GRILLERS_SHIPPING_FORECAST_MIN_USD) ?? DEFAULT_MIN_FORECAST_USD;
+  const maxUsd = envNumber(env.GRILLERS_SHIPPING_FORECAST_MAX_USD);
+  if (minUsd > 0 && charge < minUsd) return null;
+  if (maxUsd != null && maxUsd > 0 && charge > maxUsd) return null;
+  return charge;
+}
+
 export default class GrillersFulfillmentProviderService extends AbstractFulfillmentProviderService {
   static identifier = "grillers-fulfillment"; // => stored as fp_grillers_<id> in DB
 
@@ -173,6 +224,9 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
   protected options_: Options;
   protected strapiSvc: any;
   protected wwexClient: WwexSpeedshipClient | null;
+  protected shippingCostForecastModel: ReturnType<typeof loadShippingCostForecastModel>;
+  protected shippingForecastModelPath: string | null;
+  protected shippingForecastModelMtimeMs: number | null;
 
   // Example: your external shipper SDK/client
   protected client: {
@@ -205,6 +259,10 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
       process.env,
       this.logger_
     );
+    this.shippingCostForecastModel = null;
+    this.shippingForecastModelPath = null;
+    this.shippingForecastModelMtimeMs = null;
+    this.reloadForecastModel(); // boot-safe: never throws, fails open on a bad model file
     // this.strapiSvc = container.resolve(STRAPI_MODULE) as StrapiModuleService;
 
     // Initialize your third-party client here (SDK, REST wrapper, etc.)
@@ -222,6 +280,16 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         const zip: string = optionData?.shipping_address?.postal_code;
         const serviceCode = normalizeServiceCode(optionData?.service_code);
         const items = Array.isArray(optionData?.items) ? optionData.items : [];
+
+        const forecastAmount = this.calculateForecastShippingRate({
+          ...optionData,
+          service_code: serviceCode,
+          shipping_address: optionData?.shipping_address,
+          items,
+        });
+        if (forecastAmount !== null) {
+          return forecastAmount;
+        }
 
         const wwexAmount = await this.calculateWwexShippingRate({
           ...optionData,
@@ -407,6 +475,83 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
       const message = error instanceof Error ? error.message : String(error);
       this.logger_.warn(
         `[wwex] live UPS ${serviceCode} quote failed; falling back to Strapi shipping zones: ${message}`
+      );
+      return null;
+    }
+  }
+
+  /** Boot-safe (re)load of the forecast model; never throws (fails open). */
+  private reloadForecastModel(): void {
+    const result = loadShippingCostForecastModelResult(process.env);
+    this.shippingCostForecastModel = result.model;
+    this.shippingForecastModelPath = result.path;
+    this.shippingForecastModelMtimeMs = forecastModelFileMtimeMs(result.path);
+    if (result.error) {
+      this.logger_.warn(
+        `[shipping-forecast] model unavailable (${result.error}); using WWEX/Strapi rates`
+      );
+    } else if (result.model) {
+      this.logger_.info(
+        `[shipping-forecast] loaded ${result.model.schema_version} model from ${result.path}`
+      );
+    }
+  }
+
+  /**
+   * Returns the active model, lazily hot-reloading when the model file's mtime
+   * changes so a retrained model can be picked up without a full redeploy.
+   */
+  private getForecastModel(): ReturnType<typeof loadShippingCostForecastModel> {
+    if (this.shippingForecastModelPath) {
+      const mtime = forecastModelFileMtimeMs(this.shippingForecastModelPath);
+      if (mtime !== null && mtime !== this.shippingForecastModelMtimeMs) {
+        this.reloadForecastModel();
+      }
+    }
+    return this.shippingCostForecastModel;
+  }
+
+  private calculateForecastShippingRate(data: Record<string, unknown>): number | null {
+    const model = this.getForecastModel();
+    if (!model) return null;
+
+    const serviceCode = normalizeGrillersUpsServiceCode(data.service_code);
+    if (!isUpsServiceCode(serviceCode)) return null;
+
+    const input = shippingForecastInputFromFulfillmentData(
+      serviceCode,
+      data as Record<string, any>
+    );
+    if (!input) return null;
+
+    try {
+      const forecast = forecastShippingCost(model, input);
+      if (!forecast) return null;
+      const charge = resolveForecastCharge(forecast, process.env);
+      // Structured feedback log: pairs the predicted charge with order identity so
+      // it can be reconciled against the eventual Unishippers actual cost (drift).
+      this.logger_.info(
+        `[shipping-forecast] ${JSON.stringify({
+          service: forecast.metadata.service,
+          ship_state: forecast.metadata.ship_state,
+          point_estimate: forecast.amount,
+          residual_p75: forecast.confidence.residual_p75,
+          charged: charge,
+          confident: charge !== null,
+          ref:
+            (data as any)?.cart_id ||
+            (data as any)?.id ||
+            (data as any)?.shipping_address?.postal_code ||
+            null,
+        })}`
+      );
+      // A non-confident forecast (degenerate / out-of-band) falls through to the
+      // WWEX live quote and then the conservative Strapi tier table.
+      return charge;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger_.warn(
+        `[shipping-forecast] checkout shipping forecast failed; falling back to WWEX/Strapi rates: ${message}`
       );
       return null;
     }
