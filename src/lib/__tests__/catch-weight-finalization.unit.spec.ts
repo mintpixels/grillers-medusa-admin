@@ -2164,4 +2164,66 @@ describe("catch-weight finalization helpers", () => {
       "blocked_until_final_charge"
     )
   })
+
+  it("persists a full-quantity fixed-price pick across a re-fetch", async () => {
+    const item = {
+      id: "item_full_qty_pick",
+      title: "Chicken Soup",
+      variant_id: "variant_soup",
+      variant_sku: "10-01-11-0",
+      quantity: 5,
+      unit_price: 12,
+      subtotal: 60,
+      total: 60,
+      metadata: {
+        pricing_mode: "fixed",
+        qbd_list_id: "QBD-SOUP",
+      },
+    }
+    const snapshot = buildFinalizationLineSnapshot(
+      { id: "order_full_qty_pick" },
+      item,
+      "gpfin_full_qty_pick"
+    )
+    const db = createMemoryCatchWeightDb({
+      gp_order_finalization: [
+        {
+          id: "gpfin_full_qty_pick",
+          order_id: "order_full_qty_pick",
+          status: "picking",
+          estimated_order_total: 60,
+          deleted_at: null,
+        },
+      ],
+      gp_order_finalization_line: [{ ...snapshot, deleted_at: null }],
+      gp_order_payment_setup: [],
+      gp_final_charge_attempt: [],
+    })
+
+    const order = {
+      id: "order_full_qty_pick",
+      total: 60,
+      item_subtotal: 60,
+      tax_total: 0,
+      shipping_total: 0,
+      discount_total: 0,
+      items: [item],
+    }
+
+    // Picker enters the full ordered quantity and saves the line.
+    await updateFinalizationLine(db, order.id, item.id, {
+      actual_quantity: 5,
+      actual_piece_count: 5,
+    })
+
+    expect(db.tables.gp_order_finalization_line[0].actual_quantity).toBe(5)
+
+    // The console immediately re-fetches the order. The repair logic must not
+    // wipe the picked quantity just because it equals the ordered quantity.
+    const refetched = await ensureFinalizationForOrder(db, order)
+
+    expect(refetched.lines[0].actual_quantity).toBe(5)
+    expect(refetched.lines[0].actual_piece_count).toBe(5)
+    expect(db.tables.gp_order_finalization_line[0].actual_quantity).toBe(5)
+  })
 })
