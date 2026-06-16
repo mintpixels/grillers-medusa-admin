@@ -13,15 +13,24 @@ type LineItemLike = {
   product?: { metadata?: Record<string, unknown> | null } | null
 }
 
-const SCHEMA_VERSION = "shipping_cost_forecast_v2" as const
+const SCHEMA_VERSION = "shipping_cost_forecast_v2" as const // linear (ridge) model
+const GBM_SCHEMA = "shipping_cost_forecast_v3" as const // gradient-boosted tree model
 
-type ShippingCostForecastModel = {
+type CommonFallbacks = {
+  global_median?: number
+  by_service?: Record<string, number>
+  by_state?: Record<string, number>
+  by_service_state?: Record<string, number>
+  residual_abs_p50?: number
+  residual_abs_p75?: number
+  residual_abs_p90?: number
+}
+
+// v2: ridge regression on log1p(cost) with Duan smearing.
+type LinearForecastModel = {
   status: "trained"
   schema_version: typeof SCHEMA_VERSION
   generated_at?: string
-  // Duan smearing / retransformation correction. The trainer fits log1p(cost), so
-  // the inverse must be exp(dot) * smearing_factor - 1 to target the conditional
-  // MEAN cost (not the median). Absent/<=0 => treated as 1 (plain expm1).
   smearing_factor?: number
   features: {
     columns: string[]
@@ -29,20 +38,42 @@ type ShippingCostForecastModel = {
     categorical?: Record<string, string[]>
   }
   coefficients: Record<string, number>
-  fallbacks?: {
-    global_median?: number
-    by_service?: Record<string, number>
-    by_state?: Record<string, number>
-    by_service_state?: Record<string, number>
-    residual_abs_p50?: number
-    residual_abs_p75?: number
-    residual_abs_p90?: number
-  }
+  fallbacks?: CommonFallbacks
+}
+
+// v3: HistGradientBoosting ensemble exported from sklearn (analysis/export-gbm-model.py).
+// Predicts the MEAN cost directly; the charge applies a markup (default 1.20).
+type GbmColumn =
+  | { kind: "num"; name: string }
+  | { kind: "zone" }
+  | { kind: "cat"; feature: string; level: string }
+type GbmNode = { f: number; t: number; l: number; r: number; leaf: boolean; v: number; ml: boolean }
+type GbmForecastModel = {
+  status: "trained"
+  schema_version: typeof GBM_SCHEMA
+  model_type: "hist_gbm"
+  generated_at?: string
+  default_markup?: number
+  baseline: number
+  columns: GbmColumn[]
+  service_levels: string[]
+  zip3_zone: Record<string, number>
+  state_zone: Record<string, number>
+  default_zone: number
+  trees: GbmNode[][]
+  fallbacks?: CommonFallbacks
+}
+
+type ShippingCostForecastModel = LinearForecastModel | GbmForecastModel
+
+function isGbmModel(model: ShippingCostForecastModel): model is GbmForecastModel {
+  return (model as GbmForecastModel).schema_version === GBM_SCHEMA
 }
 
 export type ShippingCostForecastInput = {
   service: string
   ship_state?: string | null
+  ship_postal_code?: string | null
   subtotal: number
   line_count: number
   unit_count: number
@@ -64,6 +95,7 @@ export type ShippingCostForecastResult = {
   metadata: {
     model_generated_at?: string
     model_schema_version: string
+    default_markup?: number
     service: string
     ship_state: string
   }
@@ -237,6 +269,9 @@ export function shippingForecastInputFromFulfillmentData(
         shippingAddress.province ||
         shippingAddress.state
     ),
+    ship_postal_code: String(
+      shippingAddress.postal_code || shippingAddress.zip || shippingAddress.postalCode || ""
+    ),
     subtotal,
     line_count: items.length,
     unit_count: unitCount,
@@ -275,7 +310,7 @@ function featureValue(input: ShippingCostForecastInput, feature: string): number
   }
 }
 
-function columnValue(column: string, input: ShippingCostForecastInput, model: ShippingCostForecastModel) {
+function columnValue(column: string, input: ShippingCostForecastInput, model: LinearForecastModel) {
   if (column === "__intercept") return 1
   if (column.startsWith("num:")) {
     const feature = column.slice("num:".length)
@@ -298,22 +333,71 @@ function columnValue(column: string, input: ShippingCostForecastInput, model: Sh
   return 0
 }
 
-export function forecastShippingCost(
-  model: ShippingCostForecastModel,
-  input: ShippingCostForecastInput
-): ShippingCostForecastResult | null {
-  if (!model || model.status !== "trained" || model.schema_version !== SCHEMA_VERSION) {
-    return null
+// ---- v3 gradient-boosted tree evaluation ----
+
+// UPS zone from the destination ZIP (known at checkout). Falls back to a state-level
+// zone, then a default. Baked-in lookups come from the training data.
+function gbmZone(model: GbmForecastModel, input: ShippingCostForecastInput): number {
+  const zip = String(input.ship_postal_code || "").replace(/[^0-9]/g, "")
+  const z3 = zip.slice(0, 3)
+  if (z3 && model.zip3_zone[z3] != null) return model.zip3_zone[z3]
+  const st = normalizeState(input.ship_state)
+  if (model.state_zone[st] != null) return model.state_zone[st]
+  return toNumber(model.default_zone)
+}
+
+function gbmFeatureValue(col: GbmColumn, input: ShippingCostForecastInput, zone: number): number {
+  if (col.kind === "zone") return zone
+  if (col.kind === "cat") {
+    if (col.feature === "service") return normalizeService(input.service) === col.level ? 1 : 0
+    return String((input as any)[col.feature] ?? "") === col.level ? 1 : 0
   }
-  const logPrediction = model.features.columns.reduce(
-    (sum, column) => sum + columnValue(column, input, model) * toNumber(model.coefficients[column]),
-    0
-  )
-  // Retransformation with Duan smearing (mirrors the trainer's predictWithCoefficients):
-  // exp(dot) * smearing - 1 targets the conditional MEAN cost, not the median.
-  const rawSmearing = toNumber(model.smearing_factor)
-  const smearing = Number.isFinite(rawSmearing) && rawSmearing > 0 ? rawSmearing : 1
-  const predicted = Math.max(0, Math.exp(logPrediction) * smearing - 1)
+  switch (col.name) {
+    case "subtotal": return toNumber(input.subtotal)
+    case "line_count": return toNumber(input.line_count)
+    case "unit_count": return toNumber(input.unit_count)
+    case "fixed_line_count": return toNumber(input.fixed_line_count)
+    case "per_lb_line_count": return toNumber(input.per_lb_line_count)
+    case "unknown_pricing_line_count": return toNumber(input.unknown_pricing_line_count)
+    case "est_weight": return toNumber(input.estimated_product_weight_lb)
+    default: return 0
+  }
+}
+
+// Walks one tree. Mirrors sklearn HistGradientBoosting: go left when x <= threshold,
+// route missing per missing_go_to_left. Verified to match sklearn to 1e-13.
+function walkTree(tree: GbmNode[], vec: number[]): number {
+  let i = 0
+  for (let steps = 0; steps <= tree.length; steps += 1) {
+    const n = tree[i]
+    if (!n) return 0
+    if (n.leaf) return n.v
+    const xi = vec[n.f]
+    i = xi == null || Number.isNaN(xi) ? (n.ml ? n.l : n.r) : xi <= n.t ? n.l : n.r
+  }
+  return 0
+}
+
+// Raw ensemble output for a prebuilt feature vector (baseline + sum of trees), no
+// flooring. Exposed so tests can verify byte-for-byte parity with the sklearn export.
+export function gbmRawPredict(model: GbmForecastModel, vec: number[]): number {
+  let sum = toNumber(model.baseline)
+  for (const tree of model.trees) sum += walkTree(tree, vec)
+  return sum
+}
+
+export function evaluateGbm(model: GbmForecastModel, input: ShippingCostForecastInput): number {
+  const zone = gbmZone(model, input)
+  const vec = model.columns.map((c) => gbmFeatureValue(c, input, zone))
+  return Math.max(0, gbmRawPredict(model, vec))
+}
+
+function buildResult(
+  model: ShippingCostForecastModel,
+  input: ShippingCostForecastInput,
+  predicted: number,
+  defaultMarkup: number
+): ShippingCostForecastResult {
   const residualP75 = toNumber(model.fallbacks?.residual_abs_p75) || 25
   const residualP90 = toNumber(model.fallbacks?.residual_abs_p90) || residualP75 * 1.5
   return {
@@ -327,10 +411,37 @@ export function forecastShippingCost(
     metadata: {
       model_generated_at: model.generated_at,
       model_schema_version: model.schema_version,
+      default_markup: defaultMarkup,
       service: normalizeService(input.service),
       ship_state: normalizeState(input.ship_state),
     },
   }
+}
+
+export function forecastShippingCost(
+  model: ShippingCostForecastModel,
+  input: ShippingCostForecastInput
+): ShippingCostForecastResult | null {
+  if (!model || model.status !== "trained") return null
+
+  if (isGbmModel(model)) {
+    const predicted = evaluateGbm(model, input) // mean cost; the markup buffer is applied at charge time
+    const markup = toNumber(model.default_markup) || 1
+    return buildResult(model, input, predicted, markup)
+  }
+
+  if (model.schema_version !== SCHEMA_VERSION) return null
+  const logPrediction = model.features.columns.reduce(
+    (sum, column) => sum + columnValue(column, input, model) * toNumber(model.coefficients[column]),
+    0
+  )
+  // Retransformation with Duan smearing (mirrors the trainer's predictWithCoefficients):
+  // exp(dot) * smearing - 1 targets the conditional MEAN cost, not the median.
+  const rawSmearing = toNumber(model.smearing_factor)
+  const smearing = Number.isFinite(rawSmearing) && rawSmearing > 0 ? rawSmearing : 1
+  const predicted = Math.max(0, Math.exp(logPrediction) * smearing - 1)
+  // Linear model carries no markup (cushion comes from the additive percentile buffer).
+  return buildResult(model, input, predicted, 1)
 }
 
 export type ForecastModelLoadResult = {
@@ -355,11 +466,14 @@ export function loadShippingCostForecastModelResult(
   if (!modelPath) return { model: null, path: null }
   try {
     const model = JSON.parse(fs.readFileSync(modelPath, "utf8")) as ShippingCostForecastModel
-    if (model.status !== "trained" || model.schema_version !== SCHEMA_VERSION) {
+    if (
+      model.status !== "trained" ||
+      (model.schema_version !== SCHEMA_VERSION && model.schema_version !== GBM_SCHEMA)
+    ) {
       return {
         model: null,
         path: modelPath,
-        error: `model is not a trained ${SCHEMA_VERSION} artifact`,
+        error: `model is not a trained ${SCHEMA_VERSION}/${GBM_SCHEMA} artifact`,
       }
     }
     return { model, path: modelPath }

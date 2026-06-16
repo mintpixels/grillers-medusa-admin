@@ -180,28 +180,43 @@ function envNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+// Watch-only: compute + log the forecast but don't let it set the customer's price.
+function forecastShadowMode(env: Record<string, string | undefined>): boolean {
+  return ["1", "true", "yes", "on"].includes(
+    String(env.GRILLERS_SHIPPING_FORECAST_SHADOW || "").toLowerCase()
+  );
+}
+
 // No real UPS small-parcel domestic shipment costs less than this; a forecast
 // charge below it is treated as non-confident (degenerate / out-of-distribution)
 // and falls through to WWEX/Strapi. Operators can override or disable with 0.
 const DEFAULT_MIN_FORECAST_USD = 5;
 
 /**
- * Turns a model prediction into the dollar amount to charge at checkout, or null
- * if the forecast is not confident (caller then falls through to WWEX/Strapi).
- *  - Adds a configurable margin buffer (default p75 residual) so we don't
- *    under-recover on ~half of orders (the model is mean-unbiased on its own).
- *  - A non-positive point estimate, or one outside the optional MIN/MAX sanity
- *    band, is treated as non-confident -> null -> fall through.
- *  - Deliberately does NOT clamp up to the Strapi tier: that table is inflated
- *    (~$75 ground vs ~$18 real cost), so clamping would massively overcharge.
+ * Turns a model prediction (mean cost) into the dollar amount to charge at
+ * checkout, or null if the forecast is not confident (caller falls through to
+ * WWEX/Strapi). The cushion has two parts:
+ *  - markup: multiplicative (default from the model, e.g. 1.20 = "20% buffer" for
+ *    the GBM model; scales with order size so big orders get more protection).
+ *    Override with GRILLERS_SHIPPING_FORECAST_MARKUP.
+ *  - buffer: additive percentile residual. To avoid double-cushioning, a markup
+ *    model (>1) defaults to no additive buffer; the linear model defaults to p75.
+ * A non-positive estimate, or a charge outside the optional MIN/MAX sanity band,
+ * is treated as non-confident -> null -> fall through. We deliberately do NOT
+ * clamp up to the Strapi tier (that table is inflated, ~$75 ground vs ~$18 real).
  */
 function resolveForecastCharge(
   forecast: ShippingCostForecastResult,
   env: Record<string, string | undefined>
 ): number | null {
   if (!(forecast.amount > 0)) return null;
+  const modelMarkup = forecast.metadata.default_markup;
+  const markup =
+    envNumber(env.GRILLERS_SHIPPING_FORECAST_MARKUP) ??
+    (modelMarkup && modelMarkup > 0 ? modelMarkup : 1);
+  const usesMarkup = markup > 1;
   const percentile = String(
-    env.GRILLERS_SHIPPING_FORECAST_SAFETY_PERCENTILE || "p75"
+    env.GRILLERS_SHIPPING_FORECAST_SAFETY_PERCENTILE || (usesMarkup ? "p50" : "p75")
   ).toLowerCase();
   const buffer =
     percentile === "p90"
@@ -209,7 +224,7 @@ function resolveForecastCharge(
       : percentile === "p50" || percentile === "none"
         ? 0
         : forecast.confidence.residual_p75;
-  const charge = Math.round((forecast.amount + buffer + Number.EPSILON) * 100) / 100;
+  const charge = Math.round((forecast.amount * markup + buffer + Number.EPSILON) * 100) / 100;
   const minUsd = envNumber(env.GRILLERS_SHIPPING_FORECAST_MIN_USD) ?? DEFAULT_MIN_FORECAST_USD;
   const maxUsd = envNumber(env.GRILLERS_SHIPPING_FORECAST_MAX_USD);
   if (minUsd > 0 && charge < minUsd) return null;
@@ -287,7 +302,10 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
           shipping_address: optionData?.shipping_address,
           items,
         });
-        if (forecastAmount !== null) {
+        // Shadow mode: the forecast is computed and logged (in calculateForecastShippingRate)
+        // for watch-only comparison, but does NOT set the customer's price — we fall through
+        // to the live WWEX/Strapi rate. Flip GRILLERS_SHIPPING_FORECAST_SHADOW off to go live.
+        if (forecastAmount !== null && !forecastShadowMode(process.env)) {
           return forecastAmount;
         }
 
