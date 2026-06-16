@@ -972,7 +972,8 @@ export const buildFinalizationLineSnapshot = (
 
 const existingLineRepairPatch = (
   existing: Record<string, any>,
-  snapshot: Record<string, any>
+  snapshot: Record<string, any>,
+  finalizationStatus?: string | null
 ) => {
   const patch: Record<string, any> = {}
   const existingMetadata = metadataObject(existing.metadata)
@@ -982,7 +983,14 @@ const existingLineRepairPatch = (
   const estimatedTotal = nullableNumber(
     existing.estimated_line_total ?? existingMetadata.estimated_line_total
   )
+  // Clearing an auto-defaulted full quantity is only safe before a picker is
+  // actively working the order. Once the finalization is in `picking` (or a
+  // later phase), a line whose actual quantity equals the ordered quantity is a
+  // deliberate full-quantity pick the picker just saved, not a stale default —
+  // resetting it here wiped the picked qty the moment the console re-fetched.
+  const isPrePickRepairPhase = isPrePickOrderEditSyncStatus(finalizationStatus)
   const untouchedFixedQuantityDefault =
+    isPrePickRepairPhase &&
     snapshot.pricing_mode !== "per_lb" &&
     ["needs_pick", "needs_weight", "packing", "pending_pack"].includes(
       existing.status || FINALIZATION_LINE_NEEDS_PICK
@@ -999,6 +1007,7 @@ const existingLineRepairPatch = (
     !existing.short_reason &&
     !existing.exception_reason
   const oldFixedReadyDefault =
+    isPrePickRepairPhase &&
     snapshot.pricing_mode !== "per_lb" &&
     (existing.status || "ready") === "ready" &&
     numberOrZero(existing.actual_quantity) ===
@@ -1440,7 +1449,7 @@ export async function ensureFinalizationForOrder(
       const patch = canSyncPrePickOrderEdits
         ? prePickOrderEditRepairPatch(line, snapshot)
         : repairableStatuses.has(finalization.status)
-        ? existingLineRepairPatch(line, snapshot)
+        ? existingLineRepairPatch(line, snapshot, finalization.status)
         : customerTitleRepairPatch(line, snapshot)
       if (!Object.keys(patch).length) return line
 
