@@ -90,30 +90,71 @@ export function transitDaysForOrder(
 }
 
 /** Reads optional env overrides so costs can be tuned without a redeploy. */
+/** Editable overrides sourced from Strapi cold-chain-setting (the costs that drift). */
+export type PackagingCostOverrides = {
+  dryIceUsdPerLb?: number | null;
+  boxCost?: {
+    micro?: number | null;
+    m330?: number | null;
+    l345?: number | null;
+  };
+};
+
+/**
+ * Resolve the packaging config by layering: hardcoded DEFAULT (Peter's
+ * numbers) < Strapi overrides (ops-editable, no deploy) < env (devops
+ * emergency override). A Strapi/env value only wins when it is a finite,
+ * non-negative number; anything else is ignored so a blank Strapi field can't
+ * zero out a cost.
+ */
+export function resolvePackagingConfig(
+  opts: {
+    strapi?: PackagingCostOverrides | null;
+    env?: Record<string, string | undefined>;
+  } = {}
+): PackagingCostConfig {
+  const env = opts.env ?? process.env;
+  const d = DEFAULT_PACKAGING_CONFIG;
+
+  const valid = (v: unknown): number | null => {
+    const n = typeof v === "string" ? Number(v) : (v as number);
+    return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  // Precedence: env > strapi > default.
+  const pick = (envKey: string, strapiVal: unknown, def: number): number => {
+    const e = env[envKey];
+    if (e != null && e !== "") {
+      const n = valid(e);
+      if (n != null) return n;
+    }
+    const s = valid(strapiVal);
+    if (s != null) return s;
+    return def;
+  };
+
+  const s = opts.strapi ?? {};
+  return {
+    dryIceUsdPerLb: pick("GRILLERS_DRY_ICE_USD_PER_LB", s.dryIceUsdPerLb, d.dryIceUsdPerLb),
+    boxCost: {
+      micro: pick("GRILLERS_BOX_COST_MICRO", s.boxCost?.micro, d.boxCost.micro),
+      m330: pick("GRILLERS_BOX_COST_330", s.boxCost?.m330, d.boxCost.m330),
+      l345: pick("GRILLERS_BOX_COST_345", s.boxCost?.l345, d.boxCost.l345),
+    },
+    // Physical packing rules (stable): env-overridable, not Strapi-editable.
+    dryIcePerBoxShortLb: pick("GRILLERS_DRY_ICE_PER_BOX_SHORT_LB", undefined, d.dryIcePerBoxShortLb),
+    dryIcePerBoxLongLb: pick("GRILLERS_DRY_ICE_PER_BOX_LONG_LB", undefined, d.dryIcePerBoxLongLb),
+    maxBoxTotalLb: pick("GRILLERS_MAX_BOX_TOTAL_LB", undefined, d.maxBoxTotalLb),
+    boxTareLb: pick("GRILLERS_BOX_TARE_LB", undefined, d.boxTareLb),
+    microBilledCeilLb: pick("GRILLERS_MICRO_BILLED_CEIL_LB", undefined, d.microBilledCeilLb),
+    m330BilledCeilLb: pick("GRILLERS_M330_BILLED_CEIL_LB", undefined, d.m330BilledCeilLb),
+  };
+}
+
+/** Back-compat: env (over default) only, no Strapi layer. */
 export function packagingConfigFromEnv(
   env: Record<string, string | undefined> = process.env
 ): PackagingCostConfig {
-  const n = (key: string, fallback: number): number => {
-    const raw = env[key];
-    if (raw == null || raw === "") return fallback;
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-  };
-  const d = DEFAULT_PACKAGING_CONFIG;
-  return {
-    dryIceUsdPerLb: n("GRILLERS_DRY_ICE_USD_PER_LB", d.dryIceUsdPerLb),
-    boxCost: {
-      micro: n("GRILLERS_BOX_COST_MICRO", d.boxCost.micro),
-      m330: n("GRILLERS_BOX_COST_330", d.boxCost.m330),
-      l345: n("GRILLERS_BOX_COST_345", d.boxCost.l345),
-    },
-    dryIcePerBoxShortLb: n("GRILLERS_DRY_ICE_PER_BOX_SHORT_LB", d.dryIcePerBoxShortLb),
-    dryIcePerBoxLongLb: n("GRILLERS_DRY_ICE_PER_BOX_LONG_LB", d.dryIcePerBoxLongLb),
-    maxBoxTotalLb: n("GRILLERS_MAX_BOX_TOTAL_LB", d.maxBoxTotalLb),
-    boxTareLb: n("GRILLERS_BOX_TARE_LB", d.boxTareLb),
-    microBilledCeilLb: n("GRILLERS_MICRO_BILLED_CEIL_LB", d.microBilledCeilLb),
-    m330BilledCeilLb: n("GRILLERS_M330_BILLED_CEIL_LB", d.m330BilledCeilLb),
-  };
+  return resolvePackagingConfig({ env });
 }
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
