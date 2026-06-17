@@ -39,6 +39,10 @@ import {
   shippingForecastInputFromFulfillmentData,
   type ShippingCostForecastResult,
 } from "../../lib/shipping-cost-forecast";
+import {
+  estimatePackagingCost,
+  packagingConfigFromEnv,
+} from "../../lib/packaging-cost";
 
 type InjectedDependencies = {
   logger: Logger;
@@ -545,7 +549,41 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
     try {
       const forecast = forecastShippingCost(model, input);
       if (!forecast) return null;
-      const charge = resolveForecastCharge(forecast, process.env);
+      const freightCharge = resolveForecastCharge(forecast, process.env);
+
+      // Add dry-ice + shipper-box cost (Peter, 2026-06-16) as an additive
+      // component on top of the freight forecast. Gated OFF by default — it
+      // roughly doubles the charge, so enabling is a pricing decision (review
+      // the free-shipping-threshold impact with Peter first). Only applies when
+      // the freight forecast is confident; a null freight charge still falls
+      // through to WWEX/Strapi unchanged.
+      const includePackaging = ["1", "true", "yes", "on"].includes(
+        String(process.env.GRILLERS_SHIPPING_FORECAST_INCLUDE_PACKAGING || "")
+          .toLowerCase()
+          .trim()
+      );
+      let charge = freightCharge;
+      let packaging: ReturnType<typeof estimatePackagingCost> | null = null;
+      if (freightCharge !== null && includePackaging) {
+        packaging = estimatePackagingCost(
+          {
+            estimatedProductWeightLb: input.estimated_product_weight_lb,
+            service: input.service,
+            shipPostalCode: input.ship_postal_code,
+          },
+          packagingConfigFromEnv(process.env)
+        );
+        const withPackaging =
+          Math.round((freightCharge + packaging.total + Number.EPSILON) * 100) / 100;
+        // Re-apply the operator's MAX_USD ceiling to the FINAL customer charge,
+        // not just the freight component — otherwise packaging could push the
+        // charge past a cap the operator set as a hard sanity rail. Exceeding it
+        // falls through to WWEX/Strapi, matching resolveForecastCharge's contract.
+        const maxUsd = envNumber(process.env.GRILLERS_SHIPPING_FORECAST_MAX_USD);
+        charge =
+          maxUsd != null && maxUsd > 0 && withPackaging > maxUsd ? null : withPackaging;
+      }
+
       // Structured feedback log: pairs the predicted charge with order identity so
       // it can be reconciled against the eventual Unishippers actual cost (drift).
       this.logger_.info(
@@ -554,6 +592,16 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
           ship_state: forecast.metadata.ship_state,
           point_estimate: forecast.amount,
           residual_p75: forecast.confidence.residual_p75,
+          freight_charge: freightCharge,
+          packaging: packaging
+            ? {
+                boxes: packaging.boxes,
+                box_tier: packaging.boxTier,
+                dry_ice_lb: packaging.dryIceLb,
+                box_usd: packaging.boxCost,
+                dry_ice_usd: packaging.dryIceCost,
+              }
+            : null,
           charged: charge,
           confident: charge !== null,
           ref:
