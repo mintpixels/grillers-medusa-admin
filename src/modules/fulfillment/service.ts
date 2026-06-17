@@ -42,7 +42,18 @@ import {
 import {
   estimatePackagingCost,
   packagingConfigFromEnv,
+  type PackagingCostConfig,
 } from "../../lib/packaging-cost";
+import { getPackagingConfig } from "../../lib/packaging-cost-strapi";
+
+/** True when packaging cost should be added to the forecast charge. */
+function packagingCostEnabled(env: Record<string, string | undefined>): boolean {
+  return ["1", "true", "yes", "on"].includes(
+    String(env.GRILLERS_SHIPPING_FORECAST_INCLUDE_PACKAGING || "")
+      .toLowerCase()
+      .trim()
+  );
+}
 
 type InjectedDependencies = {
   logger: Logger;
@@ -300,12 +311,21 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         const serviceCode = normalizeServiceCode(optionData?.service_code);
         const items = Array.isArray(optionData?.items) ? optionData.items : [];
 
-        const forecastAmount = this.calculateForecastShippingRate({
-          ...optionData,
-          service_code: serviceCode,
-          shipping_address: optionData?.shipping_address,
-          items,
-        });
+        // Resolve the packaging cost config (default < Strapi cold-chain-setting
+        // < env) only when the feature is on, so the Strapi fetch never adds
+        // latency to a freight-only quote.
+        const packagingConfig = packagingCostEnabled(process.env)
+          ? await getPackagingConfig(process.env)
+          : undefined;
+        const forecastAmount = this.calculateForecastShippingRate(
+          {
+            ...optionData,
+            service_code: serviceCode,
+            shipping_address: optionData?.shipping_address,
+            items,
+          },
+          packagingConfig
+        );
         // Shadow mode: the forecast is computed and logged (in calculateForecastShippingRate)
         // for watch-only comparison, but does NOT set the customer's price — we fall through
         // to the live WWEX/Strapi rate. Flip GRILLERS_SHIPPING_FORECAST_SHADOW off to go live.
@@ -533,7 +553,10 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
     return this.shippingCostForecastModel;
   }
 
-  private calculateForecastShippingRate(data: Record<string, unknown>): number | null {
+  private calculateForecastShippingRate(
+    data: Record<string, unknown>,
+    packagingConfig?: PackagingCostConfig
+  ): number | null {
     const model = this.getForecastModel();
     if (!model) return null;
 
@@ -557,11 +580,7 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
       // the free-shipping-threshold impact with Peter first). Only applies when
       // the freight forecast is confident; a null freight charge still falls
       // through to WWEX/Strapi unchanged.
-      const includePackaging = ["1", "true", "yes", "on"].includes(
-        String(process.env.GRILLERS_SHIPPING_FORECAST_INCLUDE_PACKAGING || "")
-          .toLowerCase()
-          .trim()
-      );
+      const includePackaging = packagingCostEnabled(process.env);
       let charge = freightCharge;
       let packaging: ReturnType<typeof estimatePackagingCost> | null = null;
       if (freightCharge !== null && includePackaging) {
@@ -571,7 +590,9 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
             service: input.service,
             shipPostalCode: input.ship_postal_code,
           },
-          packagingConfigFromEnv(process.env)
+          // Strapi-layered config from the caller; fall back to env-only if the
+          // method is invoked without one.
+          packagingConfig ?? packagingConfigFromEnv(process.env)
         );
         const withPackaging =
           Math.round((freightCharge + packaging.total + Number.EPSILON) * 100) / 100;
