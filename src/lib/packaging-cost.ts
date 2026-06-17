@@ -116,9 +116,13 @@ export function resolvePackagingConfig(
   const env = opts.env ?? process.env;
   const d = DEFAULT_PACKAGING_CONFIG;
 
+  // Only a finite POSITIVE number overrides a default. Every packaging value
+  // (price, costs, lbs, capacities) is meaningfully > 0, so a blank, null, or
+  // 0 Strapi/env value is rejected and falls back to the default — a stray 0
+  // can never zero out a cost.
   const valid = (v: unknown): number | null => {
     const n = typeof v === "string" ? Number(v) : (v as number);
-    return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+    return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : null;
   };
   // Precedence: env > strapi > default.
   const pick = (envKey: string, strapiVal: unknown, def: number): number => {

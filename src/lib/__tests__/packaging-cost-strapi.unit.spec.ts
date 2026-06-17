@@ -31,13 +31,14 @@ describe("resolvePackagingConfig — layering default < strapi < env", () => {
     expect(c.dryIceUsdPerLb).toBe(0.8)
   })
 
-  it("ignores invalid Strapi values (null / negative) → default", () => {
+  it("ignores invalid Strapi values (null / negative / zero) → default", () => {
     const c = resolvePackagingConfig({
-      strapi: { dryIceUsdPerLb: null, boxCost: { l345: -3 } },
+      strapi: { dryIceUsdPerLb: null, boxCost: { l345: -3, m330: 0 } },
       env: {},
     })
     expect(c.dryIceUsdPerLb).toBe(0.6)
     expect(c.boxCost.l345).toBe(16.06)
+    expect(c.boxCost.m330).toBe(9.98) // explicit 0 rejected → default
   })
 })
 

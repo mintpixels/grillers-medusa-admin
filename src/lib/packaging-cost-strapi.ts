@@ -53,8 +53,11 @@ export async function fetchPackagingOverridesFromStrapi(
   const token = env.STRAPI_TOKEN;
   if (!base) return {};
   try {
+    // Bound the request so a stalled Strapi can't add latency to the checkout
+    // rate path. AbortError is swallowed by the catch below → falls back to {}.
     const res = await fetch(`${base.replace(/\/+$/, "")}/api/cold-chain-setting`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
+      signal: AbortSignal.timeout(2000),
     });
     if (!res.ok) return {};
     const json = (await res.json()) as { data?: unknown };
