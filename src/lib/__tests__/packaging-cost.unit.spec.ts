@@ -26,8 +26,9 @@ describe("transitDaysForOrder", () => {
 
 describe("estimatePackagingCost — Peter's rules (2026-06-16)", () => {
   it("1-2 day → 14 lb dry ice; single 345 box (workhorse)", () => {
+    // 20 product + 14 dry ice + 3 tare = 37 gross > 33 → l345
     const r = estimatePackagingCost({
-      estimatedProductWeightLb: 15,
+      estimatedProductWeightLb: 20,
       service: "GROUND",
       shipPostalCode: "30340",
     })
@@ -41,9 +42,9 @@ describe("estimatePackagingCost — Peter's rules (2026-06-16)", () => {
   })
 
   it("smaller order lands in the 330 medium tier", () => {
-    // 7 product + 14 dry ice + 3 tare = 24 gross ≤ 25 → m330
+    // 12 product + 14 dry ice + 3 tare = 29 gross: > 20 and ≤ 33 → m330
     const r = estimatePackagingCost({
-      estimatedProductWeightLb: 7,
+      estimatedProductWeightLb: 12,
       service: "OVERNIGHT",
       shipPostalCode: "10001",
     })
@@ -81,15 +82,15 @@ describe("estimatePackagingCost — Peter's rules (2026-06-16)", () => {
     expect(r.total).toBeCloseTo(85.98, 2)
   })
 
-  it("tier boundary on GROSS billed weight (product + dry ice + tare): ≤ 25 → 330, above → 345", () => {
-    // 8 product + 14 dry ice + 3 tare = 25 (boundary) → m330
-    expect(
-      estimatePackagingCost({ estimatedProductWeightLb: 8, service: "GROUND", shipPostalCode: "30340" }).boxTier
-    ).toBe("m330")
-    // 8.5 + 14 + 3 = 25.5 → l345
-    expect(
-      estimatePackagingCost({ estimatedProductWeightLb: 8.5, service: "GROUND", shipPostalCode: "30340" }).boxTier
-    ).toBe("l345")
+  it("tier boundaries on GROSS billed weight (product + dry ice + tare): micro ≤ 20, m330 ≤ 33", () => {
+    const tier = (w: number) =>
+      estimatePackagingCost({ estimatedProductWeightLb: w, service: "GROUND", shipPostalCode: "30340" }).boxTier
+    // micro/m330 boundary at 20: 3 + 14 + 3 = 20 → micro; 3.5 → 20.5 → m330
+    expect(tier(3)).toBe("micro")
+    expect(tier(3.5)).toBe("m330")
+    // m330/l345 boundary at 33: 16 + 14 + 3 = 33 → m330; 16.5 → 33.5 → l345
+    expect(tier(16)).toBe("m330")
+    expect(tier(16.5)).toBe("l345")
   })
 
   it("never throws on degenerate input; zero weight → 1 box", () => {
@@ -123,7 +124,7 @@ describe("packagingConfigFromEnv", () => {
     const cfg = packagingConfigFromEnv({ GRILLERS_DRY_ICE_USD_PER_LB: "1.00" })
     expect(cfg.dryIceUsdPerLb).toBe(1)
     const r = estimatePackagingCost(
-      { estimatedProductWeightLb: 15, service: "GROUND", shipPostalCode: "30340" },
+      { estimatedProductWeightLb: 20, service: "GROUND", shipPostalCode: "30340" }, // l345
       cfg
     )
     expect(r.dryIceCost).toBeCloseTo(14, 2) // 14 lb * $1.00
@@ -146,7 +147,7 @@ describe("constants match the reconciliation script", () => {
     expect(DEFAULT_PACKAGING_CONFIG.dryIcePerBoxShortLb).toBe(14)
     expect(DEFAULT_PACKAGING_CONFIG.dryIcePerBoxLongLb).toBe(21)
     expect(DEFAULT_PACKAGING_CONFIG.maxBoxTotalLb).toBe(50)
-    expect(DEFAULT_PACKAGING_CONFIG.microBilledCeilLb).toBe(8)
-    expect(DEFAULT_PACKAGING_CONFIG.m330BilledCeilLb).toBe(25)
+    expect(DEFAULT_PACKAGING_CONFIG.microBilledCeilLb).toBe(20)
+    expect(DEFAULT_PACKAGING_CONFIG.m330BilledCeilLb).toBe(33)
   })
 })

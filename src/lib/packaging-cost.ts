@@ -42,7 +42,13 @@ export type PackagingCostConfig = {
   m330BilledCeilLb: number;
 };
 
-/** Peter's confirmed numbers (2026-06-16); calibrated knobs from reconciliation. */
+/** Peter's confirmed numbers (2026-06-16). Tier ceilings calibrated against QBD
+ *  ground truth (analysis/packaging-box-tier-recalibration.mjs, 2026-06-17):
+ *  fitted on 1,855 single-box orders joining the actual invoice Shipper line to
+ *  the Unishippers billed weight. micro<=20 / m330<=33 lb gives 80.6% per-order
+ *  accuracy (vs 55.6% for the old 8/25 guess) and an avg box cost of $12.37/order
+ *  vs the actual $12.01 — weight alone caps near 80% since box choice is partly
+ *  volume-driven and we have no product dimensions. */
 export const DEFAULT_PACKAGING_CONFIG: PackagingCostConfig = {
   dryIceUsdPerLb: 0.6,
   boxCost: { micro: 7.54, m330: 9.98, l345: 16.06 },
@@ -50,8 +56,8 @@ export const DEFAULT_PACKAGING_CONFIG: PackagingCostConfig = {
   dryIcePerBoxLongLb: 21,
   maxBoxTotalLb: 50,
   boxTareLb: 3,
-  microBilledCeilLb: 8,
-  m330BilledCeilLb: 25,
+  microBilledCeilLb: 20,
+  m330BilledCeilLb: 33,
 };
 
 export type PackagingCostResult = {
