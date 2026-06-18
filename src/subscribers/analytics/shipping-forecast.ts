@@ -270,7 +270,7 @@ export function buildShippingForecastEvent(
 
   const customerId = order.customer_id || undefined
   const orderId = order.id
-  const idempotencyKey = `order.completed:${orderId}:shipping_forecast`
+  const idempotencyKey = `order.placed:${orderId}:shipping_forecast`
 
   return {
     event: "shipping_forecast",
@@ -370,5 +370,7 @@ export default async function shippingForecastHandler({
 }
 
 export const config: SubscriberConfig = {
-  event: "order.completed",
+  // Fire on every order at checkout (matches order-placed.ts). order.completed
+  // fires later and not for every order, so it would undercount the dashboard.
+  event: "order.placed",
 }
