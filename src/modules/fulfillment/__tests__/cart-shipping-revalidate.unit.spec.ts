@@ -1,5 +1,5 @@
 import { Modules } from "@medusajs/framework/utils"
-import cartShippingRevalidateHandler from "../cart-shipping-revalidate"
+import cartShippingRevalidateHandler from "../../../subscribers/cart-shipping-revalidate"
 
 const logger = {
   info: jest.fn(),
