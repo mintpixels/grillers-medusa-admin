@@ -1,6 +1,7 @@
 // src/modules/grillers-fulfillment/service.ts
 import {
   AbstractFulfillmentProviderService,
+  MedusaError,
   Modules,
 } from "@medusajs/framework/utils";
 import type {
@@ -55,7 +56,7 @@ type FulfillmentServiceDefinition = {
   code: string;
 };
 
-const FULFILLMENT_SERVICES: FulfillmentServiceDefinition[] = [
+export const FULFILLMENT_SERVICES: FulfillmentServiceDefinition[] = [
   {
     id: "pickup",
     name: "Pickup From Plant Premises in Atlanta, GA",
@@ -120,7 +121,7 @@ const EXPEDITED_UPS_SERVICE_CODES = new Set([
   "OVERNIGHT",
 ]);
 
-function normalizeServiceCode(serviceCode: unknown): string {
+export function normalizeServiceCode(serviceCode: unknown): string {
   const normalized = String(serviceCode || "")
     .trim()
     .toUpperCase()
@@ -429,8 +430,12 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         }
 
         if (price === null) {
-          throw new Error(
-            `No configured shipping rate tier matched service ${serviceCode || "unknown"} for ${zip || city || "unknown destination"}.`
+          this.logger_.warn(
+            `[fulfillment] no configured shipping rate tier matched service ${serviceCode || "unknown"} for ${zip || city || "unknown destination"}; surfacing NOT_ALLOWED`
+          );
+          throw new MedusaError(
+            MedusaError.Types.NOT_ALLOWED,
+            `This shipping option isn’t available for ${zip || city || "this address"}. Please choose a different shipping option.`
           );
         }
 
