@@ -1,3 +1,4 @@
+import { MedusaError } from "@medusajs/framework/utils"
 import GrillersFulfillmentProviderService from "../service"
 import { emitOpsAlert } from "../../../lib/ops-alert"
 import fs from "node:fs"
@@ -316,20 +317,25 @@ describe("GrillersFulfillmentProviderService", () => {
     expect(result.calculated_amount).toBe(160)
   })
 
-  it("fails closed when no Strapi shipping-zone tier matches", async () => {
+  it("fails soft with a typed NOT_ALLOWED MedusaError when no Strapi shipping-zone tier matches", async () => {
     mockShippingZones([])
 
-    await expect(
-      service().calculatePrice(
-        { service_code: "GROUND" } as any,
-        {
-          shipping_address: { postal_code: "30340" },
-          items: [{ unit_price: 100, quantity: 1, metadata: {} }],
-        } as any,
-        {} as any
-      )
-    ).rejects.toThrow(
-      "No configured shipping rate tier matched service GROUND for 30340."
+    const promise = service().calculatePrice(
+      { service_code: "GROUND" } as any,
+      {
+        shipping_address: { postal_code: "30340" },
+        items: [{ unit_price: 100, quantity: 1, metadata: {} }],
+      } as any,
+      {} as any
+    )
+
+    // Surfaces as a clean MedusaError (400 NOT_ALLOWED) rather than a raw 500.
+    await expect(promise).rejects.toBeInstanceOf(MedusaError)
+    await expect(promise).rejects.toMatchObject({
+      type: MedusaError.Types.NOT_ALLOWED,
+    })
+    await expect(promise).rejects.toThrow(
+      /isn’t available for 30340\. Please choose a different shipping option\./
     )
   })
 
