@@ -1,5 +1,5 @@
-import { buildShippingForecastEvent } from "../shipping-forecast"
-import { estimatePackagingCost, packagingConfigFromEnv } from "../../../lib/packaging-cost"
+import { buildShippingForecastEvent } from "../../subscribers/analytics/shipping-forecast"
+import { estimatePackagingCost, packagingConfigFromEnv } from "../packaging-cost"
 
 // Packaging gated ON, matching prod (GRILLERS_SHIPPING_FORECAST_INCLUDE_PACKAGING).
 const ENV_PACKAGING_ON = {
