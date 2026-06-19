@@ -1,6 +1,7 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { createAllocationsForOrder } from "../lib/inventory-allocation"
+import { emitOpsAlert } from "../lib/ops-alert"
 
 export default async function inventoryAllocationOrderPlacedHandler({
   event: { data },
@@ -26,6 +27,26 @@ export default async function inventoryAllocationOrderPlacedHandler({
     logger.info(
       `[inventory-allocation] order=${data.id} created=${result.created} skipped=${result.skipped} blocked=${result.blocked}`
     )
+
+    if (result.blocked > 0) {
+      // Oversell guard tripped on one or more lines: the order placed but some
+      // lines could not be cleanly allocated (blocked). Degradation/integrity
+      // warning, not customer-blocking → warn (30-min digest).
+      await emitOpsAlert({
+        alertKind: "inventory_allocation_blocked",
+        title: `Inventory allocation blocked ${result.blocked} line(s) for order ${data.id}`,
+        path: "src/subscribers/inventory-allocation-order-placed.ts",
+        source: "medusa",
+        severity: "warn",
+        logger,
+        meta: {
+          order_id: data.id,
+          blocked_count: result.blocked,
+          created_count: result.created,
+          skipped_count: result.skipped,
+        },
+      })
+    }
 
     if (analytics?.track) {
       await analytics.track({

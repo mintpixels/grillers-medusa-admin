@@ -1,5 +1,10 @@
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { POST } from "../route"
+import { emitOpsAlert } from "../../../../../../../../lib/ops-alert"
+
+jest.mock("../../../../../../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
 
 function makeAllocationDb(rows: any[] = []) {
   const updates: any[] = []
@@ -306,5 +311,74 @@ describe("final-charge refund route", () => {
     expect(res.json).toHaveBeenCalledWith({
       message: "Refund amount cannot include more than 2 decimal places for USD.",
     })
+  })
+
+  it("pages refund_recorded_mismatch when Stripe refunded but Medusa recording throws", async () => {
+    process.env.STRIPE_API_KEY = "sk_test_123"
+    ;(emitOpsAlert as jest.Mock).mockClear()
+    const stripeFetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ id: "re_final_999", status: "succeeded" }),
+    })) as any
+    global.fetch = stripeFetch
+
+    const orderModule = {
+      retrieveOrder: jest.fn(async () => ({
+        id: "order_123",
+        currency_code: "usd",
+        total: 100,
+        metadata: {
+          final_charge_status: "succeeded",
+          stripe_payment_intent_id: "pi_final_123",
+          final_total: 100,
+          final_charge_refunded_amount: 0,
+          staff_audit_log: "[]",
+        },
+      })),
+      listOrderTransactions: jest.fn(async () => []),
+      addOrderTransactions: jest.fn(async () => undefined),
+      // Money already left Stripe; the ledger write throws here.
+      updateOrders: jest.fn(async () => {
+        throw new Error("db write failed")
+      }),
+    }
+    const eventBus = { emit: jest.fn(async () => undefined) }
+    const { db } = makeAllocationDb()
+    const req = {
+      params: { id: "order_123" },
+      headers: { "idempotency-key": "refund-key-999" },
+      body: { amount: 25 },
+      scope: {
+        resolve: (key: string) => {
+          if (key === Modules.ORDER) return orderModule
+          if (key === Modules.EVENT_BUS) return eventBus
+          if (key === ContainerRegistrationKeys.PG_CONNECTION) return db
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+      auth_context: { actor_id: "user_123" },
+    } as any
+    const res = makeRes()
+
+    await POST(req, res)
+
+    // Stripe was hit (money moved) and the ledger write failed.
+    expect(stripeFetch).toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "refund_recorded_mismatch",
+        severity: "page",
+        path: "src/api/admin/grillers/orders/[id]/finalization/refund-final-charge/route.ts",
+        meta: expect.objectContaining({
+          stripe_refund_id: "re_final_999",
+          order_id: "order_123",
+        }),
+      })
+    )
+    // Response surfaces the mismatch with the Stripe refund id, unchanged.
+    expect(res.status).toHaveBeenCalledWith(500)
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ stripe_refund_id: "re_final_999" })
+    )
   })
 })

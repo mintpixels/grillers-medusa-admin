@@ -5,6 +5,7 @@ import {
   metadataObject,
 } from "../../../../../../../lib/catch-weight-finalization"
 import { releaseAllocationLineQuantities } from "../../../../../../../lib/inventory-allocation"
+import { emitOpsAlert } from "../../../../../../../lib/ops-alert"
 
 type RefundBody = {
   amount?: number | string
@@ -273,6 +274,12 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const orderModule = req.scope.resolve(Modules.ORDER)
   const eventBus = req.scope.resolve(Modules.EVENT_BUS)
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+  let logger: any
+  try {
+    logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
+  } catch {
+    logger = undefined
+  }
   let stripeRefund: Record<string, any> | undefined
 
   try {
@@ -458,6 +465,24 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     const message =
       err instanceof Error ? err.message : "Stripe final-charge refund failed."
     if (stripeRefund?.id) {
+      // Money left Stripe but the Medusa transaction/metadata write threw: the
+      // refund DID happen at the processor while our ledger does not reflect it.
+      // This is a money/ledger divergence — page immediately. Never log card/PII;
+      // only ids and a sliced error message.
+      await emitOpsAlert({
+        alertKind: "refund_recorded_mismatch",
+        title: `Stripe refund ${stripeRefund.id} succeeded but Medusa recording failed for order ${orderId}`,
+        path: "src/api/admin/grillers/orders/[id]/finalization/refund-final-charge/route.ts",
+        source: "medusa",
+        severity: "page",
+        logger,
+        meta: {
+          stripe_refund_id: stripeRefund.id,
+          order_id: orderId,
+          error_name: err instanceof Error ? err.name : "Error",
+          error_message_sliced: String(message).slice(0, 300),
+        },
+      })
       return res.status(500).json({
         message: `Stripe refund ${stripeRefund.id} succeeded, but Medusa refund recording failed: ${message}`,
         stripe_refund_id: stripeRefund.id,
