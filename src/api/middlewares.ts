@@ -15,6 +15,32 @@ import {
   resolveServiceCodeFromMethod,
   ZIP_RESTRICTED_SERVICE_CODES,
 } from "../modules/fulfillment/serviceability"
+import { emitOpsAlert, type OpsAlertSeverity } from "../lib/ops-alert"
+import { opsErrorHandler } from "./middlewares/ops-error-handler"
+
+const MIDDLEWARES_PATH = "src/api/middlewares.ts"
+
+// Fail-open guards stay fail-open: they emit an ops alert AND continue. The
+// consumer's dedup window absorbs hot-path volume, so no extra throttling here.
+// NEVER include PII — only the guard's alertKind + the error message (sliced).
+function emitGuardFailureAlert(input: {
+  logger: Pick<import("@medusajs/framework/types").Logger, "warn" | "error">
+  alertKind: string
+  severity: OpsAlertSeverity
+  title: string
+  error: unknown
+}) {
+  const message =
+    input.error instanceof Error ? input.error.message : String(input.error)
+  void emitOpsAlert({
+    alertKind: input.alertKind,
+    severity: input.severity,
+    path: MIDDLEWARES_PATH,
+    title: input.title,
+    meta: { error_message: message.slice(0, 300) },
+    logger: input.logger,
+  })
+}
 
 const INTERNAL_RAW_MATERIAL_SKU = /^RM-/i
 
@@ -56,6 +82,13 @@ async function blockInternalRawMaterialLineItems(
     const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
     const message = error instanceof Error ? error.message : String(error)
     logger.warn(`[store-cart] RM line guard lookup failed: ${message}`)
+    emitGuardFailureAlert({
+      logger,
+      alertKind: "mw_rm_guard_failed",
+      severity: "warn",
+      title: "middleware: RM line-item guard lookup failed",
+      error,
+    })
   }
 
   return next()
@@ -96,6 +129,15 @@ async function blockFulfillmentBeforeFinalCharge(
     const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
     const message = error instanceof Error ? error.message : String(error)
     logger.warn(`[catch-weight-finalization] fulfillment gate lookup failed: ${message}`)
+    // Page: a fulfillment gate that fails open could let a catch-weight order
+    // slip through BEFORE the final pre-shipment charge — direct money risk.
+    emitGuardFailureAlert({
+      logger,
+      alertKind: "mw_fulfillment_gate_failed",
+      severity: "page",
+      title: "middleware: fulfillment gate lookup failed (failed open)",
+      error,
+    })
   }
 
   return next()
@@ -151,6 +193,13 @@ async function filterUnserviceableShippingOptions(
     logger.warn(
       `[shipping-options-filter] cart ${cartId} address lookup failed (${message}); returning all options`
     )
+    emitGuardFailureAlert({
+      logger,
+      alertKind: "mw_shipping_options_filter_failed",
+      severity: "warn",
+      title: "middleware: shipping-options filter address lookup failed",
+      error,
+    })
     return next()
   }
 
@@ -211,6 +260,13 @@ async function filterUnserviceableShippingOptions(
         logger.warn(
           `[shipping-options-filter] serviceability check failed for cart ${cartId} (${message}); returning all options`
         )
+        emitGuardFailureAlert({
+          logger,
+          alertKind: "mw_shipping_options_filter_failed",
+          severity: "warn",
+          title: "middleware: shipping-options serviceability check failed",
+          error,
+        })
         originalJson(body)
       })
 
@@ -402,6 +458,13 @@ export async function dropUnserviceableShippingMethods(req: {
     logger.warn(
       `[cart-shipping-presync] synchronous heal failed; proceeding with mutation: ${message}`
     )
+    emitGuardFailureAlert({
+      logger,
+      alertKind: "mw_drop_unserviceable_methods_failed",
+      severity: "warn",
+      title: "middleware: drop-unserviceable-shipping-methods heal failed",
+      error,
+    })
     return []
   }
 }
@@ -426,6 +489,10 @@ async function dropUnserviceableShippingMethodsBeforeMutation(
 }
 
 export default defineMiddlewares({
+  // Global error handler: emits an ops alert for unhandled throws from any API
+  // route, then DELEGATES to Medusa's core error handler so the client error
+  // response is unchanged. See ./middlewares/ops-error-handler.ts.
+  errorHandler: opsErrorHandler,
   routes: [
     {
       matcher: "/store/shipping-options",
