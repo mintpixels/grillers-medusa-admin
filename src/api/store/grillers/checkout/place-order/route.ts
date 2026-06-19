@@ -25,6 +25,9 @@ import {
   ensurePaymentSetup,
   metadataObject,
 } from "../../../../../lib/catch-weight-finalization";
+import { emitOpsAlert } from "../../../../../lib/ops-alert";
+
+const PLACE_ORDER_PATH = "store/grillers/checkout/place-order";
 
 type PlaceOrderBody = {
   cart_id?: string;
@@ -285,6 +288,20 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       const message =
         errors[0].error?.message ||
         "Could not place the order. Please try again.";
+      // Distinct fingerprint from the outer 500 so a Stripe-decline storm
+      // (complete-cart 400) never merges with an infra 500.
+      await emitOpsAlert({
+        alertKind: "place_order_error",
+        severity: "page",
+        path: PLACE_ORDER_PATH,
+        title: "place-order complete-cart 400",
+        fingerprint: `place_order:complete_cart:${errors[0].error?.name || ""}`,
+        meta: {
+          cart_id: cartId,
+          workflow_error: errors[0].error?.message?.slice(0, 300),
+        },
+        logger: req.scope.resolve(ContainerRegistrationKeys.LOGGER),
+      });
       return res.status(400).json({
         type: "cart",
         error: {
@@ -297,6 +314,21 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     const order = await retrieveOrder(req, result.id);
     if (!order) {
+      // Worst case: complete-cart succeeded (order created) but we can't read
+      // it back — money may be taken, order effectively lost. Distinct
+      // fingerprint so this never merges with the generic 500 or the 400.
+      await emitOpsAlert({
+        alertKind: "place_order_error",
+        severity: "page",
+        path: PLACE_ORDER_PATH,
+        title: "place-order order created but not retrievable",
+        fingerprint: "place_order:order_created_not_retrievable",
+        meta: {
+          cart_id: cartId,
+          order_id: result?.id,
+        },
+        logger: req.scope.resolve(ContainerRegistrationKeys.LOGGER),
+      });
       return jsonError(
         res,
         500,
@@ -343,8 +375,23 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     });
   } catch (error) {
     const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER);
+    const err = error as { name?: string; message?: string } | undefined;
     const message = error instanceof Error ? error.message : String(error);
     logger.error(`[catch-weight-checkout] ${message}`);
+    // NEVER include raw card/token/PII or the full payment payload — only
+    // cart_id + error name/message (sliced).
+    await emitOpsAlert({
+      alertKind: "place_order_error",
+      severity: "page",
+      path: PLACE_ORDER_PATH,
+      title: "place-order 500: " + (err?.name || "error"),
+      meta: {
+        cart_id: cartId,
+        error_name: err?.name,
+        error_message: err?.message?.slice(0, 300),
+      },
+      logger,
+    });
     res.status(500).json({
       message: "Could not place the order. Please try again.",
     });

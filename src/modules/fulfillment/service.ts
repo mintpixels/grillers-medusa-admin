@@ -706,6 +706,7 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         title: "Shipping calculatePrice returned -10 sentinel",
         path: "src/modules/fulfillment/service.ts",
         source: "medusa",
+        severity: "warn",
         logger: this.logger_,
         meta: {
           service_code: (optionData as any)?.service_code || null,

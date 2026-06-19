@@ -648,6 +648,7 @@ export async function importOrderToQbSync({
         title: `QBD order import failed for ${orderId}`,
         path: "src/subscribers/qb-sync-order-import.ts",
         source: "medusa",
+        severity: "page",
         logger,
         meta: {
           order_id: orderId,
@@ -671,6 +672,7 @@ export async function importOrderToQbSync({
       title: `QBD order import exception for ${orderId}`,
       path: "src/subscribers/qb-sync-order-import.ts",
       source: "medusa",
+      severity: "page",
       logger,
       meta: {
         order_id: orderId,
