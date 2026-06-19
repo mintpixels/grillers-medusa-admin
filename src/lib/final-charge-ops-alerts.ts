@@ -22,6 +22,7 @@ export async function emitFinalChargeNonSucceededAlert({
     title: `Final charge PaymentIntent ${paymentIntentId} returned ${paymentIntentStatus}`,
     path: "src/api/admin/grillers/orders/[id]/finalization/charge-and-release/route.ts",
     source: "medusa",
+    severity: "page",
     logger,
     meta: {
       order_id: orderId,
@@ -57,6 +58,7 @@ export async function emitChargeFailedHoldAlert({
     title: `Final charge failed for order ${orderId}`,
     path: "src/api/admin/grillers/orders/[id]/finalization/charge-and-release/route.ts",
     source: "medusa",
+    severity: "page",
     logger,
     meta: {
       order_id: orderId,

@@ -26,6 +26,7 @@ describe("final charge ops alerts", () => {
       expect.objectContaining({
         alertKind: "final_charge_non_succeeded_payment_intent",
         path: "src/api/admin/grillers/orders/[id]/finalization/charge-and-release/route.ts",
+        severity: "page",
         meta: expect.objectContaining({
           order_id: "order_123",
           finalization_id: "fin_123",
@@ -52,6 +53,7 @@ describe("final charge ops alerts", () => {
       expect.objectContaining({
         alertKind: "charge_failed_hold",
         path: "src/api/admin/grillers/orders/[id]/finalization/charge-and-release/route.ts",
+        severity: "page",
         meta: expect.objectContaining({
           order_id: "order_123",
           finalization_id: "fin_123",

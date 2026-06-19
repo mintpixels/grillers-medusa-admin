@@ -134,6 +134,7 @@ async function queueQbdRefundPosting({
       title: `Refund ${refund.id} overwrote pending QBD posting for order ${orderId}`,
       path: "src/api/admin/grillers/payments/[id]/refund/route.ts",
       source: "medusa",
+      severity: "warn",
       logger,
       meta: {
         order_id: orderId,
