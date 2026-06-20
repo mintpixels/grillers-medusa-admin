@@ -605,5 +605,14 @@ export default defineMiddlewares({
       method: ["POST"],
       bodyParser: { preserveRawBody: true },
     },
+    {
+      // Slack `/gp` slash-command query bot. Outside /admin and /store, so it
+      // bypasses Medusa auth; the Slack signing secret is the ONLY gate. Slack
+      // sends application/x-www-form-urlencoded, so preserve the raw body — it
+      // is needed for BOTH the X-Slack-Signature HMAC and the payload parse.
+      matcher: "/webhooks/slack/command",
+      method: ["POST"],
+      bodyParser: { preserveRawBody: true },
+    },
   ],
 })
