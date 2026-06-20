@@ -430,7 +430,7 @@ async function fetchVariants(
     "product.*",
     "product.metadata",
     "inventory_items.*",
-    "+inventory_items.required_quantity",
+    "inventory_items.required_quantity",
     "inventory_items.inventory.*",
     "inventory_items.inventory.location_levels.*",
   ]
@@ -830,7 +830,7 @@ const ORDER_ALLOCATION_FIELDS = [
   "items.variant.product.*",
   "items.variant.product.metadata",
   "items.variant.inventory_items.*",
-  "+items.variant.inventory_items.required_quantity",
+  "items.variant.inventory_items.required_quantity",
   "items.variant.inventory_items.inventory.*",
   "items.variant.inventory_items.inventory.location_levels.*",
 ]

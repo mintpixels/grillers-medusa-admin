@@ -70,15 +70,21 @@ describe("analytics order placed subscriber", () => {
     const fields = query.graph.mock.calls[0][0].fields
     expect(fields).toEqual(
       expect.arrayContaining([
-        "+metadata",
+        "metadata",
         "shipping_address.*",
         "customer.*",
         "customer.groups.*",
         "shipping_methods.shipping_option_id",
-        "+shipping_methods.data",
-        "+shipping_methods.metadata",
+        "shipping_methods.data",
+        "shipping_methods.metadata",
       ])
     )
+    // Regression guard: a `+`-prefixed NESTED (dotted) field makes query.graph
+    // throw `Entity 'Order' does not have property '+items'` before track() is
+    // reached. No such field may be sent.
+    expect(
+      fields.filter((f: string) => f.startsWith("+") && f.includes("."))
+    ).toEqual([])
     expect(analytics.track).toHaveBeenCalledTimes(1)
     expect(analytics.track).toHaveBeenCalledWith(
       expect.objectContaining({

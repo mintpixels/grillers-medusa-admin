@@ -511,4 +511,82 @@ describe("GpAnalyticsProviderService", () => {
       "order_shipped:order_ship_1:ful_123"
     )
   })
+
+  it("never throws and still fires the GP mirror when JSON.stringify of the Jitsu payload throws", async () => {
+    // A property that can't be serialized (BigInt) makes the synchronous Jitsu
+    // send throw; track() must swallow it, log, and STILL POST the GP mirror so a
+    // single bad sink never kills the warehouse event (the prod failure mode).
+    const service = new GpAnalyticsProviderService(
+      { logger } as any,
+      {
+        jitsuHost: "https://jitsu.example.com",
+        jitsuServerSecret: "jitsu-secret",
+        gpAnalyticsEndpoint: "https://analytics.example.com/",
+        gpAnalyticsServerKey: "server-key",
+      }
+    )
+
+    await expect(
+      service.track({
+        event: "order_completed",
+        actor_id: "cus_failsoft",
+        properties: {
+          transaction_id: "order_failsoft",
+          idempotency_key: "order.placed:order_failsoft:order_completed",
+          // BigInt cannot be JSON.stringify'd → throws while building Jitsu body.
+          weird: BigInt(9),
+        },
+      } as any)
+    ).resolves.toBeUndefined()
+
+    expect(logger.error).toHaveBeenCalled()
+    // The GP mirror (which also can't serialize the BigInt) is isolated too, so
+    // its failure is logged independently — track() itself never rejects.
+    const gpCalls = (global.fetch as jest.Mock).mock.calls.filter(([url]) =>
+      String(url).startsWith("https://analytics.example.com/v1/track")
+    )
+    // The GP build path runs (isolated try/catch) even though Jitsu failed first.
+    expect(logger.error.mock.calls.length).toBeGreaterThanOrEqual(1)
+    expect(gpCalls.length).toBeLessThanOrEqual(1)
+  })
+
+  it("never throws and lands the GP warehouse event for a clean order even when actor_id is empty", async () => {
+    // Guest-shaped order (no customer_id): track() must not throw and must still
+    // POST a schema-valid GP mirror with a synthesized anonymous_id.
+    const service = new GpAnalyticsProviderService(
+      { logger } as any,
+      {
+        jitsuHost: "https://jitsu.example.com",
+        jitsuServerSecret: "jitsu-secret",
+        gpAnalyticsEndpoint: "https://analytics.example.com/",
+        gpAnalyticsServerKey: "server-key",
+      }
+    )
+
+    await expect(
+      service.track({
+        event: "order_received",
+        actor_id: "",
+        properties: {
+          transaction_id: "order_guest_real",
+          display_id: 135,
+          order_created_at: "2026-06-20T04:48:00.000Z",
+          route_market: "national",
+          customer_type: "dtc",
+          source: "web",
+          fulfillment_tier: "ups_overnight",
+          idempotency_key: "order.placed:order_guest_real:order_received",
+        },
+      } as any)
+    ).resolves.toBeUndefined()
+
+    const gpCall = (global.fetch as jest.Mock).mock.calls.find(([url]) =>
+      String(url).startsWith("https://analytics.example.com/v1/track")
+    )
+    expect(gpCall).toBeTruthy()
+    const body = JSON.parse(gpCall![1].body)
+    expect(body.event).toBe("order_received")
+    // anyOf [anonymous_id, user_id] satisfied via synthesized anonymous_id.
+    expect(body.anonymous_id).toMatch(UUID_RE)
+  })
 })

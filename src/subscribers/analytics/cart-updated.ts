@@ -22,7 +22,7 @@ export default async function cartUpdatedHandler({
         "total",
         "currency_code",
         "items.*",
-        "+items.metadata",
+        "items.metadata",
         "items.variant.*",
         "items.variant.product.*",
       ],
