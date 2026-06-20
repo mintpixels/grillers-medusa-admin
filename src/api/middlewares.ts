@@ -614,5 +614,15 @@ export default defineMiddlewares({
       method: ["POST"],
       bodyParser: { preserveRawBody: true },
     },
+    {
+      // Slack interactivity endpoint (on-call "✅ Ack" button). Outside /admin
+      // and /store so it bypasses Medusa auth — the Slack signing secret is the
+      // ONLY gate. Slack sends application/x-www-form-urlencoded with a single
+      // `payload` field, so preserve the raw body for the X-Slack-Signature HMAC
+      // (verified over the exact bytes) and the payload parse.
+      matcher: "/webhooks/slack/interactivity",
+      method: ["POST"],
+      bodyParser: { preserveRawBody: true },
+    },
   ],
 })

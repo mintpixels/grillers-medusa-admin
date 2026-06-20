@@ -1,0 +1,380 @@
+import { createHmac } from "node:crypto"
+import {
+  verifySlackSignature,
+  rawBodyString,
+} from "../_shared/verify"
+import { emitOpsAlertAck } from "../_shared/emit-ack"
+import {
+  OPS_ACK_ACTION_ID,
+  buildAckedMessage,
+  extractAckAction,
+  parseInteractivityPayload,
+  POST,
+} from "../interactivity/route"
+
+const SIGNING_SECRET = "slack-signing-secret"
+
+function signedHeaders(rawBody: string, ts: number) {
+  const sig =
+    "v0=" +
+    createHmac("sha256", SIGNING_SECRET)
+      .update(`v0:${ts}:${rawBody}`, "utf8")
+      .digest("hex")
+  return {
+    "x-slack-signature": sig,
+    "x-slack-request-timestamp": String(ts),
+  }
+}
+
+function ackRawBody(
+  fingerprint: string,
+  opts: { responseUrl?: string; userId?: string; username?: string } = {}
+): string {
+  const payload = {
+    type: "block_actions",
+    response_url: opts.responseUrl ?? "https://hooks.slack.com/actions/T0/B0/x",
+    user: { id: opts.userId ?? "U123", username: opts.username ?? "peter" },
+    actions: [{ action_id: OPS_ACK_ACTION_ID, value: fingerprint }],
+  }
+  return new URLSearchParams({ payload: JSON.stringify(payload) }).toString()
+}
+
+function makeRes() {
+  const res: any = {
+    statusCode: 0,
+    body: undefined,
+    status(code: number) {
+      this.statusCode = code
+      return this
+    },
+    json(payload: unknown) {
+      this.body = payload
+      return this
+    },
+  }
+  return res
+}
+
+describe("verifySlackSignature (interactivity shared)", () => {
+  const originalEnv = process.env
+
+  afterEach(() => {
+    process.env = originalEnv
+  })
+
+  it("fails closed when SLACK_SIGNING_SECRET is unset (no dev opt-in)", () => {
+    process.env = { ...originalEnv, SLACK_SIGNING_SECRET: "", NODE_ENV: "test" }
+    const result = verifySlackSignature(
+      { headers: {}, body: {} } as any,
+      "payload=%7B%7D"
+    )
+    expect(result).toEqual({ ok: false, reason: "secret_not_configured" })
+  })
+
+  it("rejects unsigned in production even with the dev opt-in flag", () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: "",
+      SLACK_ALLOW_UNSIGNED: "true",
+      NODE_ENV: "production",
+    }
+    const result = verifySlackSignature(
+      { headers: {}, body: {} } as any,
+      "payload=%7B%7D"
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  it("accepts unsigned only with explicit dev opt-in and non-prod", () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: "",
+      SLACK_ALLOW_UNSIGNED: "true",
+      NODE_ENV: "development",
+    }
+    const result = verifySlackSignature(
+      { headers: {}, body: {} } as any,
+      "payload=%7B%7D"
+    )
+    expect(result).toEqual({ ok: true })
+  })
+
+  it("accepts a correctly-signed request within the window", () => {
+    process.env = { ...originalEnv, SLACK_SIGNING_SECRET: SIGNING_SECRET }
+    const rawBody = ackRawBody("fp-1")
+    const ts = Math.floor(Date.now() / 1000)
+    const result = verifySlackSignature(
+      { headers: signedHeaders(rawBody, ts), body: {} } as any,
+      rawBody
+    )
+    expect(result).toEqual({ ok: true })
+  })
+
+  it("rejects a tampered body (signature mismatch)", () => {
+    process.env = { ...originalEnv, SLACK_SIGNING_SECRET: SIGNING_SECRET }
+    const rawBody = ackRawBody("fp-1")
+    const ts = Math.floor(Date.now() / 1000)
+    const headers = signedHeaders(rawBody, ts)
+    const result = verifySlackSignature(
+      { headers, body: {} } as any,
+      ackRawBody("fp-TAMPERED")
+    )
+    expect(result).toEqual({ ok: false, reason: "signature_mismatch" })
+  })
+
+  it("rejects a stale timestamp (replay guard, >5min)", () => {
+    process.env = { ...originalEnv, SLACK_SIGNING_SECRET: SIGNING_SECRET }
+    const rawBody = ackRawBody("fp-1")
+    const ts = Math.floor(Date.now() / 1000) - 600 // 10 minutes old
+    const result = verifySlackSignature(
+      { headers: signedHeaders(rawBody, ts), body: {} } as any,
+      rawBody
+    )
+    expect(result).toEqual({ ok: false, reason: "timestamp_out_of_range" })
+  })
+
+  it("rejects duplicate (array) signature headers", () => {
+    process.env = { ...originalEnv, SLACK_SIGNING_SECRET: SIGNING_SECRET }
+    const rawBody = ackRawBody("fp-1")
+    const ts = Math.floor(Date.now() / 1000)
+    const result = verifySlackSignature(
+      {
+        headers: {
+          "x-slack-signature": ["v0=a", "v0=b"],
+          "x-slack-request-timestamp": String(ts),
+        },
+        body: {},
+      } as any,
+      rawBody
+    )
+    expect(result).toEqual({ ok: false, reason: "missing_signature_headers" })
+  })
+})
+
+describe("rawBodyString", () => {
+  it("prefers the preserved raw body over a re-serialized parse", () => {
+    expect(rawBodyString({ rawBody: "payload=abc", body: { x: 1 } } as any)).toBe(
+      "payload=abc"
+    )
+  })
+})
+
+describe("parseInteractivityPayload / extractAckAction", () => {
+  it("extracts fingerprint + user from an ack click", () => {
+    const ack = extractAckAction(
+      parseInteractivityPayload(
+        ackRawBody("fp-abc", { userId: "U9", username: "dan" })
+      )
+    )
+    expect(ack).toEqual({
+      fingerprint: "fp-abc",
+      ackedByUser: "U9",
+      ackedByName: "dan",
+    })
+  })
+
+  it("returns null for a non-ack action_id", () => {
+    const raw = new URLSearchParams({
+      payload: JSON.stringify({
+        actions: [{ action_id: "something_else", value: "fp" }],
+        user: { id: "U1" },
+      }),
+    }).toString()
+    expect(extractAckAction(parseInteractivityPayload(raw))).toBeNull()
+  })
+
+  it("returns null when the ack button carries no fingerprint", () => {
+    const raw = new URLSearchParams({
+      payload: JSON.stringify({
+        actions: [{ action_id: OPS_ACK_ACTION_ID, value: "" }],
+        user: { id: "U1" },
+      }),
+    }).toString()
+    expect(extractAckAction(parseInteractivityPayload(raw))).toBeNull()
+  })
+
+  it("returns null on malformed payload JSON", () => {
+    const raw = "payload=%7Bnot-json"
+    expect(parseInteractivityPayload(raw)).toBeNull()
+    expect(extractAckAction(parseInteractivityPayload(raw))).toBeNull()
+  })
+
+  it("returns null when there is no payload field (e.g. url_verification)", () => {
+    expect(parseInteractivityPayload("token=abc")).toBeNull()
+  })
+})
+
+describe("buildAckedMessage", () => {
+  it("replaces the original message with an acked-by line", () => {
+    const msg = buildAckedMessage({
+      fingerprint: "fp",
+      ackedByUser: "U42",
+    })
+    expect(msg.replace_original).toBe(true)
+    expect(JSON.stringify(msg)).toContain("<@U42>")
+    expect(JSON.stringify(msg)).toContain("Acked by")
+  })
+})
+
+describe("emitOpsAlertAck", () => {
+  const originalEnv = process.env
+  const originalFetch = global.fetch
+
+  afterEach(() => {
+    process.env = originalEnv
+    global.fetch = originalFetch
+    jest.restoreAllMocks()
+  })
+
+  it("skips and no-ops without ingestion credentials", async () => {
+    const logger = { warn: jest.fn(), error: jest.fn() }
+    process.env = {
+      ...originalEnv,
+      GP_ANALYTICS_ENDPOINT: "",
+      GP_ANALYTICS_SERVER_KEY: "",
+    }
+    global.fetch = jest.fn() as any
+    const result = await emitOpsAlertAck({
+      fingerprint: "fp-x",
+      ackedByUser: "U1",
+      logger: logger as any,
+    })
+    expect(result).toEqual({ ok: false, skipped: true })
+    expect(global.fetch).not.toHaveBeenCalled()
+  })
+
+  it("POSTs ops_alert_ack to /v1/track with Bearer auth and the right contract", async () => {
+    process.env = {
+      ...originalEnv,
+      GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com/",
+      GP_ANALYTICS_SERVER_KEY: "gp-server-key",
+      NODE_ENV: "production",
+      RAILWAY_GIT_COMMIT_SHA: "deadbeef",
+    }
+    global.fetch = jest.fn().mockResolvedValue({ ok: true }) as any
+
+    const result = await emitOpsAlertAck({
+      fingerprint: "fp-abc",
+      ackedByUser: "U9",
+      ackedByName: "peter",
+      alertKind: "checkout_500",
+    })
+
+    expect(result).toEqual({ ok: true, skipped: false })
+    expect(global.fetch).toHaveBeenCalledWith(
+      "https://ingestion.example.com/v1/track",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+          Authorization: "Bearer gp-server-key",
+        }),
+      })
+    )
+    const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body)
+    expect(body.event).toBe("ops_alert_ack")
+    expect(body.source).toBe("medusa-server")
+    expect(body.properties).toMatchObject({
+      fingerprint: "fp-abc",
+      acked_by_user: "U9",
+      acked_by_name: "peter",
+      alert_kind: "checkout_500",
+      env: "production",
+    })
+  })
+
+  it("fails soft (logs, returns not-ok) on a non-2xx ingestion response", async () => {
+    const logger = { warn: jest.fn(), error: jest.fn() }
+    process.env = {
+      ...originalEnv,
+      GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com",
+      GP_ANALYTICS_SERVER_KEY: "k",
+    }
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      text: async () => "validation error",
+    }) as any
+    const result = await emitOpsAlertAck({
+      fingerprint: "fp",
+      ackedByUser: "U1",
+      logger: logger as any,
+    })
+    expect(result).toEqual({ ok: false, skipped: false })
+    expect(logger.error).toHaveBeenCalled()
+  })
+})
+
+describe("interactivity POST handler", () => {
+  const originalEnv = process.env
+  const originalFetch = global.fetch
+
+  afterEach(() => {
+    process.env = originalEnv
+    global.fetch = originalFetch
+    jest.restoreAllMocks()
+  })
+
+  function makeReq(rawBody: string, headers: Record<string, unknown>) {
+    return {
+      rawBody,
+      body: {},
+      headers,
+      scope: { resolve: () => ({ warn: jest.fn(), error: jest.fn() }) },
+    } as any
+  }
+
+  it("returns 401 on an invalid signature and never emits", async () => {
+    process.env = { ...originalEnv, SLACK_SIGNING_SECRET: SIGNING_SECRET }
+    const fetchMock = jest.fn()
+    global.fetch = fetchMock as any
+    const rawBody = ackRawBody("fp-1")
+    const res = makeRes()
+    await POST(makeReq(rawBody, { "x-slack-signature": "v0=bad", "x-slack-request-timestamp": String(Math.floor(Date.now() / 1000)) }), res)
+    expect(res.statusCode).toBe(401)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("emits ops_alert_ack and replies 200 on a valid ack click", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com",
+      GP_ANALYTICS_SERVER_KEY: "k",
+    }
+    const calls: Array<{ url: string; body: any }> = []
+    global.fetch = jest.fn(async (url: string, init: any) => {
+      calls.push({ url, body: JSON.parse(String(init.body)) })
+      return { ok: true } as any
+    }) as any
+
+    const rawBody = ackRawBody("fp-emit", { userId: "U7", username: "avi" })
+    const ts = Math.floor(Date.now() / 1000)
+    const res = makeRes()
+    await POST(makeReq(rawBody, signedHeaders(rawBody, ts)), res)
+    // Flush the fire-and-forget response_url post (not awaited by the handler).
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(res.statusCode).toBe(200)
+    const ackCall = calls.find((c) => c.url.endsWith("/v1/track"))
+    expect(ackCall?.body.event).toBe("ops_alert_ack")
+    expect(ackCall?.body.properties.fingerprint).toBe("fp-emit")
+    expect(ackCall?.body.properties.acked_by_user).toBe("U7")
+    // response_url update was also posted to Slack (fire-and-forget).
+    expect(calls.some((c) => c.url.includes("hooks.slack.com"))).toBe(true)
+  })
+
+  it("returns 200 ignored for a non-ack interaction", async () => {
+    process.env = { ...originalEnv, SLACK_SIGNING_SECRET: SIGNING_SECRET }
+    global.fetch = jest.fn() as any
+    const raw = new URLSearchParams({
+      payload: JSON.stringify({ type: "block_actions", actions: [] }),
+    }).toString()
+    const ts = Math.floor(Date.now() / 1000)
+    const res = makeRes()
+    await POST(makeReq(raw, signedHeaders(raw, ts)), res)
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toEqual({ ok: true, ignored: true })
+  })
+})
