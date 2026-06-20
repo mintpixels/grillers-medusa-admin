@@ -21,12 +21,58 @@ type Options = {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const GP_ANALYTICS_UUID_NAMESPACE = "da4ce64b-035f-5f38-95cb-a0d24ecb5fd7"
+// Anchor for deterministically-derived timestamps (2024-01-01T00:00:00Z). Used
+// ONLY as a last resort when no real occurred-at is available; the same
+// idempotency seed always maps to the same instant so replays stay
+// byte-identical for ReplacingMergeTree. Real order events always carry
+// order_created_at, so this path is for identity/seed-only ad-hoc events.
+const GP_ANALYTICS_EPOCH_MS = Date.UTC(2024, 0, 1)
+// Bound the derived offset to ~2 years so a fallback timestamp lands in a sane
+// DateTime window (and a sane monthly partition) rather than the far future.
+const MAX_DERIVED_OFFSET_MS = 2 * 365 * 24 * 60 * 60 * 1000
 const STAFF_SOURCES = new Set([
   "staff",
   "staff_phone_order",
   "staff_impersonation",
   "admin_staff_reorder",
 ])
+
+// Raw PII must NOT land in the analytics warehouse. The GP-mirror keeps IDs and
+// coarse geo (customer_id, order_id, value, zip, region) but strips anything
+// that identifies a person directly. This is a DENY list applied to the
+// top-level mirror properties AND to known nested PII objects (addresses).
+// NOTE: this strip is applied ONLY to the GP mirror — the legacy Jitsu payload
+// is left untouched so Chris's existing consumers don't break.
+const GP_MIRROR_PII_DENY_KEYS = new Set([
+  "email",
+  "name",
+  "first_name",
+  "last_name",
+  "full_name",
+  "customer_name",
+  "phone",
+  "phone_number",
+  "billing_address",
+  "shipping_address",
+  "address",
+  "address_1",
+  "address_2",
+  "address_line_1",
+  "address_line_2",
+  "street",
+  "street_address",
+])
+
+function stripMirrorPii(
+  properties: Record<string, any>
+): Record<string, any> {
+  const clean: Record<string, any> = {}
+  for (const [key, value] of Object.entries(properties)) {
+    if (GP_MIRROR_PII_DENY_KEYS.has(key)) continue
+    clean[key] = value
+  }
+  return clean
+}
 
 function uuidToBytes(uuid: string): Buffer {
   return Buffer.from(uuid.replace(/-/g, ""), "hex")
@@ -190,6 +236,79 @@ class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
     return null
   }
 
+  // The warehouse `events` table is ReplacingMergeTree(_inserted_at) keyed on
+  // (event_name, timestamp, event_id). A replay of the SAME logical event MUST
+  // produce an IDENTICAL `timestamp` (derived from event_timestamp_ms) or the
+  // dedup key changes and the row is duplicated — which double-counts the
+  // insert-triggered daily_revenue MV. So we NEVER use Date.now() for the
+  // mirror; we derive a DETERMINISTIC ms timestamp:
+  //   1. an explicit occurred-at the subscriber threads through
+  //      (order.created_at → occurred_at_ms / event_timestamp_ms), else
+  //   2. a stable value hashed from the idempotency seed, so two replays of the
+  //      same event collapse to the same instant.
+  private eventTimestampMs(
+    properties: Record<string, any>,
+    idempotencyKey: string | null
+  ): number {
+    // 1. Explicit occurred-at threaded from the subscriber.
+    const explicitMs = this.toEpochMs(
+      properties.occurred_at_ms,
+      properties.event_timestamp_ms,
+      properties.occurred_at,
+      properties.created_at,
+      properties.order_created_at
+    )
+    if (explicitMs !== null) return explicitMs
+
+    // 2. Derive a STABLE pseudo-timestamp from the idempotency seed so replays
+    //    are identical. We map the seed into a bounded, deterministic offset
+    //    anchored at a fixed epoch (the GP analytics launch) rather than
+    //    "now", so the same seed always yields the same ms.
+    const seed =
+      idempotencyKey ||
+      firstText(
+        properties.order_id,
+        properties.transaction_id,
+        properties.cart_id,
+        properties.medusa_event_id
+      )
+    if (seed) {
+      const hash = createHash("sha1").update(seed).digest()
+      // 6 bytes → up to ~281e12 ms (~8900 years) of offset range; anchor at the
+      // GP analytics epoch so values stay within a sane DateTime range.
+      const offsetMs = Number(hash.readUIntBE(0, 6))
+      return GP_ANALYTICS_EPOCH_MS + (offsetMs % MAX_DERIVED_OFFSET_MS)
+    }
+
+    // 3. Last resort: a truly identity-less ad-hoc server event. There is no
+    //    stable seed to dedup on, so a replay would duplicate regardless — use
+    //    Date.now() so the single delivery still lands with a real timestamp.
+    return Date.now()
+  }
+
+  private toEpochMs(...values: unknown[]): number | null {
+    for (const value of values) {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        // Heuristic: seconds vs milliseconds. Anything below ~1e12 is seconds.
+        return value < 1e12 ? Math.round(value * 1000) : Math.round(value)
+      }
+      if (typeof value === "string" && value.trim()) {
+        const asNumber = Number(value)
+        if (Number.isFinite(asNumber) && value.trim() === String(asNumber)) {
+          return asNumber < 1e12
+            ? Math.round(asNumber * 1000)
+            : Math.round(asNumber)
+        }
+        const parsed = Date.parse(value)
+        if (Number.isFinite(parsed)) return parsed
+      }
+      if (value instanceof Date && Number.isFinite(value.getTime())) {
+        return value.getTime()
+      }
+    }
+    return null
+  }
+
   private idempotencyKey(
     eventType: string,
     properties?: Record<string, any>
@@ -222,6 +341,33 @@ class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
     return randomUUID()
   }
 
+  private anonymousId(
+    userId: string | undefined,
+    properties?: Record<string, any>
+  ): string | undefined {
+    // If we already have a real user_id, the schema's anyOf is satisfied — but
+    // we still backfill a stable anonymous_id so identified and (later) guest
+    // events for the same order share one visitor key.
+    const existing = firstText(properties?.anonymous_id)
+    if (existing && UUID_RE.test(existing)) return existing
+
+    const deterministicSeed = firstText(
+      properties?.order_id,
+      properties?.transaction_id,
+      properties?.cart_id,
+      properties?.idempotency_key,
+      properties?.medusa_event_id
+    )
+    if (deterministicSeed) return uuidV5(`anon:${deterministicSeed}`)
+
+    // No stable seed (e.g. an identity-less ad-hoc server event). If we have a
+    // user_id the schema is already satisfied and we can leave anonymous_id
+    // unset; otherwise we MUST emit something valid so the event still lands.
+    if (userId) return undefined
+
+    return randomUUID()
+  }
+
   private sendToGpAnalytics(
     eventType: string,
     actorId?: string,
@@ -237,26 +383,47 @@ class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
       return
     }
 
-    const mirrorProperties = { ...(properties || {}) }
-    if (!mirrorProperties.order_id && mirrorProperties.transaction_id) {
-      mirrorProperties.order_id = mirrorProperties.transaction_id
+    // Work from the full producer properties to DERIVE the mirror keys
+    // (session, idempotency, timestamp can read PII-adjacent fields like
+    // created_at), then strip raw PII before anything is POSTed.
+    const sourceProperties = { ...(properties || {}) }
+    if (!sourceProperties.order_id && sourceProperties.transaction_id) {
+      sourceProperties.order_id = sourceProperties.transaction_id
     }
 
-    const sessionId = this.sessionId(mirrorProperties)
-    const idempotencyKey = this.idempotencyKey(eventType, mirrorProperties)
+    const sessionId = this.sessionId(sourceProperties)
+    const idempotencyKey = this.idempotencyKey(eventType, sourceProperties)
     const fulfillmentTier = this.fulfillmentTier(
-      mirrorProperties.fulfillment_tier || mirrorProperties.shipping_tier
+      sourceProperties.fulfillment_tier || sourceProperties.shipping_tier
     )
-    const userId = actorId || mirrorProperties.customer_id
+    const userId = firstText(actorId, sourceProperties.customer_id) || undefined
+    // Deterministic timestamp: a replay of the same logical event must produce
+    // an IDENTICAL (event_name, timestamp, event_id) so ReplacingMergeTree
+    // dedups it and the insert-triggered daily_revenue MV never double-counts.
+    const eventTimestampMs = this.eventTimestampMs(
+      sourceProperties,
+      idempotencyKey
+    )
 
-    if (!userId && !mirrorProperties.anonymous_id) {
-      this.logger_.debug(
-        `Analytics: Skipping GP dual-run ${eventType}; no user_id or anonymous_id`
-      )
-      return
-    }
+    // P2: strip raw PII from the GP mirror (email/name/phone/address). IDs and
+    // coarse geo (customer_id, order_id, value, zip/region) are retained. The
+    // Jitsu payload built in sendToJitsu() is unaffected.
+    const mirrorProperties = stripMirrorPii(sourceProperties)
+
+    // The warehouse schema requires either a (uuid) anonymous_id or a
+    // (non-empty) user_id. Server-side order events frequently have neither —
+    // guest checkouts carry no customer_id, and no anonymous_id is threaded
+    // through from the storefront. Rather than silently drop those events
+    // (which left ZERO order_completed rows in grillers_pride for weeks), we
+    // synthesize a STABLE anonymous_id so every server event satisfies the
+    // schema and lands. Stability (uuidV5 over a stable order/cart seed) keeps
+    // replays idempotent and lets multiple events for one order correlate.
+    const anonymousId = this.anonymousId(userId, sourceProperties)
 
     mirrorProperties.session_id = sessionId
+    if (anonymousId) {
+      mirrorProperties.anonymous_id = anonymousId
+    }
     if (fulfillmentTier) {
       mirrorProperties.fulfillment_tier = fulfillmentTier
     }
@@ -265,9 +432,9 @@ class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
       event: eventType,
       event_id: idempotencyKey ? uuidV5(idempotencyKey) : randomUUID(),
       idempotency_key: idempotencyKey || undefined,
-      event_timestamp_ms: Date.now(),
+      event_timestamp_ms: eventTimestampMs,
       user_id: userId,
-      anonymous_id: mirrorProperties.anonymous_id,
+      anonymous_id: anonymousId,
       session_id: String(sessionId),
       experience_version: "medusa",
       route_market: this.routeMarket(mirrorProperties.route_market),
