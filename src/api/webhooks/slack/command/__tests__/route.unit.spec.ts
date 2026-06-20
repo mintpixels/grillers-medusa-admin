@@ -6,6 +6,7 @@ import {
   parseCommandText,
   dispatchCommand,
   describeVariantStock,
+  sanitizeEcho,
 } from "../route"
 
 const SECRET = "test_signing_secret_abc123"
@@ -350,6 +351,49 @@ describe("slack /gp — dispatch", () => {
     expect(msg.response_type).toBe("ephemeral")
     expect(msg.text.toLowerCase()).toContain("couldn't complete")
     expect(logger.warn).toHaveBeenCalled()
+  })
+})
+
+describe("sanitizeEcho — markdown-injection guard", () => {
+  it("strips Slack mrkdwn control chars from echoed input", () => {
+    // Attempt to break out of the backtick code span and inject a link.
+    const evil = "x` <http://evil|click> *bold* _it_ |pipe`"
+    const out = sanitizeEcho(evil)
+    expect(out).not.toMatch(/[`<>*_|]/)
+    expect(out).toBe("x http://evilclick bold it pipe")
+  })
+
+  it("caps length and coerces non-strings", () => {
+    expect(sanitizeEcho("a".repeat(500)).length).toBe(120)
+    expect(sanitizeEcho(undefined)).toBe("")
+    expect(sanitizeEcho(1234 as any)).toBe("1234")
+  })
+
+  it("echoes a benign term unchanged", () => {
+    expect(sanitizeEcho("brisket-whole")).toBe("brisket-whole")
+    expect(sanitizeEcho("jane@example.com")).toBe("jane@example.com")
+  })
+})
+
+describe("dispatch — echoed terms are sanitized", () => {
+  function makeScope(graph: jest.Mock) {
+    return {
+      resolve: (key: string) => {
+        if (key === ContainerRegistrationKeys.QUERY) return { graph }
+        throw new Error(`Unknown dependency ${key}`)
+      },
+    }
+  }
+
+  it("a not-found order echoes a sanitized term (no raw backticks/angle brackets)", async () => {
+    const graph = jest.fn(async () => ({ data: [] }))
+    const scope = makeScope(graph)
+    const msg = await dispatchCommand(scope, {
+      subcommand: "order",
+      arg: "abc`<http://evil|x>",
+    })
+    expect(msg.text).not.toContain("<http://evil")
+    expect(msg.text).toContain("No order found")
   })
 })
 

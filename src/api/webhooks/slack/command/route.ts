@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto"
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import { authorizeStaffCaller, requiresStaffAuth } from "./staff-auth"
 
 // Slack signs slash-command requests as:
 //   X-Slack-Request-Timestamp: <unix seconds>
@@ -167,6 +168,18 @@ function ephemeral(text: string): SlackMessage {
   return { response_type: "ephemeral", text }
 }
 
+/**
+ * Sanitize a user-supplied term before echoing it back into a Slack message.
+ * We wrap echoed input in backticks; an attacker could close the code span and
+ * inject `<http://evil|click me>` link/markdown. Strip the Slack mrkdwn control
+ * characters (backtick, angle brackets, asterisk, underscore, pipe) and cap the
+ * length so the echo stays inert and bounded.
+ */
+export function sanitizeEcho(term: unknown): string {
+  const s = typeof term === "string" ? term : String(term ?? "")
+  return s.replace(/[`<>*_|]/g, "").slice(0, 120)
+}
+
 const HELP_TEXT = [
   "*Grillers Pride `/gp` query bot*",
   "• `/gp order <display_id|order_id>` — status, total, customer, payment + fulfillment, items",
@@ -231,7 +244,7 @@ async function lookupOrder(scope: Container, arg: string): Promise<SlackMessage>
   const { data } = await query.graph({ entity: "order", fields, filters })
   const order = (data || [])[0] as Record<string, any> | undefined
   if (!order?.id) {
-    return ephemeral(`No order found for \`${term}\`.`)
+    return ephemeral(`No order found for \`${sanitizeEcho(term)}\`.`)
   }
 
   const customerName =
@@ -281,7 +294,7 @@ async function lookupCustomer(scope: Container, arg: string): Promise<SlackMessa
   })
   const customer = (data || [])[0] as Record<string, any> | undefined
   if (!customer?.id) {
-    return ephemeral(`No customer found for \`${term}\`.`)
+    return ephemeral(`No customer found for \`${sanitizeEcho(term)}\`.`)
   }
 
   // Aggregate orders for this customer. Indexed lookup by customer_id.
@@ -361,10 +374,10 @@ async function lookupStock(scope: Container, arg: string): Promise<SlackMessage>
   }
 
   if (!variants.length) {
-    return ephemeral(`No product/variant found for \`${term}\`.`)
+    return ephemeral(`No product/variant found for \`${sanitizeEcho(term)}\`.`)
   }
 
-  const lines = [`*Stock for \`${term}\`*`]
+  const lines = [`*Stock for \`${sanitizeEcho(term)}\`*`]
   for (const v of variants.slice(0, 15)) {
     lines.push(`• ${describeVariantStock(v)}`)
   }
@@ -450,8 +463,8 @@ export async function dispatchCommand(
       `[slack-command] lookup failed for ${parsed.subcommand}: ${message}`
     )
     return ephemeral(
-      `Sorry — couldn't complete \`/gp ${parsed.subcommand}\`. ${
-        parsed.arg ? `Check the value \`${parsed.arg}\` and try again.` : ""
+      `Sorry — couldn't complete \`/gp ${sanitizeEcho(parsed.subcommand)}\`. ${
+        parsed.arg ? `Check the value \`${sanitizeEcho(parsed.arg)}\` and try again.` : ""
       }`.trim()
     )
   }
@@ -495,6 +508,30 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
     const payload = parseSlackPayload(rawBody)
     const parsed = parseCommandText(payload.text)
+
+    // Authorization gate: the signature only proves the request came from the
+    // Slack workspace, NOT that the CALLER is allowed to read customer PII.
+    // Gate the data subcommands (order/customer/stock) to current Medusa staff;
+    // `help` stays open to everyone (no PII). See staff-auth.ts for the source
+    // of "who is staff" (the Medusa `user` module) and the identity/allowlist
+    // modes.
+    if (requiresStaffAuth(parsed.subcommand)) {
+      const auth = await authorizeStaffCaller(
+        req.scope,
+        { user_id: payload.user_id, channel_id: payload.channel_id },
+        { logger }
+      )
+      if (!auth.ok) {
+        logger?.warn?.(
+          `[slack-command] denied /gp ${parsed.subcommand} for user=${payload.user_id}: ${auth.reason}`
+        )
+        res.status(200).json({
+          response_type: "ephemeral",
+          text: "⛔ `/gp` is restricted to Grillers Pride staff.",
+        })
+        return
+      }
+    }
 
     // Respond within Slack's 3s window. These are all indexed lookups, so we do
     // a fast direct response rather than acking + posting to response_url.
