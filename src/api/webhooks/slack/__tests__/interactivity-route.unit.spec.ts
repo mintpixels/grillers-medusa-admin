@@ -6,11 +6,16 @@ import {
 import { emitOpsAlertAck } from "../_shared/emit-ack"
 import {
   OPS_ACK_ACTION_ID,
+  ORDER_HOLD_ACTION_ID,
+  ORDER_RELEASE_ACTION_ID,
   buildAckedMessage,
+  buildOrderHoldMessage,
   extractAckAction,
+  extractOrderAction,
   parseInteractivityPayload,
   POST,
 } from "../interactivity/route"
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 
 const SIGNING_SECRET = "slack-signing-secret"
 
@@ -376,6 +381,316 @@ describe("interactivity POST handler", () => {
     await POST(makeReq(raw, signedHeaders(raw, ts)), res)
     expect(res.statusCode).toBe(200)
     expect(res.body).toEqual({ ok: true, ignored: true })
+  })
+})
+
+// ───────────────────────── approval-hold (order_hold / order_release) ─────────────────────────
+
+function orderRawBody(
+  actionId: string,
+  orderId: string,
+  opts: { responseUrl?: string; userId?: string; username?: string } = {}
+): string {
+  const payload = {
+    type: "block_actions",
+    response_url: opts.responseUrl ?? "https://hooks.slack.com/actions/T0/B0/x",
+    user: { id: opts.userId ?? "U123", username: opts.username ?? "peter" },
+    actions: [{ action_id: actionId, value: orderId }],
+  }
+  return new URLSearchParams({ payload: JSON.stringify(payload) }).toString()
+}
+
+describe("extractOrderAction", () => {
+  it("extracts hold + order id + user from an order_hold click", () => {
+    const action = extractOrderAction(
+      parseInteractivityPayload(
+        orderRawBody(ORDER_HOLD_ACTION_ID, "order_01H", {
+          userId: "U9",
+          username: "dan",
+        })
+      )
+    )
+    expect(action).toEqual({
+      action: "hold",
+      orderId: "order_01H",
+      byUser: "U9",
+      byName: "dan",
+    })
+  })
+
+  it("extracts release from an order_release click", () => {
+    const action = extractOrderAction(
+      parseInteractivityPayload(orderRawBody(ORDER_RELEASE_ACTION_ID, "order_01R"))
+    )
+    expect(action?.action).toBe("release")
+    expect(action?.orderId).toBe("order_01R")
+  })
+
+  it("returns null for an unknown action_id", () => {
+    const raw = new URLSearchParams({
+      payload: JSON.stringify({
+        actions: [{ action_id: "something_else", value: "order_01X" }],
+        user: { id: "U1" },
+      }),
+    }).toString()
+    expect(extractOrderAction(parseInteractivityPayload(raw))).toBeNull()
+  })
+
+  it("returns null when the hold button carries no order_id value", () => {
+    const raw = new URLSearchParams({
+      payload: JSON.stringify({
+        actions: [{ action_id: ORDER_HOLD_ACTION_ID, value: "" }],
+        user: { id: "U1" },
+      }),
+    }).toString()
+    expect(extractOrderAction(parseInteractivityPayload(raw))).toBeNull()
+  })
+
+  it("does not match an ops_ack action", () => {
+    expect(
+      extractOrderAction(parseInteractivityPayload(ackRawBody("fp-1")))
+    ).toBeNull()
+  })
+})
+
+describe("buildOrderHoldMessage", () => {
+  it("renders the held text on a hold", () => {
+    const msg = buildOrderHoldMessage({
+      action: "hold",
+      byName: "peter",
+      byUser: "U1",
+    })
+    expect(msg.replace_original).toBe(true)
+    expect(String(msg.text)).toContain("Held by peter")
+    expect(String(msg.text)).toContain("fulfillment blocked")
+  })
+
+  it("renders the released text on a release", () => {
+    const msg = buildOrderHoldMessage({
+      action: "release",
+      byName: "peter",
+      byUser: "U1",
+    })
+    expect(String(msg.text)).toContain("Released by peter")
+  })
+
+  it("falls back to a user-mention when no name is present", () => {
+    const msg = buildOrderHoldMessage({ action: "hold", byUser: "U42" })
+    expect(JSON.stringify(msg)).toContain("<@U42>")
+  })
+
+  it("escapes mrkdwn-special characters in the display name", () => {
+    const msg = buildOrderHoldMessage({
+      action: "release",
+      byName: "a<b>&c",
+      byUser: "U1",
+    })
+    expect(String(msg.text)).toContain("a&lt;b&gt;&amp;c")
+  })
+})
+
+describe("interactivity POST handler — order hold/release routing", () => {
+  const originalEnv = process.env
+  const originalFetch = global.fetch
+
+  afterEach(() => {
+    process.env = originalEnv
+    global.fetch = originalFetch
+    jest.restoreAllMocks()
+  })
+
+  // Build a req whose scope.resolve switches on the registration key so the
+  // handler gets a fake QUERY (returns the given order), a fake ORDER module
+  // (records updateOrders calls), and a logger.
+  function makeOrderReq(
+    rawBody: string,
+    headers: Record<string, unknown>,
+    opts: {
+      order?: { id: string; metadata: unknown }
+      // When true, the graph returns [] (order id does not resolve).
+      notFound?: boolean
+      updateOrders?: jest.Mock
+    } = {}
+  ) {
+    const order = opts.notFound
+      ? undefined
+      : opts.order ?? { id: "order_01H", metadata: {} }
+    const updateOrders = opts.updateOrders ?? jest.fn()
+    const graph = jest
+      .fn()
+      .mockResolvedValue({ data: order ? [order] : [] })
+    const logger = { warn: jest.fn(), error: jest.fn(), info: jest.fn() }
+    return {
+      req: {
+        rawBody,
+        body: {},
+        headers,
+        scope: {
+          resolve: (key: string) => {
+            if (key === ContainerRegistrationKeys.QUERY) return { graph }
+            if (key === Modules.ORDER) return { updateOrders }
+            if (key === ContainerRegistrationKeys.LOGGER) return logger
+            return logger
+          },
+        },
+      } as any,
+      graph,
+      updateOrders,
+      logger,
+    }
+  }
+
+  function signedFetchCapture() {
+    const calls: Array<{ url: string; body: any }> = []
+    global.fetch = jest.fn(async (url: string, init: any) => {
+      calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+      return { ok: true } as any
+    }) as any
+    return calls
+  }
+
+  it("order_hold sets metadata.fulfillment_hold.held === true (exact shape)", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com",
+      GP_ANALYTICS_SERVER_KEY: "k",
+    }
+    signedFetchCapture()
+    const rawBody = orderRawBody(ORDER_HOLD_ACTION_ID, "order_01H", {
+      userId: "U7",
+      username: "avi",
+    })
+    const ts = Math.floor(Date.now() / 1000)
+    const { req, updateOrders } = makeOrderReq(rawBody, signedHeaders(rawBody, ts), {
+      order: { id: "order_01H", metadata: { existing: "keep" } },
+    })
+    const res = makeRes()
+    await POST(req, res)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(res.statusCode).toBe(200)
+    expect(updateOrders).toHaveBeenCalledTimes(1)
+    const [orderIdArg, payloadArg] = updateOrders.mock.calls[0]
+    expect(orderIdArg).toBe("order_01H")
+    expect(payloadArg.metadata.existing).toBe("keep")
+    expect(payloadArg.metadata.fulfillment_hold).toMatchObject({
+      held: true,
+      held_by_user: "U7",
+      held_by_name: "avi",
+      reason: "slack_review",
+    })
+    expect(typeof payloadArg.metadata.fulfillment_hold.held_at_ms).toBe("number")
+  })
+
+  it("order_release sets held === false and PRESERVES the held_by audit trail", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com",
+      GP_ANALYTICS_SERVER_KEY: "k",
+    }
+    signedFetchCapture()
+    const heldMetadata = {
+      fulfillment_hold: {
+        held: true,
+        held_by_user: "U7",
+        held_by_name: "avi",
+        held_at_ms: 111,
+        reason: "slack_review",
+      },
+    }
+    const rawBody = orderRawBody(ORDER_RELEASE_ACTION_ID, "order_01R", {
+      userId: "U8",
+      username: "dan",
+    })
+    const ts = Math.floor(Date.now() / 1000)
+    const { req, updateOrders } = makeOrderReq(rawBody, signedHeaders(rawBody, ts), {
+      order: { id: "order_01R", metadata: heldMetadata },
+    })
+    const res = makeRes()
+    await POST(req, res)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(updateOrders).toHaveBeenCalledTimes(1)
+    const hold = updateOrders.mock.calls[0][1].metadata.fulfillment_hold
+    expect(hold.held).toBe(false)
+    // audit trail of the original hold is preserved
+    expect(hold.held_by_user).toBe("U7")
+    expect(hold.held_by_name).toBe("avi")
+    expect(hold.held_at_ms).toBe(111)
+    expect(hold.reason).toBe("slack_review")
+    // release trail is added
+    expect(hold.released_by_user).toBe("U8")
+    expect(hold.released_by_name).toBe("dan")
+    expect(typeof hold.released_at_ms).toBe("number")
+  })
+
+  it("emits order_fulfillment_hold (not ops_alert_ack) on a hold", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com",
+      GP_ANALYTICS_SERVER_KEY: "k",
+    }
+    const calls = signedFetchCapture()
+    const rawBody = orderRawBody(ORDER_HOLD_ACTION_ID, "order_01H")
+    const ts = Math.floor(Date.now() / 1000)
+    const { req } = makeOrderReq(rawBody, signedHeaders(rawBody, ts))
+    const res = makeRes()
+    await POST(req, res)
+    await new Promise((r) => setTimeout(r, 0))
+
+    const trackCall = calls.find((c) => c.url.endsWith("/v1/track"))
+    expect(trackCall?.body.event).toBe("order_fulfillment_hold")
+    expect(trackCall?.body.properties).toMatchObject({
+      order_id: "order_01H",
+      action: "hold",
+    })
+    // never the ack event
+    expect(calls.some((c) => c.body?.event === "ops_alert_ack")).toBe(false)
+  })
+
+  it("does NOT call updateOrders when the order id does not resolve (no-op)", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "",
+      GP_ANALYTICS_SERVER_KEY: "",
+    }
+    signedFetchCapture()
+    const rawBody = orderRawBody(ORDER_HOLD_ACTION_ID, "order_missing")
+    const ts = Math.floor(Date.now() / 1000)
+    const { req, updateOrders } = makeOrderReq(rawBody, signedHeaders(rawBody, ts), {
+      notFound: true, // graph returns []
+    })
+    const res = makeRes()
+    await POST(req, res)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(res.statusCode).toBe(200)
+    expect(updateOrders).not.toHaveBeenCalled()
+  })
+
+  it("ROUTING: an ops_ack payload still hits the ack path and never calls updateOrders", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com",
+      GP_ANALYTICS_SERVER_KEY: "k",
+    }
+    const calls = signedFetchCapture()
+    const rawBody = ackRawBody("fp-route", { userId: "U7" })
+    const ts = Math.floor(Date.now() / 1000)
+    const { req, updateOrders } = makeOrderReq(rawBody, signedHeaders(rawBody, ts))
+    const res = makeRes()
+    await POST(req, res)
+    await new Promise((r) => setTimeout(r, 0))
+
+    // ack path: emits ops_alert_ack, never touches the order module
+    const trackCall = calls.find((c) => c.url.endsWith("/v1/track"))
+    expect(trackCall?.body.event).toBe("ops_alert_ack")
+    expect(updateOrders).not.toHaveBeenCalled()
   })
 })
 

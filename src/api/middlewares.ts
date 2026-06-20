@@ -8,6 +8,7 @@ import {
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import {
   finalChargeSucceeded,
+  metadataObject,
   orderRequiresFinalCharge,
 } from "../lib/catch-weight-finalization"
 import {
@@ -136,6 +137,77 @@ async function blockFulfillmentBeforeFinalCharge(
       alertKind: "mw_fulfillment_gate_failed",
       severity: "page",
       title: "middleware: fulfillment gate lookup failed (failed open)",
+      error,
+    })
+  }
+
+  return next()
+}
+
+// Advisory approval-hold gate. Mirrors blockFulfillmentBeforeFinalCharge's
+// structure exactly. Blocks a fulfillment-creating request ONLY when the order
+// carries an active Slack review hold — i.e. `metadata.fulfillment_hold.held`
+// is strictly the boolean `true`. A Slack "Hold" click sets that field; a
+// "Release" click flips it to false. EVERY normal order has no fulfillment_hold
+// key at all, so the strict `=== true` check means the default flow is NEVER
+// blocked here.
+//
+// IMPORTANT contrast with the final-charge gate: that gate PAGES on a lookup
+// failure because failing open there is a money risk (a catch-weight order could
+// ship before its final card charge). This gate is ADVISORY — failing open just
+// means a held order could ship, which is exactly the pre-existing behavior
+// (holds didn't exist before). Failing CLOSED here would risk blocking ALL
+// fulfillment on a transient query error = a self-inflicted outage. So this gate
+// fails OPEN with a warn-level alert, not a page.
+export async function blockFulfillmentOnSlackHold(
+  req: MedusaRequest,
+  res: MedusaResponse,
+  next: MedusaNextFunction
+) {
+  const orderId =
+    req.params.id ||
+    (req.body as Record<string, any> | undefined)?.order_id ||
+    (req.body as Record<string, any> | undefined)?.order?.id
+
+  if (!orderId || typeof orderId !== "string") {
+    return next()
+  }
+
+  try {
+    const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
+    const { data } = await query.graph({
+      entity: "order",
+      fields: ["id", "metadata"],
+      filters: { id: orderId },
+    })
+    const order = data?.[0]
+
+    const metadata = metadataObject(order?.metadata)
+    const hold = metadata?.fulfillment_hold
+    // STRICT === true: a missing/false/undefined hold (the default for every
+    // normal order) NEVER blocks. A truthy-but-non-true object must not block.
+    if (order && hold?.held === true) {
+      res.status(409).json({
+        type: "order_on_hold",
+        message: "This order is on a Slack review hold; Release it first.",
+      })
+      return
+    }
+  } catch (error) {
+    const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
+    const message = error instanceof Error ? error.message : String(error)
+    logger.warn(
+      `[slack-hold] fulfillment gate lookup failed (failed open): ${message}`
+    )
+    // Warn (not page): an advisory hold gate that fails open is the safe default
+    // (worst case a held order ships = pre-existing behavior). Failing closed
+    // would risk blocking ALL fulfillment on a transient error = an outage.
+    emitGuardFailureAlert({
+      logger,
+      alertKind: "mw_slack_hold_gate_failed",
+      severity: "warn",
+      title:
+        "middleware: slack-hold fulfillment gate lookup failed (failed open)",
       error,
     })
   }
@@ -582,20 +654,33 @@ export default defineMiddlewares({
       method: ["GET", "POST", "PATCH"],
       middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
     },
+    // Both fulfillment gates run on every fulfillment-creating route, in order:
+    // (1) the final-charge money gate, then (2) the advisory Slack-hold gate.
+    // They are independent — either can short-circuit with a 409 and the other
+    // never runs after a sent response.
     {
       matcher: "/admin/orders/:id/fulfillments",
       method: ["POST"],
-      middlewares: [blockFulfillmentBeforeFinalCharge],
+      middlewares: [
+        blockFulfillmentBeforeFinalCharge,
+        blockFulfillmentOnSlackHold,
+      ],
     },
     {
       matcher: "/admin/orders/:id/fulfillments/*/shipments",
       method: ["POST"],
-      middlewares: [blockFulfillmentBeforeFinalCharge],
+      middlewares: [
+        blockFulfillmentBeforeFinalCharge,
+        blockFulfillmentOnSlackHold,
+      ],
     },
     {
       matcher: "/admin/fulfillments",
       method: ["POST"],
-      middlewares: [blockFulfillmentBeforeFinalCharge],
+      middlewares: [
+        blockFulfillmentBeforeFinalCharge,
+        blockFulfillmentOnSlackHold,
+      ],
     },
     {
       // Stripe webhook (payment_intent.payment_failed). Not under /admin or
