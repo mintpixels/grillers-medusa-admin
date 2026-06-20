@@ -222,6 +222,33 @@ class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
     return randomUUID()
   }
 
+  private anonymousId(
+    userId: string | undefined,
+    properties?: Record<string, any>
+  ): string | undefined {
+    // If we already have a real user_id, the schema's anyOf is satisfied — but
+    // we still backfill a stable anonymous_id so identified and (later) guest
+    // events for the same order share one visitor key.
+    const existing = firstText(properties?.anonymous_id)
+    if (existing && UUID_RE.test(existing)) return existing
+
+    const deterministicSeed = firstText(
+      properties?.order_id,
+      properties?.transaction_id,
+      properties?.cart_id,
+      properties?.idempotency_key,
+      properties?.medusa_event_id
+    )
+    if (deterministicSeed) return uuidV5(`anon:${deterministicSeed}`)
+
+    // No stable seed (e.g. an identity-less ad-hoc server event). If we have a
+    // user_id the schema is already satisfied and we can leave anonymous_id
+    // unset; otherwise we MUST emit something valid so the event still lands.
+    if (userId) return undefined
+
+    return randomUUID()
+  }
+
   private sendToGpAnalytics(
     eventType: string,
     actorId?: string,
@@ -247,16 +274,22 @@ class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
     const fulfillmentTier = this.fulfillmentTier(
       mirrorProperties.fulfillment_tier || mirrorProperties.shipping_tier
     )
-    const userId = actorId || mirrorProperties.customer_id
+    const userId = firstText(actorId, mirrorProperties.customer_id) || undefined
 
-    if (!userId && !mirrorProperties.anonymous_id) {
-      this.logger_.debug(
-        `Analytics: Skipping GP dual-run ${eventType}; no user_id or anonymous_id`
-      )
-      return
-    }
+    // The warehouse schema requires either a (uuid) anonymous_id or a
+    // (non-empty) user_id. Server-side order events frequently have neither —
+    // guest checkouts carry no customer_id, and no anonymous_id is threaded
+    // through from the storefront. Rather than silently drop those events
+    // (which left ZERO order_completed rows in grillers_pride for weeks), we
+    // synthesize a STABLE anonymous_id so every server event satisfies the
+    // schema and lands. Stability (uuidV5 over a stable order/cart seed) keeps
+    // replays idempotent and lets multiple events for one order correlate.
+    const anonymousId = this.anonymousId(userId, mirrorProperties)
 
     mirrorProperties.session_id = sessionId
+    if (anonymousId) {
+      mirrorProperties.anonymous_id = anonymousId
+    }
     if (fulfillmentTier) {
       mirrorProperties.fulfillment_tier = fulfillmentTier
     }
@@ -267,7 +300,7 @@ class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
       idempotency_key: idempotencyKey || undefined,
       event_timestamp_ms: Date.now(),
       user_id: userId,
-      anonymous_id: mirrorProperties.anonymous_id,
+      anonymous_id: anonymousId,
       session_id: String(sessionId),
       experience_version: "medusa",
       route_market: this.routeMarket(mirrorProperties.route_market),

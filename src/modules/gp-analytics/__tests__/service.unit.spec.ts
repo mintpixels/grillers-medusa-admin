@@ -178,7 +178,101 @@ describe("GpAnalyticsProviderService", () => {
     expect(body.event).toBe("order_finalized")
   })
 
-  it("does not mirror anonymous server events without an identity", async () => {
+  it("mirrors guest order_completed with a synthesized anonymous_id instead of skipping", async () => {
+    const service = new GpAnalyticsProviderService(
+      { logger } as any,
+      {
+        jitsuHost: "https://jitsu.example.com",
+        jitsuServerSecret: "jitsu-secret",
+        gpAnalyticsEndpoint: "https://analytics.example.com/",
+        gpAnalyticsServerKey: "server-key",
+      }
+    )
+
+    // A guest checkout: no actor_id, no customer_id, no anonymous_id.
+    await service.track({
+      event: "order_completed",
+      properties: {
+        transaction_id: "order_guest_1",
+        cart_id: "cart_guest_1",
+        route_market: "national",
+        customer_type: "dtc",
+        idempotency_key: "order.placed:order_guest_1:order_completed",
+      },
+    } as any)
+
+    // It must NOT be dropped — both the legacy Jitsu pipe and the GP pipe fire.
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    const gpCall = (global.fetch as jest.Mock).mock.calls.find(([url]) =>
+      String(url).startsWith("https://analytics.example.com/v1/track")
+    )
+    expect(gpCall).toBeTruthy()
+
+    const body = JSON.parse(gpCall[1].body)
+    // Schema anyOf is satisfied via a real-uuid anonymous_id (user_id absent).
+    expect(body.user_id).toBeUndefined()
+    expect(body.anonymous_id).toMatch(UUID_RE)
+    expect(body.properties.anonymous_id).toBe(body.anonymous_id)
+    // Enum fields are normalized to schema-valid values for real order data.
+    expect(body.route_market).toBe("national")
+    expect(body.customer_type).toBe("dtc")
+    expect(body.source).toBe("medusa-server")
+    expect(body.experience_version).toBe("medusa")
+    // It was NOT routed down the old skip path.
+    expect(logger.debug).not.toHaveBeenCalledWith(
+      expect.stringContaining("Skipping GP dual-run")
+    )
+  })
+
+  it("synthesizes a STABLE anonymous_id across replays of the same guest order", async () => {
+    const service = new GpAnalyticsProviderService(
+      { logger } as any,
+      {
+        jitsuHost: "https://jitsu.example.com",
+        jitsuServerSecret: "jitsu-secret",
+        gpAnalyticsEndpoint: "https://analytics.example.com/",
+        gpAnalyticsServerKey: "server-key",
+      }
+    )
+
+    const event = {
+      event: "order_completed",
+      properties: {
+        transaction_id: "order_guest_2",
+        cart_id: "cart_guest_2",
+        route_market: "national",
+        customer_type: "dtc",
+        idempotency_key: "order.placed:order_guest_2:order_completed",
+      },
+    } as any
+
+    await service.track(event)
+    await service.track(event)
+
+    const gpBodies = (global.fetch as jest.Mock).mock.calls
+      .filter(([url]) =>
+        String(url).startsWith("https://analytics.example.com")
+      )
+      .map(([, init]) => JSON.parse(init.body))
+
+    expect(gpBodies).toHaveLength(2)
+    expect(gpBodies[0].anonymous_id).toMatch(UUID_RE)
+    expect(gpBodies[0].anonymous_id).toBe(gpBodies[1].anonymous_id)
+  })
+
+  it("logs a non-2xx GP analytics response for a guest order (observable failure)", async () => {
+    ;(global.fetch as jest.Mock).mockImplementation((url) => {
+      if (String(url).startsWith("https://analytics.example.com")) {
+        return Promise.resolve({
+          ok: false,
+          status: 422,
+          text: () => Promise.resolve("anonymous_id must be uuid\ntrailing"),
+        })
+      }
+
+      return Promise.resolve({ ok: true })
+    })
+
     const service = new GpAnalyticsProviderService(
       { logger } as any,
       {
@@ -190,18 +284,83 @@ describe("GpAnalyticsProviderService", () => {
     )
 
     await service.track({
+      event: "order_completed",
+      properties: {
+        transaction_id: "order_guest_3",
+        cart_id: "cart_guest_3",
+        route_market: "national",
+        customer_type: "dtc",
+      },
+    } as any)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Analytics: GP analytics rejected order_completed with 422: anonymous_id must be uuid"
+    )
+  })
+
+  it("mirrors identity-less ad-hoc server events with a random anonymous_id", async () => {
+    const service = new GpAnalyticsProviderService(
+      { logger } as any,
+      {
+        jitsuHost: "https://jitsu.example.com",
+        jitsuServerSecret: "jitsu-secret",
+        gpAnalyticsEndpoint: "https://analytics.example.com/",
+        gpAnalyticsServerKey: "server-key",
+      }
+    )
+
+    // No identity AND no stable seed (no order/cart/transaction/idempotency).
+    await service.track({
       event: "inventory_reconciled",
       properties: {
         route_market: "national",
       },
     } as any)
 
-    expect(global.fetch).toHaveBeenCalledTimes(1)
-    expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe(
-      "https://jitsu.example.com/api/v1/s2s/event"
+    // Both pipes fire — the event is no longer silently dropped.
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    const gpCall = (global.fetch as jest.Mock).mock.calls.find(([url]) =>
+      String(url).startsWith("https://analytics.example.com/v1/track")
     )
-    expect(logger.debug).toHaveBeenCalledWith(
-      "Analytics: Skipping GP dual-run inventory_reconciled; no user_id or anonymous_id"
+    expect(gpCall).toBeTruthy()
+
+    const body = JSON.parse(gpCall[1].body)
+    expect(body.user_id).toBeUndefined()
+    expect(body.anonymous_id).toMatch(UUID_RE)
+    expect(logger.debug).not.toHaveBeenCalledWith(
+      expect.stringContaining("Skipping GP dual-run")
     )
+  })
+
+  it("keeps the real user_id and backfills a stable anonymous_id for identified orders", async () => {
+    const service = new GpAnalyticsProviderService(
+      { logger } as any,
+      {
+        jitsuHost: "https://jitsu.example.com",
+        jitsuServerSecret: "jitsu-secret",
+        gpAnalyticsEndpoint: "https://analytics.example.com/",
+        gpAnalyticsServerKey: "server-key",
+      }
+    )
+
+    await service.track({
+      event: "order_completed",
+      actor_id: "cus_999",
+      properties: {
+        transaction_id: "order_id_999",
+        cart_id: "cart_999",
+        route_market: "national",
+        customer_type: "dtc",
+      },
+    } as any)
+
+    const gpCall = (global.fetch as jest.Mock).mock.calls.find(([url]) =>
+      String(url).startsWith("https://analytics.example.com/v1/track")
+    )
+    const body = JSON.parse(gpCall[1].body)
+    expect(body.user_id).toBe("cus_999")
+    expect(body.anonymous_id).toMatch(UUID_RE)
   })
 })
