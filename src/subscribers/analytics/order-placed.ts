@@ -139,6 +139,40 @@ function latestShippingMethod(order: Record<string, any>) {
   return methods[methods.length - 1] || {}
 }
 
+/**
+ * Robust order revenue for the warehouse stream.
+ *
+ * Medusa v2 exposes `total` as a COMPUTED field, and on real catch-weight orders
+ * it can be 0 even when the order is genuinely worth hundreds of dollars
+ * (verified on order_01KVHNQ2MNQ1P50DVB62D7F3CC / display 135: `total: 0` but
+ * `subtotal: 332.73`, `shipping_total: 164.49`, `payment_collections[0].amount:
+ * 332.73`). Emitting `estimated_value: order.total` there sends 0 — a silent
+ * revenue-correctness bug.
+ *
+ * So: prefer a positive `total`; otherwise reconstruct it from the components
+ * (item_total + shipping + tax - discount), which ARE populated correctly. Note
+ * we use `item_total` (goods only), NOT `subtotal`: on real orders Medusa's
+ * `subtotal` already bakes in shipping (order 135: subtotal 332.73 == item_total
+ * + shipping_total) and is otherwise unreliable, so `subtotal + shipping` would
+ * DOUBLE-COUNT shipping. The reconstruction is exact for normal orders
+ * (item_total + shipping == total) and the best available proxy when the
+ * computed total is broken (order 135 reconstructs to 332.73, its true value).
+ */
+function orderRevenue(order: Record<string, any>): number {
+  const total = numberValue(order.total)
+  if (total !== null && total > 0) return roundMoney(total)
+
+  const itemTotal = numberValue(order.item_total) ?? 0
+  const shipping = numberValue(order.shipping_total) ?? 0
+  const tax = numberValue(order.tax_total) ?? 0
+  const discount = numberValue(order.discount_total) ?? 0
+  const reconstructed = itemTotal + shipping + tax - discount
+  if (reconstructed > 0) return roundMoney(reconstructed)
+
+  // Last resort: a non-negative computed total (0) beats NaN/undefined.
+  return roundMoney(total ?? 0)
+}
+
 function normalizeFulfillmentTier(value: unknown): string | null {
   const text = firstText(value).toLowerCase().replace(/[\s-]+/g, "_")
   if (!text) return null
@@ -312,6 +346,7 @@ export default async function orderPlacedHandler({
         "customer.groups.metadata",
         "total",
         "subtotal",
+        "item_total",
         "tax_total",
         "shipping_total",
         "discount_total",
@@ -321,6 +356,12 @@ export default async function orderPlacedHandler({
         "items.metadata",
         "items.variant.*",
         "items.variant.product.*",
+        // `.product.*` expands scalar columns but NOT the JSON `metadata` column
+        // in query.graph — it must be requested explicitly, or kosher_type /
+        // cut_type / holiday_association / is_catch_weight read below come back
+        // undefined. Sibling queries (catch-weight-finalization, qb-sync-order-
+        // import, inventory-allocation) all request it explicitly.
+        "items.variant.product.metadata",
         "shipping_methods.*",
         "shipping_methods.shipping_option_id",
         "shipping_methods.data",
@@ -350,7 +391,7 @@ export default async function orderPlacedHandler({
           cart_id: order.cart_id,
           display_id: order.display_id,
           order_created_at: order.created_at,
-          estimated_value: order.total,
+          estimated_value: orderRevenue(order),
           currency: order.currency_code,
           email: order.email,
           customer_id: order.customer_id || undefined,
@@ -402,7 +443,7 @@ export default async function orderPlacedHandler({
         value:
           data.amount ||
           Number(metadata.final_total || metadata.final_order_total) ||
-          order.total,
+          orderRevenue(order),
         subtotal: order.subtotal,
         currency: order.currency_code,
         tax: order.tax_total,
@@ -412,7 +453,12 @@ export default async function orderPlacedHandler({
         email: order.email,
         customer_id: customerId,
         experiment_context: experimentContext,
-        shipping_tier: order.shipping_methods?.[0]?.name,
+        // Use the LATEST shipping method (matches shipping-forecast.ts'
+        // latestShippingMethod) so the analytics shipping_tier and the
+        // shipping_forecast event agree on which method an order shipped under,
+        // even on multi-shipment orders. The first method is not necessarily the
+        // one fulfilled.
+        shipping_tier: latestShippingMethod(order)?.name || undefined,
         payment_method:
           order.payment_collections?.[0]?.payments?.[0]?.provider_id,
         source,
@@ -446,6 +492,9 @@ export default async function orderPlacedHandler({
         data
       )
       const finalLines = finalLinesByItemId(metadata)
+      // order.total is computed and may be 0 on real catch-weight orders; use the
+      // robust revenue so the estimated/delta baseline is never a phantom 0.
+      const revenue = orderRevenue(order)
 
       await analyticsService.track({
         event: "order_finalized",
@@ -454,14 +503,14 @@ export default async function orderPlacedHandler({
           transaction_id: order.id,
           display_id: (order as any).display_id,
           order_created_at: order.created_at,
-          estimated_total: order.total,
+          estimated_total: revenue,
           final_total:
             data.amount ||
             Number(metadata.final_total || metadata.final_order_total) ||
-            order.total,
+            revenue,
           catch_weight_delta:
-            Number(metadata.final_total || metadata.final_order_total || order.total) -
-            Number(metadata.estimated_total || order.total),
+            Number(metadata.final_total || metadata.final_order_total || revenue) -
+            Number(metadata.estimated_total || revenue),
           currency: order.currency_code,
           email: order.email,
           customer_id: customerId,
