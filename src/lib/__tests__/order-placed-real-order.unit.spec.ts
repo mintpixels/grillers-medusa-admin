@@ -28,7 +28,9 @@
  *      was never allocated on any order (oversell risk).
  */
 import { toRemoteQuery } from "@medusajs/modules-sdk/dist/remote-query/to-remote-query"
+import orderPlacedHandler from "../../subscribers/analytics/order-placed"
 import { buildShippingForecastEvent } from "../../subscribers/analytics/shipping-forecast"
+import { createAllocationsForOrder } from "../inventory-allocation"
 import { evaluateGbm } from "../shipping-cost-forecast"
 import realOrder from "./__fixtures__/order-135-real.json"
 
@@ -57,6 +59,7 @@ const ORDER_PLACED_FIELDS = [
   "items.metadata",
   "items.variant.*",
   "items.variant.product.*",
+  "items.variant.product.metadata",
   "shipping_methods.*",
   "shipping_methods.shipping_option_id",
   "shipping_methods.data",
@@ -82,6 +85,7 @@ const SHIPPING_FORECAST_FIELDS = [
   "items.metadata",
   "items.variant.*",
   "items.variant.product.*",
+  "items.variant.product.metadata",
   "shipping_methods.*",
   "shipping_methods.shipping_option_id",
   "shipping_methods.data",
@@ -93,6 +97,7 @@ const ORDER_ALLOCATION_FIELDS = [
   "display_id",
   "email",
   "customer_id",
+  "cart_id",
   "metadata",
   "items.*",
   "items.detail.*",
@@ -255,5 +260,301 @@ describe("evaluateGbm column guard (.kind defense-in-depth)", () => {
     expect(() => evaluateGbm(model, input)).not.toThrow()
     // baseline with empty trees → max(0, 10)
     expect(evaluateGbm(model, input)).toBe(10)
+  })
+})
+
+/**
+ * Finding #1 (revenue correctness): the real order's COMPUTED `order.total` is 0
+ * even though it is genuinely a $497.22 order (subtotal 332.73 + shipping 164.49;
+ * verified against the live order + its payment_collection amount 332.73). The
+ * `order_received` warehouse event must carry the real revenue, not the phantom 0.
+ */
+describe("order_received estimated_value on the REAL order (revenue correctness)", () => {
+  function makeContainer(order: Record<string, any>) {
+    const analytics = { track: jest.fn().mockResolvedValue(undefined) }
+    const logger = { error: jest.fn() }
+    const query = { graph: jest.fn().mockResolvedValue({ data: [order] }) }
+    const container = {
+      resolve: (key: string) => {
+        if (key === "analytics") return analytics
+        if (key === "logger") return logger
+        if (key === "query") return query
+        throw new Error(`unexpected resolve ${key}`)
+      },
+    }
+    return { container, analytics, logger, query }
+  }
+
+  it("sanity: the real order really has total=0 with a populated subtotal+shipping", () => {
+    expect(realOrder.total).toBe(0)
+    expect(realOrder.subtotal).toBe(332.73)
+    expect(realOrder.shipping_total).toBe(164.49)
+  })
+
+  it("emits a NONZERO estimated_value (subtotal+shipping+tax-discount) when total is 0", async () => {
+    const { container, analytics } = makeContainer(realOrder as any)
+
+    await orderPlacedHandler({
+      event: { name: "order.placed", data: { id: realOrder.id } },
+      container,
+    } as any)
+
+    expect(analytics.track).toHaveBeenCalledTimes(1)
+    const call = analytics.track.mock.calls[0][0]
+    expect(call.event).toBe("order_received")
+    // 332.73 + 164.49 + 0 - 0 = 497.22 — NOT the phantom computed total of 0.
+    expect(call.properties.estimated_value).toBe(497.22)
+    expect(call.properties.estimated_value).toBeGreaterThan(0)
+  })
+
+  it("prefers a positive computed total when one exists", async () => {
+    const order = { ...(realOrder as any), total: 510.5 }
+    const { container, analytics } = makeContainer(order)
+
+    await orderPlacedHandler({
+      event: { name: "order.placed", data: { id: order.id } },
+      container,
+    } as any)
+
+    expect(analytics.track.mock.calls[0][0].properties.estimated_value).toBe(510.5)
+  })
+})
+
+/**
+ * Finding #4: prove inventory reservation ROWS are actually inserted (not just
+ * that the query shape is valid) on a REAL multi-line order — and that Finding #3's
+ * cart_id attribution lands on each row.
+ */
+describe("createAllocationsForOrder inserts reservation rows on the real multi-line order", () => {
+  function makeAllocationDb() {
+    const inserts: Array<{ table: string; data: any }> = []
+    const db: any = jest.fn((table: string) => {
+      const chain: any = {
+        select: () => chain,
+        whereNull: () => chain,
+        where: () => chain,
+        whereIn: () => chain,
+        limit: () => chain,
+        orderBy: () => chain,
+        offset: () => chain,
+        update: async () => 1,
+        then: (resolve: any) => resolve([]), // no existing allocations / active rows
+        insert: async (data: any) => {
+          inserts.push({ table, data })
+          return data
+        },
+      }
+      return chain
+    })
+    return { db, inserts }
+  }
+
+  // One in-stock managed variant per real line item, so every line allocates.
+  function variantsForRealOrder() {
+    return (realOrder as any).items.map((item: any) => ({
+      id: item.variant_id,
+      sku: item.variant?.sku || item.variant_id,
+      title: item.title,
+      product_id: item.variant?.product?.id || item.product_id,
+      manage_inventory: true,
+      allow_backorder: false,
+      inventory_quantity: 100,
+      metadata: item.variant?.metadata || {},
+      product: item.variant?.product || { id: item.product_id, metadata: {} },
+    }))
+  }
+
+  function makeQueryForRealOrder(order: Record<string, any>) {
+    const variants = variantsForRealOrder()
+    return {
+      graph: jest.fn(async ({ entity }: any) => {
+        if (entity === "product_variant") return { data: variants }
+        if (entity === "order") return { data: [order] }
+        return { data: [] }
+      }),
+    }
+  }
+
+  it("inserts one gp_inventory_allocation row per line, each carrying order cart_id", async () => {
+    // Give the real order a cart_id so we can prove the attribution lands on rows.
+    const order = { ...(realOrder as any), cart_id: "cart_real_135" }
+    const { db, inserts } = makeAllocationDb()
+    const query = makeQueryForRealOrder(order)
+
+    const result = await createAllocationsForOrder({
+      db: db as any,
+      query: query as any,
+      orderId: order.id,
+      now: new Date("2026-06-19T12:00:00Z"),
+    })
+
+    const allocationInserts = inserts.filter(
+      (i) => i.table === "gp_inventory_allocation"
+    )
+    // 9 real line items → 9 reservation rows actually inserted.
+    expect(allocationInserts.length).toBe((realOrder as any).items.length)
+    expect(result.created).toBe((realOrder as any).items.length)
+
+    // Every inserted row references the order + its line + the cart (Finding #3).
+    const lineIds = new Set((realOrder as any).items.map((it: any) => it.id))
+    for (const insert of allocationInserts) {
+      expect(insert.data.order_id).toBe(order.id)
+      expect(lineIds.has(insert.data.line_item_id)).toBe(true)
+      expect(insert.data.cart_id).toBe("cart_real_135")
+    }
+  })
+
+  it("falls back to metadata.cart_id when order.cart_id is null", async () => {
+    const order = {
+      ...(realOrder as any),
+      cart_id: null,
+      metadata: { cart_id: "cart_from_metadata" },
+    }
+    const { db, inserts } = makeAllocationDb()
+    const query = makeQueryForRealOrder(order)
+
+    await createAllocationsForOrder({
+      db: db as any,
+      query: query as any,
+      orderId: order.id,
+      now: new Date("2026-06-19T12:00:00Z"),
+    })
+
+    const allocationInserts = inserts.filter(
+      (i) => i.table === "gp_inventory_allocation"
+    )
+    expect(allocationInserts.length).toBeGreaterThan(0)
+    for (const insert of allocationInserts) {
+      expect(insert.data.cart_id).toBe("cart_from_metadata")
+    }
+  })
+})
+
+/**
+ * Finding #5: edge cases the UPS-Overnight / 9-line fixture misses.
+ */
+describe("shipping_forecast edge cases (Finding #5)", () => {
+  const ENV_PACKAGING_ON = { GRILLERS_SHIPPING_FORECAST_INCLUDE_PACKAGING: "true" }
+
+  it("local-delivery order: no UPS service code → no forecast", () => {
+    const order = {
+      ...(realOrder as any),
+      shipping_methods: [
+        {
+          name: "Atlanta Local Delivery",
+          amount: 0,
+          shipping_option_id: "so_local_delivery",
+          data: {},
+          metadata: null,
+        },
+      ],
+      shipping_total: 0,
+    }
+    expect(buildShippingForecastEvent(order, ENV_PACKAGING_ON)).toBeNull()
+  })
+
+  it("plant-pickup order: no UPS service code → no forecast", () => {
+    const order = {
+      ...(realOrder as any),
+      shipping_methods: [
+        {
+          name: "Plant Pickup",
+          amount: 0,
+          shipping_option_id: "so_plant_pickup",
+          data: {},
+          metadata: null,
+        },
+      ],
+      shipping_total: 0,
+    }
+    expect(buildShippingForecastEvent(order, ENV_PACKAGING_ON)).toBeNull()
+  })
+
+  it("gift-card-only order with NO physical line items on a UPS method emits no forecast", () => {
+    // A pure gift-card / store-credit order: a UPS method is attached but there
+    // are no shippable line items at all. Nothing to ship or reconcile → skip.
+    const order = {
+      ...(realOrder as any),
+      items: [],
+      shipping_methods: [
+        {
+          name: "UPS Ground Estimated Shipping",
+          amount: 12,
+          shipping_option_id: "so_ups_ground",
+          data: { service_code: "GROUND" },
+          metadata: null,
+        },
+      ],
+      shipping_total: 12,
+    }
+    expect(buildShippingForecastEvent(order, ENV_PACKAGING_ON)).toBeNull()
+  })
+
+  it("zero-weight FOOD order (no per-item weight metadata) STILL emits a forecast with the 1-box packaging floor", () => {
+    // Critical real-order behavior: order 135 has 9 food lines but ZERO weight
+    // metadata, so estimated_weight_lb = 0. The packaging estimator floors at one
+    // box, so the forecast MUST still be emitted (we must not suppress the very
+    // orders this subscriber exists to reconcile).
+    const payload = buildShippingForecastEvent(realOrder as any, ENV_PACKAGING_ON)
+    expect(payload).not.toBeNull()
+    expect(payload!.properties.estimated_weight_lb).toBe(0)
+    expect(payload!.properties.boxes).toBeGreaterThanOrEqual(1)
+    expect(payload!.properties.packaging_cost).toBeGreaterThan(0)
+  })
+
+  it("multi-shipment: forecast uses the LAST shipping method", () => {
+    // Two methods: a non-UPS first, the real UPS Overnight last. The forecast must
+    // report the LAST method, matching order-placed.ts' aligned shipping_tier.
+    const order = {
+      ...(realOrder as any),
+      shipping_methods: [
+        {
+          name: "Atlanta Local Delivery",
+          amount: 0,
+          shipping_option_id: "so_local",
+          data: {},
+          metadata: null,
+        },
+        (realOrder as any).shipping_methods[0], // UPS Overnight, amount 164.49
+      ],
+    }
+    const payload = buildShippingForecastEvent(order, ENV_PACKAGING_ON)
+    expect(payload).not.toBeNull()
+    expect(payload!.properties.service).toBe("OVERNIGHT")
+    expect(payload!.properties.charged_shipping).toBe(164.49)
+  })
+})
+
+/**
+ * Finding #5 (guest order): no customer_id ⇒ actor_id undefined; the gp-analytics
+ * shim must synthesize a STABLE anonymous_id from the order id so the event still
+ * lands in the warehouse. This pins the synth-anonymous-id path for guest orders.
+ */
+describe("guest order analytics (no customer_id)", () => {
+  it("order-placed tracks with actor_id undefined for a guest order", async () => {
+    const guestOrder = { ...(realOrder as any), customer_id: null, customer: null }
+    const analytics = { track: jest.fn().mockResolvedValue(undefined) }
+    const container = {
+      resolve: (key: string) => {
+        if (key === "analytics") return analytics
+        if (key === "logger") return { error: jest.fn() }
+        if (key === "query")
+          return { graph: jest.fn().mockResolvedValue({ data: [guestOrder] }) }
+        throw new Error(`unexpected resolve ${key}`)
+      },
+    }
+
+    await orderPlacedHandler({
+      event: { name: "order.placed", data: { id: guestOrder.id } },
+      container,
+    } as any)
+
+    const call = analytics.track.mock.calls[0][0]
+    expect(call.actor_id).toBeUndefined()
+    expect(call.properties.customer_id).toBeUndefined()
+    // The shim derives a stable anonymous_id from transaction_id downstream.
+    expect(call.properties.transaction_id).toBe(guestOrder.id)
+    // Revenue still correct for a guest order.
+    expect(call.properties.estimated_value).toBe(497.22)
   })
 })

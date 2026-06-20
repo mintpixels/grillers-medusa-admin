@@ -821,6 +821,10 @@ const ORDER_ALLOCATION_FIELDS = [
   "display_id",
   "email",
   "customer_id",
+  // cart_id is read at insert time (cart attribution); without it in the query
+  // the allocation row's cart_id always falls back to metadata.cart_id (usually
+  // null), silently losing the cart→order linkage.
+  "cart_id",
   "metadata",
   "items.*",
   "items.detail.*",

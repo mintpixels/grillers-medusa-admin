@@ -241,6 +241,20 @@ export function buildShippingForecastEvent(
     service_code: service,
   })
   const estimatedWeightLb = forecastInput?.estimated_product_weight_lb ?? 0
+
+  // Guard: an order with NO line items at all (e.g. a pure gift-card / store-credit
+  // order with a UPS method somehow attached) has nothing to ship or reconcile —
+  // skip it like pickup/local/flat. (`shippingForecastInputFromFulfillmentData`
+  // returns null when items is empty.)
+  //
+  // NOTE: we deliberately do NOT skip on estimated_weight_lb === 0. Real food
+  // orders frequently carry NO per-item weight metadata (the live order
+  // order_01KVHNQ2MNQ1P50DVB62D7F3CC / display 135 is exactly this: 9 catch-weight
+  // food lines, zero avg_pack_weight metadata). For those the packaging estimator
+  // intentionally falls back to a 1-box floor, so a zero-weight forecast is the
+  // correct, expected output — suppressing it would drop the very orders this
+  // subscriber exists to reconcile.
+  if (!forecastInput) return null
   const shipPostalCode =
     forecastInput?.ship_postal_code ||
     firstText(shippingAddress.postal_code, shippingAddress.zip)
@@ -348,6 +362,11 @@ export default async function shippingForecastHandler({
         "items.metadata",
         "items.variant.*",
         "items.variant.product.*",
+        // The weight estimator (metadataValue in shipping-cost-forecast) reads
+        // avg_pack_weight_lb from product metadata as a fallback, but `.product.*`
+        // does not expand the JSON metadata column in query.graph — request it
+        // explicitly or per-lb weight can be under-counted on some orders.
+        "items.variant.product.metadata",
         "shipping_methods.*",
         "shipping_methods.shipping_option_id",
         "shipping_methods.data",
