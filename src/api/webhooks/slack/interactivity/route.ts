@@ -83,6 +83,12 @@ export function extractAckAction(
 type FetchLike = typeof fetch
 const RESPONSE_URL_TIMEOUT_MS = 2000
 
+// Slack's interactivity response_url is ALWAYS https://hooks.slack.com/actions/…
+// Pin the exact host (not a suffix match — `endsWith("slack.com")` would let an
+// attacker-registrable host like `evilslack.com` or `notslack.com` through).
+// A Set keeps the allow-list explicit and trivially extensible.
+const ALLOWED_RESPONSE_HOSTS = new Set(["hooks.slack.com"])
+
 /**
  * Build the `replace_original` message body that overwrites the original page
  * with an acked confirmation. Pure/deterministic so it can be unit-tested.
@@ -109,7 +115,8 @@ export function buildAckedMessage(ack: AckAction): Record<string, unknown> {
  * POST the acked-confirmation back to Slack's response_url so the original
  * message updates in place. Fail-soft + timeout-bounded: a failure here never
  * fails the ack (the event is already emitted), it just leaves the original
- * message un-updated. Only http(s) Slack URLs are honored (SSRF guard).
+ * message un-updated. SSRF guard: only an https URL whose host is exactly
+ * `hooks.slack.com` is honored, and redirects are not followed.
  */
 async function postResponseUrl(
   responseUrl: string | undefined,
@@ -125,8 +132,9 @@ async function postResponseUrl(
     return
   }
   // Slack response_urls are always https://hooks.slack.com/… — refuse anything
-  // else so a forged payload can't turn this into an SSRF primitive.
-  if (parsed.protocol !== "https:" || !parsed.hostname.endsWith("slack.com")) {
+  // else (exact host pin, not a suffix match) so a forged payload can't turn
+  // this into an SSRF primitive.
+  if (parsed.protocol !== "https:" || !ALLOWED_RESPONSE_HOSTS.has(parsed.hostname)) {
     logger?.warn?.(
       `[slack-interactivity] refusing non-Slack response_url host ${parsed.hostname}`
     )
@@ -141,6 +149,9 @@ async function postResponseUrl(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(message),
       signal: controller.signal,
+      // Don't follow redirects (undici follows by default): a 3xx from the
+      // pinned host must not bounce this POST to an internal/other host.
+      redirect: "manual",
     })
   } catch (error) {
     logger?.warn?.(

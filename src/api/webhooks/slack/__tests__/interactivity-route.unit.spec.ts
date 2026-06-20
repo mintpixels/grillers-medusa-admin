@@ -378,3 +378,96 @@ describe("interactivity POST handler", () => {
     expect(res.body).toEqual({ ok: true, ignored: true })
   })
 })
+
+describe("response_url SSRF guard", () => {
+  const originalEnv = process.env
+  const originalFetch = global.fetch
+
+  afterEach(() => {
+    process.env = originalEnv
+    global.fetch = originalFetch
+    jest.restoreAllMocks()
+  })
+
+  function makeReq(rawBody: string, headers: Record<string, unknown>) {
+    return {
+      rawBody,
+      body: {},
+      headers,
+      scope: { resolve: () => ({ warn: jest.fn(), error: jest.fn() }) },
+    } as any
+  }
+
+  // Drive a full ack click with the given response_url, then return every URL
+  // fetch was called with so we can assert the response_url was/wasn't hit.
+  async function fetchedUrlsForResponseUrl(responseUrl: string): Promise<string[]> {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      // No ingestion creds → emitOpsAlertAck no-ops, so the only fetch that can
+      // happen is the response_url POST. That keeps this test focused on SSRF.
+      GP_ANALYTICS_ENDPOINT: "",
+      GP_ANALYTICS_SERVER_KEY: "",
+    }
+    const urls: string[] = []
+    global.fetch = jest.fn(async (url: string) => {
+      urls.push(String(url))
+      return { ok: true } as any
+    }) as any
+
+    const rawBody = ackRawBody("fp-ssrf", { responseUrl })
+    const ts = Math.floor(Date.now() / 1000)
+    const res = makeRes()
+    await POST(makeReq(rawBody, signedHeaders(rawBody, ts)), res)
+    // Flush the fire-and-forget response_url post (not awaited by the handler).
+    await new Promise((r) => setTimeout(r, 0))
+    expect(res.statusCode).toBe(200)
+    return urls
+  }
+
+  it("allows the canonical https://hooks.slack.com response_url", async () => {
+    const urls = await fetchedUrlsForResponseUrl(
+      "https://hooks.slack.com/actions/xyz"
+    )
+    expect(urls).toContain("https://hooks.slack.com/actions/xyz")
+  })
+
+  it("BLOCKS an attacker-registrable suffix host (evilslack.com)", async () => {
+    const urls = await fetchedUrlsForResponseUrl("https://evilslack.com")
+    expect(urls).not.toContain("https://evilslack.com")
+    expect(urls.some((u) => u.includes("evilslack.com"))).toBe(false)
+  })
+
+  it("BLOCKS a hooks.slack.com prefix on an attacker domain", async () => {
+    const urls = await fetchedUrlsForResponseUrl("https://hooks.slack.com.evil.com")
+    expect(urls.some((u) => u.includes("evil.com"))).toBe(false)
+  })
+
+  it("BLOCKS a non-https (http) hooks.slack.com response_url", async () => {
+    const urls = await fetchedUrlsForResponseUrl("http://hooks.slack.com/actions/xyz")
+    expect(urls).not.toContain("http://hooks.slack.com/actions/xyz")
+    expect(urls.some((u) => u.startsWith("http://"))).toBe(false)
+  })
+
+  it("sets redirect: manual on the response_url POST", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "",
+      GP_ANALYTICS_SERVER_KEY: "",
+    }
+    const inits: any[] = []
+    global.fetch = jest.fn(async (_url: string, init: any) => {
+      inits.push(init)
+      return { ok: true } as any
+    }) as any
+    const rawBody = ackRawBody("fp-redir", {
+      responseUrl: "https://hooks.slack.com/actions/xyz",
+    })
+    const ts = Math.floor(Date.now() / 1000)
+    const res = makeRes()
+    await POST(makeReq(rawBody, signedHeaders(rawBody, ts)), res)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(inits[0]?.redirect).toBe("manual")
+  })
+})
