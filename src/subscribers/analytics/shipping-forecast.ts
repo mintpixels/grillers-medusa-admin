@@ -137,14 +137,24 @@ function latestShippingMethod(order: Record<string, any>): Record<string, any> {
 function upsServiceCodeForMethod(method: Record<string, any>): string {
   const methodData = metadataObject(method.data)
   const methodMetadata = metadataObject(method.metadata)
-  const candidate = firstText(
+  // Try each source in priority order and return the FIRST that normalizes to a
+  // real UPS service code. We must NOT first-win on a raw non-empty string:
+  // shipping_option_id is an opaque `so_…` id that never normalizes to a UPS
+  // code, so a plain firstText() would let it shadow the human-readable
+  // method.name (e.g. "UPS Overnight Shipping") and make every real UPS order
+  // get skipped (no service code → no shipping_forecast event).
+  for (const candidate of [
     methodData.service_code,
     methodMetadata.service_code,
     method.shipping_option_id,
-    method.name
-  )
-  const normalized = normalizeGrillersUpsServiceCode(candidate)
-  return isUpsServiceCode(normalized) ? normalized : ""
+    method.name,
+  ]) {
+    const text = firstText(candidate)
+    if (!text) continue
+    const normalized = normalizeGrillersUpsServiceCode(text)
+    if (isUpsServiceCode(normalized)) return normalized
+  }
+  return ""
 }
 
 function sourceForAnalytics(metadata: Record<string, any>): "staff" | "web" {
@@ -329,19 +339,19 @@ export default async function shippingForecastHandler({
         "customer_id",
         "customer.*",
         "customer.groups.*",
-        "+customer.metadata",
-        "+customer.groups.metadata",
+        "customer.metadata",
+        "customer.groups.metadata",
         "shipping_total",
-        "+metadata",
+        "metadata",
         "shipping_address.*",
         "items.*",
-        "+items.metadata",
+        "items.metadata",
         "items.variant.*",
         "items.variant.product.*",
         "shipping_methods.*",
         "shipping_methods.shipping_option_id",
-        "+shipping_methods.data",
-        "+shipping_methods.metadata",
+        "shipping_methods.data",
+        "shipping_methods.metadata",
       ],
       filters: { id: orderId },
     })

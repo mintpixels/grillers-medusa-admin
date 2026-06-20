@@ -1,0 +1,380 @@
+{
+  "__doc": "Snapshot of REAL production order order_01KVHNQ2MNQ1P50DVB62D7F3CC (display_id 135), 9 catch-weight line items, UPS Overnight to MA. Captured 2026-06-19 to reproduce the order.placed subscriber failures (key real-data traits the hand-built mocks missed: order.metadata is NULL; shipping_methods[0].data={externalId:123} & .metadata=null so the UPS service code is only derivable from .name; bundle line metadata; variant.metadata only carries qbd_list_id).",
+  "id": "order_01KVHNQ2MNQ1P50DVB62D7F3CC",
+  "display_id": 135,
+  "cart_id": null,
+  "created_at": "2026-06-20T04:48:07.832Z",
+  "email": "aviswerdlow@gmail.com",
+  "currency_code": "usd",
+  "customer_id": "cus_01K9QCSF983APE3N0MECX6RJN6",
+  "total": 0,
+  "subtotal": 332.73,
+  "tax_total": 0,
+  "shipping_total": 164.49,
+  "discount_total": 0,
+  "metadata": null,
+  "shipping_address": {
+    "id": "ordaddr_01KVHNQ2MJWRXFTBXTKHKGXTTS",
+    "customer_id": null,
+    "company": null,
+    "first_name": "Avner",
+    "last_name": "Swerdlow",
+    "address_1": "10 Crafts Street",
+    "address_2": null,
+    "city": "Waltham",
+    "country_code": "us",
+    "province": "MA",
+    "postal_code": "02453",
+    "phone": "4046431567",
+    "metadata": null,
+    "created_at": "2026-06-17T02:08:53.934Z",
+    "updated_at": "2026-06-17T02:08:53.934Z",
+    "deleted_at": null
+  },
+  "shipping_methods": [
+    {
+      "id": "ordsm_01KVHNQ2MNKS811W33KRF8TQMH",
+      "name": "UPS Overnight Shipping",
+      "amount": 164.49,
+      "shipping_option_id": "so_01K6NJB5WPS73RDXVREX1G07SK",
+      "data": {
+        "externalId": 123
+      },
+      "metadata": null
+    }
+  ],
+  "customer": {
+    "id": "cus_01K9QCSF983APE3N0MECX6RJN6",
+    "company_name": null,
+    "first_name": "Avi",
+    "last_name": "Swerdlow",
+    "email": "aviswerdlow@gmail.com",
+    "phone": "4046431567",
+    "has_account": true,
+    "metadata": {
+      "legacy_source": "legacy_site_customers",
+      "legacy_username": "SwerdlowAvi30328",
+      "legacy_is_active": true,
+      "legacy_customer_id": "6889",
+      "qbd_customer_list_id": "80001CB7-1311616293",
+      "legacy_can_order_online": false
+    },
+    "created_by": null,
+    "created_at": "2025-11-10T17:25:02.890Z",
+    "updated_at": "2026-05-17T09:01:09.172Z",
+    "deleted_at": null,
+    "groups": []
+  },
+  "items": [
+    {
+      "id": "ordli_01KVHNQ2MPX7HBWE0WM2DXRXD9",
+      "title": "Ground Lamb (16 oz.), Uncooked, NOT Kosher for Passover",
+      "product_title": "Ground Lamb (16 oz.), Uncooked, NOT Kosher for Passover",
+      "variant_id": "variant_01KC9RFGT5Q8YSQ93NHSKZ1TJF",
+      "product_id": "prod_01KC9RFGPWD391W54TYH1NAC65",
+      "quantity": 1,
+      "unit_price": 20.99,
+      "subtotal": 20.99,
+      "total": 20.99,
+      "metadata": {
+        "bundle_id": "brx4iffayjmui40jadcq3lrs",
+        "bundle_title": "Chicken Beef Lamb Reorder Pack",
+        "bundle_quantity": 1,
+        "curated_collection_id": "brx4iffayjmui40jadcq3lrs",
+        "curated_collection_slug": "multi-category-reorder-builder",
+        "curated_collection_title": "Chicken Beef Lamb Reorder Pack"
+      },
+      "variant": {
+        "id": "variant_01KC9RFGT5Q8YSQ93NHSKZ1TJF",
+        "sku": "3-06-11-1",
+        "title": "Ground Lamb (16 oz.), Uncooked, NOT Kosher for Passover",
+        "product_id": "prod_01KC9RFGPWD391W54TYH1NAC65",
+        "metadata": {
+          "qbd_list_id": "4D0000-1102714368"
+        },
+        "product": {
+          "id": "prod_01KC9RFGPWD391W54TYH1NAC65",
+          "title": "Ground Lamb (16 oz.), Uncooked, NOT Kosher for Passover",
+          "metadata": {
+            "qbd_list_id": "4D0000-1102714368"
+          }
+        }
+      }
+    },
+    {
+      "id": "ordli_01KVHNQ2MPEJEK5SG5HPB7BA33",
+      "title": "Sweet Potato Mash, ~2 lb., Pareve, Produced on Meat Equipment, ~2 lb., Packed in a Microwaveable Container  with Lid, Serves 3-4 Adults. Not Kosher for Passover. NO MSG, Gluten-Free.",
+      "product_title": "Sweet Potato Mash, ~2 lb., Pareve, Produced on Meat Equipment, ~2 lb., Packed in a Microwaveable Container  with Lid, Serves 3-4 Adults. Not Kosher for Passover. NO MSG, Gluten-Free.",
+      "variant_id": "variant_01KC9RESJW3DG3PX66FHJD9HTJ",
+      "product_id": "prod_01KC9RESG9V02A8WZ22NQNYYZC",
+      "quantity": 1,
+      "unit_price": 14,
+      "subtotal": 14,
+      "total": 14,
+      "metadata": {
+        "bundle_id": "jij0o37d8e3o3xuhf2o2u6jq",
+        "bundle_title": "Prepared Sides Add-On",
+        "bundle_quantity": 1,
+        "curated_collection_id": "jij0o37d8e3o3xuhf2o2u6jq",
+        "curated_collection_slug": "prepared-sides-add-on",
+        "curated_collection_title": "Prepared Sides Add-On"
+      },
+      "variant": {
+        "id": "variant_01KC9RESJW3DG3PX66FHJD9HTJ",
+        "sku": "10-17-07-1",
+        "title": "Sweet Potato Mash, ~2 lb., Pareve, Produced on Meat Equipment, ~2 lb., Packed in a Microwaveable Container  with Lid, Serves 3-4 Adults. Not Kosher for Passover. NO MSG, Gluten-Free.",
+        "product_id": "prod_01KC9RESG9V02A8WZ22NQNYYZC",
+        "metadata": {
+          "qbd_list_id": "80000C4F-1603424988"
+        },
+        "product": {
+          "id": "prod_01KC9RESG9V02A8WZ22NQNYYZC",
+          "title": "Sweet Potato Mash, ~2 lb., Pareve, Produced on Meat Equipment, ~2 lb., Packed in a Microwaveable Container  with Lid, Serves 3-4 Adults. Not Kosher for Passover. NO MSG, Gluten-Free.",
+          "metadata": {
+            "qbd_list_id": "80000C4F-1603424988"
+          }
+        }
+      }
+    },
+    {
+      "id": "ordli_01KVHNQ2MPWPGP81JTT2EXH73Y",
+      "title": "Honey-Glazed, Oven Roasted Carrots, Lightly Seasoned. ~1lb. Tray, 4 Servings.",
+      "product_title": "Honey-Glazed, Oven Roasted Carrots, Lightly Seasoned. ~1lb. Tray, 4 Servings.",
+      "variant_id": "variant_01KC9RETP9T2EJ2Z0RDZ9GZDHT",
+      "product_id": "prod_01KC9RETMQRXWP5M8RHVVGHJMC",
+      "quantity": 2,
+      "unit_price": 10,
+      "subtotal": 20,
+      "total": 20,
+      "metadata": {
+        "bundle_id": "jij0o37d8e3o3xuhf2o2u6jq",
+        "bundle_title": "Prepared Sides Add-On",
+        "bundle_quantity": 1,
+        "curated_collection_id": "jij0o37d8e3o3xuhf2o2u6jq",
+        "curated_collection_slug": "prepared-sides-add-on",
+        "curated_collection_title": "Prepared Sides Add-On"
+      },
+      "variant": {
+        "id": "variant_01KC9RETP9T2EJ2Z0RDZ9GZDHT",
+        "sku": "10-17-21-1",
+        "title": "Honey-Glazed, Oven Roasted Carrots, Lightly Seasoned. ~1lb. Tray, 4 Servings.",
+        "product_id": "prod_01KC9RETMQRXWP5M8RHVVGHJMC",
+        "metadata": {
+          "qbd_list_id": "80000CE3-1663692427"
+        },
+        "product": {
+          "id": "prod_01KC9RETMQRXWP5M8RHVVGHJMC",
+          "title": "Honey-Glazed, Oven Roasted Carrots, Lightly Seasoned. ~1lb. Tray, 4 Servings.",
+          "metadata": {
+            "qbd_list_id": "80000CE3-1663692427"
+          }
+        }
+      }
+    },
+    {
+      "id": "ordli_01KVHNQ2MPK000W2P4R3MT6H2S",
+      "title": "Apple Cobbler, Small, 1.5 lb., Ready Par-baked in Aluminum Tray, Heat and Serve. Pareve, Prepared on Meat Equipment, Serves 4 Adults. Not Kosher for Passover. NO MSG, Contains Gluten.",
+      "product_title": "Apple Cobbler, Small, 1.5 lb., Ready Par-baked in Aluminum Tray, Heat and Serve. Pareve, Prepared on Meat Equipment, Serves 4 Adults. Not Kosher for Passover. NO MSG, Contains Gluten.",
+      "variant_id": "variant_01KC9REXZVY28ME3C5DPDFAWWP",
+      "product_id": "prod_01KC9REXY3MH05MH61ZFYCAVEJ",
+      "quantity": 1,
+      "unit_price": 13,
+      "subtotal": 13,
+      "total": 13,
+      "metadata": {
+        "bundle_id": "jij0o37d8e3o3xuhf2o2u6jq",
+        "bundle_title": "Prepared Sides Add-On",
+        "bundle_quantity": 1,
+        "curated_collection_id": "jij0o37d8e3o3xuhf2o2u6jq",
+        "curated_collection_slug": "prepared-sides-add-on",
+        "curated_collection_title": "Prepared Sides Add-On"
+      },
+      "variant": {
+        "id": "variant_01KC9REXZVY28ME3C5DPDFAWWP",
+        "sku": "10-23-01-1",
+        "title": "Apple Cobbler, Small, 1.5 lb., Ready Par-baked in Aluminum Tray, Heat and Serve. Pareve, Prepared on Meat Equipment, Serves 4 Adults. Not Kosher for Passover. NO MSG, Contains Gluten.",
+        "product_id": "prod_01KC9REXY3MH05MH61ZFYCAVEJ",
+        "metadata": {
+          "qbd_list_id": "8000045E-1251061425"
+        },
+        "product": {
+          "id": "prod_01KC9REXY3MH05MH61ZFYCAVEJ",
+          "title": "Apple Cobbler, Small, 1.5 lb., Ready Par-baked in Aluminum Tray, Heat and Serve. Pareve, Prepared on Meat Equipment, Serves 4 Adults. Not Kosher for Passover. NO MSG, Contains Gluten.",
+          "metadata": {
+            "qbd_list_id": "8000045E-1251061425"
+          }
+        }
+      }
+    },
+    {
+      "id": "ordli_01KVHNQ2MP837SN6EE3A87AY8W",
+      "title": "Salad Toppers, TERIYAKI, Chicken Breast Strips, Marinated and Char-Grilled, Vacuum-Packed and Ready to Use (Min. Net Wt: 8 oz.) NOT Kosher for Passover. $13.00/Pack",
+      "product_title": "Salad Toppers, TERIYAKI, Chicken Breast Strips, Marinated and Char-Grilled, Vacuum-Packed and Ready to Use (Min. Net Wt: 8 oz.) NOT Kosher for Passover. $13.00/Pack",
+      "variant_id": "variant_01KC9REMY31W5X4TTM9P5JSAE2",
+      "product_id": "prod_01KC9REMWD5WPKHHDRPDTPBMJB",
+      "quantity": 1,
+      "unit_price": 13,
+      "subtotal": 13,
+      "total": 13,
+      "metadata": {
+        "bundle_id": "brx4iffayjmui40jadcq3lrs",
+        "bundle_title": "Chicken Beef Lamb Reorder Pack",
+        "bundle_quantity": 1,
+        "curated_collection_id": "brx4iffayjmui40jadcq3lrs",
+        "curated_collection_slug": "multi-category-reorder-builder",
+        "curated_collection_title": "Chicken Beef Lamb Reorder Pack"
+      },
+      "variant": {
+        "id": "variant_01KC9REMY31W5X4TTM9P5JSAE2",
+        "sku": "10-15-01-1",
+        "title": "Salad Toppers, TERIYAKI, Chicken Breast Strips, Marinated and Char-Grilled, Vacuum-Packed and Ready to Use (Min. Net Wt: 8 oz.) NOT Kosher for Passover. $13.00/Pack",
+        "product_id": "prod_01KC9REMWD5WPKHHDRPDTPBMJB",
+        "metadata": {
+          "qbd_list_id": "8000090A-1438273940"
+        },
+        "product": {
+          "id": "prod_01KC9REMWD5WPKHHDRPDTPBMJB",
+          "title": "Salad Toppers, TERIYAKI, Chicken Breast Strips, Marinated and Char-Grilled, Vacuum-Packed and Ready to Use (Min. Net Wt: 8 oz.) NOT Kosher for Passover. $13.00/Pack",
+          "metadata": {
+            "qbd_list_id": "8000090A-1438273940"
+          }
+        }
+      }
+    },
+    {
+      "id": "ordli_01KVHNQ2MPMDFG1W16PTZ0B6S9",
+      "title": "Lemon Cookie Cake, ~1 lb. Tray, Pareve, Prepared on Meat Equipment. Serves 6-8.",
+      "product_title": "Lemon Cookie Cake, ~1 lb. Tray, Pareve, Prepared on Meat Equipment. Serves 6-8.",
+      "variant_id": "variant_01KC9REW96T2WZ5761BHE6ZZXZ",
+      "product_id": "prod_01KC9REW7AE60424T5XFEN6ZVF",
+      "quantity": 1,
+      "unit_price": 10,
+      "subtotal": 10,
+      "total": 10,
+      "metadata": {
+        "bundle_id": "jij0o37d8e3o3xuhf2o2u6jq",
+        "bundle_title": "Prepared Sides Add-On",
+        "bundle_quantity": 1,
+        "curated_collection_id": "jij0o37d8e3o3xuhf2o2u6jq",
+        "curated_collection_slug": "prepared-sides-add-on",
+        "curated_collection_title": "Prepared Sides Add-On"
+      },
+      "variant": {
+        "id": "variant_01KC9REW96T2WZ5761BHE6ZZXZ",
+        "sku": "10-20-02-2",
+        "title": "Lemon Cookie Cake, ~1 lb. Tray, Pareve, Prepared on Meat Equipment. Serves 6-8.",
+        "product_id": "prod_01KC9REW7AE60424T5XFEN6ZVF",
+        "metadata": {
+          "qbd_list_id": "80000D0B-1693156023"
+        },
+        "product": {
+          "id": "prod_01KC9REW7AE60424T5XFEN6ZVF",
+          "title": "Lemon Cookie Cake, ~1 lb. Tray, Pareve, Prepared on Meat Equipment. Serves 6-8.",
+          "metadata": {
+            "qbd_list_id": "80000D0B-1693156023"
+          }
+        }
+      }
+    },
+    {
+      "id": "ordli_01KVHNQ2MP1T56A2NRH68ZKEAX",
+      "title": "Veal Osso Buco, 3x11 oz., Uncooked, Kosher for Passover.  $25.49/lb.",
+      "product_title": "Veal Osso Buco, 3x11 oz., Uncooked, Kosher for Passover.  $25.49/lb.",
+      "variant_id": "variant_01KC9RF41YAMSCKBTXJKW0V379",
+      "product_id": "prod_01KC9RF401314NR559SQWX52HV",
+      "quantity": 1,
+      "unit_price": 52.57,
+      "subtotal": 52.57,
+      "total": 52.57,
+      "metadata": {
+        "strapi_title": "Kosher Veal Osso Buco (3\u00d711 oz)"
+      },
+      "variant": {
+        "id": "variant_01KC9RF41YAMSCKBTXJKW0V379",
+        "sku": "2-02-11-1",
+        "title": "Veal Osso Buco, 3x11 oz., Uncooked, Kosher for Passover.  $25.49/lb.",
+        "product_id": "prod_01KC9RF401314NR559SQWX52HV",
+        "metadata": {
+          "qbd_list_id": "3C0000-1102714368"
+        },
+        "product": {
+          "id": "prod_01KC9RF401314NR559SQWX52HV",
+          "title": "Veal Osso Buco, 3x11 oz., Uncooked, Kosher for Passover.  $25.49/lb.",
+          "metadata": {
+            "qbd_list_id": "3C0000-1102714368"
+          }
+        }
+      }
+    },
+    {
+      "id": "ordli_01KVHNQ2MPJZZPNB3N08Z861VD",
+      "title": "1 lb. Pack Ground Beef, 85/15, Uncooked,  Vacuum Pack. NOT Kosher for Passover.",
+      "product_title": "1 lb. Pack Ground Beef, 85/15, Uncooked,  Vacuum Pack. NOT Kosher for Passover.",
+      "variant_id": "variant_01K89PQ5YK2XG2W7AM832ZPAQK",
+      "product_id": "prod_01K89PQ5X66P0GKV3EGHPS7C3J",
+      "quantity": 1,
+      "unit_price": 10.69,
+      "subtotal": 10.69,
+      "total": 10.69,
+      "metadata": {
+        "bundle_id": "brx4iffayjmui40jadcq3lrs",
+        "bundle_title": "Chicken Beef Lamb Reorder Pack",
+        "bundle_quantity": 1,
+        "curated_collection_id": "brx4iffayjmui40jadcq3lrs",
+        "curated_collection_slug": "multi-category-reorder-builder",
+        "curated_collection_title": "Chicken Beef Lamb Reorder Pack"
+      },
+      "variant": {
+        "id": "variant_01K89PQ5YK2XG2W7AM832ZPAQK",
+        "sku": "1-00-12-1",
+        "title": "1 lb. Pack Ground Beef, 85/15, Uncooked,  Vacuum Pack. NOT Kosher for Passover.",
+        "product_id": "prod_01K89PQ5X66P0GKV3EGHPS7C3J",
+        "metadata": {
+          "qbd_list_id": "60000-1102339574"
+        },
+        "product": {
+          "id": "prod_01K89PQ5X66P0GKV3EGHPS7C3J",
+          "title": "1 lb. Pack Ground Beef, 85/15, Uncooked,  Vacuum Pack. NOT Kosher for Passover.",
+          "metadata": {
+            "qbd_list_id": "60000-1102339574"
+          }
+        }
+      }
+    },
+    {
+      "id": "ordli_01KVHNQ2MQEVQQNB50ZY5XBYVA",
+      "title": "Chicken Breast Strips,  ANTIBIOTIC-FREE, HORMONE-FREE, 16 oz., Uncooked, Kosher for Passover. $13.99/lb.",
+      "product_title": "Chicken Breast Strips,  ANTIBIOTIC-FREE, HORMONE-FREE, 16 oz., Uncooked, Kosher for Passover. $13.99/lb.",
+      "variant_id": "variant_01KC9RGAGD41HZ9KY5P1R835CF",
+      "product_id": "prod_01KC9RGADXZFD604FBZQRJ1PKJ",
+      "quantity": 1,
+      "unit_price": 13.99,
+      "subtotal": 13.99,
+      "total": 13.99,
+      "metadata": {
+        "bundle_id": "brx4iffayjmui40jadcq3lrs",
+        "bundle_title": "Chicken Beef Lamb Reorder Pack",
+        "bundle_quantity": 1,
+        "curated_collection_id": "brx4iffayjmui40jadcq3lrs",
+        "curated_collection_slug": "multi-category-reorder-builder",
+        "curated_collection_title": "Chicken Beef Lamb Reorder Pack"
+      },
+      "variant": {
+        "id": "variant_01KC9RGAGD41HZ9KY5P1R835CF",
+        "sku": "6-61-08-3",
+        "title": "Chicken Breast Strips,  ANTIBIOTIC-FREE, HORMONE-FREE, 16 oz., Uncooked, Kosher for Passover. $13.99/lb.",
+        "product_id": "prod_01KC9RGADXZFD604FBZQRJ1PKJ",
+        "metadata": {
+          "qbd_list_id": "800008FC-1435082015"
+        },
+        "product": {
+          "id": "prod_01KC9RGADXZFD604FBZQRJ1PKJ",
+          "title": "Chicken Breast Strips,  ANTIBIOTIC-FREE, HORMONE-FREE, 16 oz., Uncooked, Kosher for Passover. $13.99/lb.",
+          "metadata": {
+            "qbd_list_id": "800008FC-1435082015"
+          }
+        }
+      }
+    }
+  ]
+}

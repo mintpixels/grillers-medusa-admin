@@ -477,17 +477,42 @@ class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
   }
 
   async track(data: ProviderTrackAnalyticsEventDTO): Promise<void> {
-    const payload = this.buildPayload(
-      data.event,
-      data.actor_id,
-      data.properties
-    )
-
+    // Fail-soft: analytics is a side-channel and must NEVER throw back into a
+    // subscriber (a throw here surfaces as "Failed to track <event>" and, worse,
+    // the Jitsu sink and the GP dual-run share this method — one synchronous
+    // throw while building one envelope would kill BOTH. The network POSTs are
+    // already fire-and-forget; this wraps the synchronous envelope-building
+    // (buildPayload / uuidV5 / timestamp derivation / PII strip) so a malformed
+    // property can't take down tracking. Each sink is also isolated so a failure
+    // building the Jitsu payload still lets the GP mirror fire, and vice versa.
     this.logger_.debug(`Analytics: Tracking ${data.event}`)
+
     if (data.event !== "order_finalized") {
-      this.sendToJitsu(payload)
+      try {
+        const payload = this.buildPayload(
+          data.event,
+          data.actor_id,
+          data.properties
+        )
+        this.sendToJitsu(payload)
+      } catch (err) {
+        this.logger_.error(
+          `Analytics: Failed to build/send Jitsu payload for ${data.event}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      }
     }
-    this.sendToGpAnalytics(data.event, data.actor_id, data.properties)
+
+    try {
+      this.sendToGpAnalytics(data.event, data.actor_id, data.properties)
+    } catch (err) {
+      this.logger_.error(
+        `Analytics: Failed to build/send GP analytics event for ${data.event}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    }
   }
 
   async identify(data: ProviderIdentifyAnalyticsEventDTO): Promise<void> {

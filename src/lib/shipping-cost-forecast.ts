@@ -347,6 +347,11 @@ function gbmZone(model: GbmForecastModel, input: ShippingCostForecastInput): num
 }
 
 function gbmFeatureValue(col: GbmColumn, input: ShippingCostForecastInput, zone: number): number {
+  // Defensive: a malformed/partially-uploaded model column (undefined/null or a
+  // column missing `kind`) must never throw `reading 'kind'` — a forecast error
+  // would crash the whole rate calculation / break the order.placed subscribers.
+  // Fail soft to a neutral 0 contribution for any unrecognized column.
+  if (!col || typeof col !== "object") return 0
   if (col.kind === "zone") return zone
   if (col.kind === "cat") {
     if (col.feature === "service") return normalizeService(input.service) === col.level ? 1 : 0
