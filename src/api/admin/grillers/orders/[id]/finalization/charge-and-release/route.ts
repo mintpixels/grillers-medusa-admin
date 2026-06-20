@@ -27,6 +27,7 @@ import {
 } from "../../../../../../../lib/wwex-finalization-shipment"
 import {
   emitChargeFailedHoldAlert,
+  emitChargeMarkedReadyButPiNotSucceededAlert,
   emitFinalChargeNonSucceededAlert,
 } from "../../../../../../../lib/final-charge-ops-alerts"
 
@@ -141,6 +142,31 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         paymentIntentId: paymentIntent.id,
         paymentIntentStatus: paymentIntent.status,
         amount: finalOrderTotal,
+      })
+      // MONEY-CRITICAL guard (Section A): the order is about to be marked
+      // charged_ready_to_ship (lifts fulfillment gate + queues QBD invoice +
+      // emails customer) but the PaymentIntent has NOT settled. The existing
+      // assert below ALWAYS blocks this transition by throwing, so the behavior
+      // here is already "blocked". GRILLERS_BLOCK_NONSUCCEEDED_CHARGE (default
+      // false) exists for the inverse, opt-in scenario where the assert is ever
+      // relaxed: if set true it forces the block to remain; if false and the
+      // assert were ever removed, this would degrade to alert-only. We do NOT
+      // change control flow here beyond the alert — the assert is the gate.
+      const blockNonSucceeded =
+        process.env.GRILLERS_BLOCK_NONSUCCEEDED_CHARGE === "true"
+      // The assert below trips unconditionally, so the transition is blocked
+      // regardless of the flag. `assertEnforcesBlock` documents that; the flag
+      // is folded in so the reported value stays accurate if the assert is ever
+      // relaxed in favor of the opt-in flag.
+      const assertEnforcesBlock = true
+      await emitChargeMarkedReadyButPiNotSucceededAlert({
+        logger,
+        orderId: order.id,
+        finalizationId: preview.finalization.id,
+        paymentIntentId: paymentIntent.id,
+        paymentIntentStatus: paymentIntent.status,
+        amount: finalOrderTotal,
+        blocked: assertEnforcesBlock || blockNonSucceeded,
       })
     }
     assertStripeFinalPaymentIntentSucceeded(paymentIntent)

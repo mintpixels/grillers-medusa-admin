@@ -597,5 +597,13 @@ export default defineMiddlewares({
       method: ["POST"],
       middlewares: [blockFulfillmentBeforeFinalCharge],
     },
+    {
+      // Stripe webhook (payment_intent.payment_failed). Not under /admin or
+      // /store, so it bypasses customer/user auth; preserve the raw body so the
+      // route can verify the Stripe-Signature HMAC over the exact bytes.
+      matcher: "/webhooks/stripe/payment-failed",
+      method: ["POST"],
+      bodyParser: { preserveRawBody: true },
+    },
   ],
 })
