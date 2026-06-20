@@ -302,6 +302,7 @@ export default async function orderPlacedHandler({
         "id",
         "display_id",
         "cart_id",
+        "created_at",
         "email",
         "currency_code",
         "customer_id",
@@ -348,6 +349,7 @@ export default async function orderPlacedHandler({
           transaction_id: order.id,
           cart_id: order.cart_id,
           display_id: order.display_id,
+          order_created_at: order.created_at,
           estimated_value: order.total,
           currency: order.currency_code,
           email: order.email,
@@ -396,6 +398,7 @@ export default async function orderPlacedHandler({
         ...experimentIdentity,
         transaction_id: order.id,
         display_id: (order as any).display_id,
+        order_created_at: order.created_at,
         value:
           data.amount ||
           Number(metadata.final_total || metadata.final_order_total) ||
@@ -450,6 +453,7 @@ export default async function orderPlacedHandler({
         properties: {
           transaction_id: order.id,
           display_id: (order as any).display_id,
+          order_created_at: order.created_at,
           estimated_total: order.total,
           final_total:
             data.amount ||

@@ -280,6 +280,8 @@ export function buildShippingForecastEvent(
       // mirror id used by the GP analytics shim for stable session/idempotency.
       transaction_id: orderId,
       order_display_id: order.display_id,
+      // Deterministic occurred-at so shim timestamps survive replays.
+      order_created_at: order.created_at,
       customer_id: customerId,
       email: order.email,
       ship_state: shipState,
@@ -321,6 +323,7 @@ export default async function shippingForecastHandler({
       fields: [
         "id",
         "display_id",
+        "created_at",
         "email",
         "currency_code",
         "customer_id",
