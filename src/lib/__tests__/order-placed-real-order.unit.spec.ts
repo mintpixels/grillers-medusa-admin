@@ -50,6 +50,7 @@ const ORDER_PLACED_FIELDS = [
   "customer.groups.metadata",
   "total",
   "subtotal",
+  "item_total",
   "tax_total",
   "shipping_total",
   "discount_total",
@@ -265,9 +266,13 @@ describe("evaluateGbm column guard (.kind defense-in-depth)", () => {
 
 /**
  * Finding #1 (revenue correctness): the real order's COMPUTED `order.total` is 0
- * even though it is genuinely a $497.22 order (subtotal 332.73 + shipping 164.49;
- * verified against the live order + its payment_collection amount 332.73). The
- * `order_received` warehouse event must carry the real revenue, not the phantom 0.
+ * even though it is genuinely a $332.73 order (item_total 168.24 + shipping 164.49;
+ * verified against the live order + its payment_collection amount 332.73). NOTE the
+ * reconstruction uses `item_total` (goods only, 168.24), NOT `subtotal` — on this
+ * order `subtotal` (332.73) ALREADY includes shipping (item_total + shipping_total),
+ * so `subtotal + shipping` would double-count shipping to a phantom 497.22. The
+ * `order_received` warehouse event must carry the real revenue (332.73), not the
+ * phantom 0 and not the double-counted 497.22.
  */
 describe("order_received estimated_value on the REAL order (revenue correctness)", () => {
   function makeContainer(order: Record<string, any>) {
@@ -285,13 +290,17 @@ describe("order_received estimated_value on the REAL order (revenue correctness)
     return { container, analytics, logger, query }
   }
 
-  it("sanity: the real order really has total=0 with a populated subtotal+shipping", () => {
+  it("sanity: the real order really has total=0 with a populated item_total/shipping (and a subtotal that already bakes in shipping)", () => {
     expect(realOrder.total).toBe(0)
-    expect(realOrder.subtotal).toBe(332.73)
+    expect(realOrder.item_total).toBe(168.24)
     expect(realOrder.shipping_total).toBe(164.49)
+    // `subtotal` ALREADY includes shipping (item_total + shipping_total), which is
+    // exactly why the reconstruction must use item_total, not subtotal.
+    expect(realOrder.subtotal).toBe(332.73)
+    expect(realOrder.item_total + realOrder.shipping_total).toBe(realOrder.subtotal)
   })
 
-  it("emits a NONZERO estimated_value (subtotal+shipping+tax-discount) when total is 0", async () => {
+  it("emits a NONZERO estimated_value (item_total+shipping+tax-discount) when total is 0", async () => {
     const { container, analytics } = makeContainer(realOrder as any)
 
     await orderPlacedHandler({
@@ -302,8 +311,9 @@ describe("order_received estimated_value on the REAL order (revenue correctness)
     expect(analytics.track).toHaveBeenCalledTimes(1)
     const call = analytics.track.mock.calls[0][0]
     expect(call.event).toBe("order_received")
-    // 332.73 + 164.49 + 0 - 0 = 497.22 — NOT the phantom computed total of 0.
-    expect(call.properties.estimated_value).toBe(497.22)
+    // 168.24 + 164.49 + 0 - 0 = 332.73 — the real order value (NOT the phantom
+    // computed total of 0, and NOT the shipping-double-counted 497.22).
+    expect(call.properties.estimated_value).toBe(332.73)
     expect(call.properties.estimated_value).toBeGreaterThan(0)
   })
 
@@ -554,7 +564,7 @@ describe("guest order analytics (no customer_id)", () => {
     expect(call.properties.customer_id).toBeUndefined()
     // The shim derives a stable anonymous_id from transaction_id downstream.
     expect(call.properties.transaction_id).toBe(guestOrder.id)
-    // Revenue still correct for a guest order.
-    expect(call.properties.estimated_value).toBe(497.22)
+    // Revenue still correct for a guest order (item_total 168.24 + shipping 164.49).
+    expect(call.properties.estimated_value).toBe(332.73)
   })
 })

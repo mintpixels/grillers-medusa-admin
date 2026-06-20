@@ -150,19 +150,23 @@ function latestShippingMethod(order: Record<string, any>) {
  * revenue-correctness bug.
  *
  * So: prefer a positive `total`; otherwise reconstruct it from the components
- * (subtotal + shipping + tax - discount), which ARE populated correctly. The
- * reconstruction is exact for normal orders and the best available proxy when
- * the computed total is broken.
+ * (item_total + shipping + tax - discount), which ARE populated correctly. Note
+ * we use `item_total` (goods only), NOT `subtotal`: on real orders Medusa's
+ * `subtotal` already bakes in shipping (order 135: subtotal 332.73 == item_total
+ * + shipping_total) and is otherwise unreliable, so `subtotal + shipping` would
+ * DOUBLE-COUNT shipping. The reconstruction is exact for normal orders
+ * (item_total + shipping == total) and the best available proxy when the
+ * computed total is broken (order 135 reconstructs to 332.73, its true value).
  */
 function orderRevenue(order: Record<string, any>): number {
   const total = numberValue(order.total)
   if (total !== null && total > 0) return roundMoney(total)
 
-  const subtotal = numberValue(order.subtotal) ?? 0
+  const itemTotal = numberValue(order.item_total) ?? 0
   const shipping = numberValue(order.shipping_total) ?? 0
   const tax = numberValue(order.tax_total) ?? 0
   const discount = numberValue(order.discount_total) ?? 0
-  const reconstructed = subtotal + shipping + tax - discount
+  const reconstructed = itemTotal + shipping + tax - discount
   if (reconstructed > 0) return roundMoney(reconstructed)
 
   // Last resort: a non-negative computed total (0) beats NaN/undefined.
@@ -342,6 +346,7 @@ export default async function orderPlacedHandler({
         "customer.groups.metadata",
         "total",
         "subtotal",
+        "item_total",
         "tax_total",
         "shipping_total",
         "discount_total",
