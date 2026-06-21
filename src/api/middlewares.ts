@@ -650,6 +650,12 @@ export default defineMiddlewares({
       middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
     },
     {
+      // #277: staff "Create a customer account" surface.
+      matcher: "/admin/grillers/customers*",
+      method: ["POST"],
+      middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
+    },
+    {
       matcher: "/admin/grillers/orders/*/finalization*",
       method: ["GET", "POST", "PATCH"],
       middlewares: [authenticate("user", ["session", "bearer", "api-key"])],
