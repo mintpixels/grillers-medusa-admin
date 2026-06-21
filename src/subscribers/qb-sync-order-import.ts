@@ -294,6 +294,47 @@ function fallbackQbdListId(
   return null
 }
 
+/**
+ * #276: resolve the staff member who entered an order on a customer's behalf so the
+ * QuickBooks SalesOrder memo can read "Submitted online by <staff id> on behalf of
+ * <customer code>". Prefers an explicit field, then the most recent staff audit actor.
+ * Returns null for ordinary customer self-service orders.
+ */
+export function resolveEnteredByStaffId(
+  metadata: Record<string, unknown>
+): string | null {
+  const direct =
+    textValue(metadata.qbd_entered_by_staff_id) ||
+    textValue(metadata.entered_by_staff_id) ||
+    textValue(metadata.staff_actor_id)
+  if (direct) {
+    return direct
+  }
+
+  const rawLog = metadata.staff_audit_log
+  let entries: unknown[] = []
+  if (Array.isArray(rawLog)) {
+    entries = rawLog
+  } else if (typeof rawLog === "string" && rawLog.trim()) {
+    try {
+      const parsed = JSON.parse(rawLog)
+      entries = Array.isArray(parsed) ? parsed : []
+    } catch {
+      entries = []
+    }
+  }
+
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = objectRecord(entries[i])
+    const actor = textValue(entry.staff_actor_id) || textValue(entry.actor_id)
+    if (actor) {
+      return actor
+    }
+  }
+
+  return null
+}
+
 export function normalizeOrderForQbSync(
   order: Record<string, unknown>,
   qbdListIdFallbacks: QbdListIdFallbacks = {}
@@ -456,11 +497,17 @@ export function normalizeOrderForQbSync(
     }
   }
 
+  const baseMetadata = objectRecord(order.metadata)
+  const enteredByStaffId = resolveEnteredByStaffId(baseMetadata)
+
   return {
     ...order,
     metadata: {
-      ...objectRecord(order.metadata),
+      ...baseMetadata,
       ...qbdTaxMetadata,
+      // #276: pass the entering staff member through so the QuickBooks memo can attribute
+      // the order. catch_weight_packages (shipper boxes) already flow through baseMetadata.
+      ...(enteredByStaffId ? { qbd_entered_by_staff_id: enteredByStaffId } : {}),
     },
     items,
     subtotal,

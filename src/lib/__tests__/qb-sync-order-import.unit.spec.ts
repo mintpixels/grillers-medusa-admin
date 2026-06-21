@@ -570,6 +570,82 @@ describe("qb-sync order import subscriber", () => {
     })
   })
 
+  it("attributes the entering staff member from the staff audit log for the QuickBooks memo (#276)", () => {
+    const order = normalizeOrderForQbSync({
+      id: "order_staff_entered",
+      total: 40,
+      subtotal: 40,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      metadata: {
+        staff_target_customer_id: "cus_123",
+        staff_audit_log: JSON.stringify([
+          { at: "2026-06-20T00:00:00.000Z", action: "checkout_saved_card" },
+          { at: "2026-06-21T00:00:00.000Z", action: "pack", staff_actor_id: "staff_007" },
+        ]),
+      },
+      items: [
+        { title: "Brisket", quantity: 1, unit_price: 40, total: 40, subtotal: 40 },
+      ],
+    })
+
+    expect(order.metadata).toMatchObject({
+      qbd_entered_by_staff_id: "staff_007",
+    })
+  })
+
+  it("does not attribute a staff member for ordinary customer self-service orders (#276)", () => {
+    const order = normalizeOrderForQbSync({
+      id: "order_self_service",
+      total: 40,
+      subtotal: 40,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      metadata: {},
+      items: [
+        { title: "Brisket", quantity: 1, unit_price: 40, total: 40, subtotal: 40 },
+      ],
+    })
+
+    expect(order.metadata as Record<string, unknown>).not.toHaveProperty(
+      "qbd_entered_by_staff_id"
+    )
+  })
+
+  it("passes packed shipper boxes through to the QuickBooks sync payload (#276)", () => {
+    const packages = [
+      {
+        id: "gpfinpkg_1",
+        package_type: "Shipper-345-Large",
+        shipper_qbd_list_id: null,
+        count: 1,
+        packed_weight_lb: 30,
+        dry_ice_lb: 5,
+        note: null,
+      },
+    ]
+    const order = normalizeOrderForQbSync({
+      id: "order_with_boxes",
+      total: 40,
+      subtotal: 40,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      metadata: {
+        catch_weight_packages: packages,
+      },
+      items: [
+        { title: "Brisket", quantity: 1, unit_price: 40, total: 40, subtotal: 40 },
+      ],
+    })
+
+    expect((order.metadata as Record<string, unknown>).catch_weight_packages).toEqual(
+      packages
+    )
+  })
+
   it("adds out-of-state non-taxable metadata for QuickBooks", () => {
     const order = normalizeOrderForQbSync({
       id: "order_out_of_state_tax_profile",
