@@ -13,6 +13,8 @@ export const ORDER_FIELDS = [
   "created_at",
   "updated_at",
   "customer_id",
+  // #277: carry the customer's alt-contact metadata so the QB CustomerAdd can fill AltPhone.
+  "customer.metadata",
   "status",
   "fulfillment_status",
   "payment_status",

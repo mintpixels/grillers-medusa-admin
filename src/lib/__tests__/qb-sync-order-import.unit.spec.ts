@@ -170,6 +170,7 @@ describe("qb-sync order import subscriber", () => {
         "items.metadata",
         "items.variant.metadata",
         "items.variant.product.metadata",
+        "customer.metadata",
       ])
     )
     expect(ORDER_FIELDS).not.toContain("+items.metadata")
