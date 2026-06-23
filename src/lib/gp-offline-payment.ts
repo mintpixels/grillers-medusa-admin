@@ -128,6 +128,18 @@ export function offlinePaymentMetadata(
   }
 }
 
+/**
+ * #283: is this customer approved to pay by invoice? The single gate the checkout invoice path
+ * and the storefront option both read. Fail closed — anything but an explicit `true` is false.
+ */
+export function isOfflinePaymentApproved(metadata: unknown): boolean {
+  const m =
+    metadata && typeof metadata === "object"
+      ? (metadata as Record<string, unknown>)
+      : {}
+  return m.gp_offline_payment_approved === true
+}
+
 /** Read the current offline-payment state off a customer's metadata (for audit diffing). */
 export function readOfflinePaymentMetadata(
   metadata: unknown

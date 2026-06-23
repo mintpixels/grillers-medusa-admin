@@ -19,6 +19,7 @@ import {
 } from "../../../payment-methods/utils";
 import {
   PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
+  PAYMENT_WORKFLOW_INVOICE_AR,
   SYSTEM_PAYMENT_PROVIDER_ID,
   appendStaffAudit,
   ensureFinalizationForOrder,
@@ -26,6 +27,7 @@ import {
   metadataObject,
 } from "../../../../../lib/catch-weight-finalization";
 import { emitOpsAlert } from "../../../../../lib/ops-alert";
+import { isOfflinePaymentApproved } from "../../../../../lib/gp-offline-payment";
 
 const PLACE_ORDER_PATH = "store/grillers/checkout/place-order";
 
@@ -35,6 +37,8 @@ type PlaceOrderBody = {
   setup_intent_id?: string | null;
   consent_version?: string | null;
   consent_text?: string | null;
+  // #283: "invoice" routes an approved B2B account to the no-card A/R path.
+  payment_method?: string;
 };
 
 const ORDER_FIELDS = [
@@ -173,19 +177,156 @@ async function retrieveOrder(req: MedusaRequest, orderId: string) {
   return data?.[0] || null;
 }
 
+/**
+ * #283 — place a no-card "pay by invoice" order for an approved B2B account.
+ *
+ * Mirrors the saved-card flow's completion (no-amount SYSTEM payment session → completeCart →
+ * finalization for catch-weight packing) but carries NO Stripe card, NO final-charge consent,
+ * and NO payment setup. The order is marked with payment_workflow = INVOICE_AR so the
+ * pre-shipment card gate is skipped (#284) and the QB sync can route it to A/R (#285). The
+ * caller has already verified the customer is approved.
+ */
+async function placeInvoiceOrder(
+  req: MedusaRequest,
+  res: MedusaResponse,
+  ctx: { cartId: string; customer: any; staffTargetCustomerId?: string | null },
+) {
+  const { cartId, customer, staffTargetCustomerId } = ctx;
+  const cartModule = req.scope.resolve(Modules.CART);
+  const orderModule = req.scope.resolve(Modules.ORDER);
+  const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+
+  const existingCart = await cartModule.retrieveCart(cartId, {
+    select: ["id", "email", "customer_id", "metadata"],
+  });
+  const existingMetadata = metadataObject(existingCart?.metadata);
+
+  if (staffTargetCustomerId) {
+    const metadataTarget =
+      existingMetadata.staff_target_customer_id ||
+      existingMetadata.staff_selected_customer_id;
+    if (metadataTarget && metadataTarget !== customer.id) {
+      return jsonError(res, 403, "This customer context does not match the cart.");
+    }
+  }
+
+  const customerMeta = metadataObject(customer.metadata);
+  const paymentTerms =
+    typeof customerMeta.gp_payment_terms === "string"
+      ? customerMeta.gp_payment_terms
+      : "Net 10";
+
+  // Invoice markers carried on the cart (copied to the order on completion) AND re-stamped on
+  // the order. payment_workflow=INVOICE_AR keeps orderRequiresFinalCharge() false; the rest
+  // drives QB A/R routing (#285).
+  const invoiceFields: Record<string, any> = {
+    payment_workflow: PAYMENT_WORKFLOW_INVOICE_AR,
+    payment_status: "invoice",
+    gp_payment_method: "invoice",
+    gp_payment_terms: paymentTerms,
+    gp_credit_limit: customerMeta.gp_credit_limit ?? null,
+    fulfillment_gate_status: "open_invoice",
+  };
+
+  const checkoutMetadata = appendStaffAudit(
+    { ...existingMetadata, ...invoiceFields },
+    {
+      action: "checkout_pay_by_invoice",
+      status: "order_ready_invoice",
+      customer_id: customer.id,
+    },
+  );
+
+  await cartModule.updateCarts(cartId, {
+    customer_id: customer.id,
+    email: customer.email || existingCart.email,
+    metadata: checkoutMetadata,
+  });
+
+  // A no-amount SYSTEM payment session is still required for completeCartWorkflow to produce an
+  // order; it carries no Stripe data and authorizes no charge.
+  const paymentCollection = await ensurePaymentCollection(req, cartId);
+  await createPaymentSessionsWorkflow(req.scope).run({
+    input: {
+      payment_collection_id: paymentCollection.id,
+      provider_id: SYSTEM_PAYMENT_PROVIDER_ID,
+      customer_id: customer.id,
+      data: { payment_workflow: PAYMENT_WORKFLOW_INVOICE_AR },
+    },
+  });
+
+  const { errors, result } = await completeCartWorkflow(req.scope).run({
+    input: { id: cartId },
+    context: { transactionId: cartId },
+    throwOnError: false,
+  });
+
+  if (errors?.[0]) {
+    const message =
+      errors[0].error?.message || "Could not place the order. Please try again.";
+    await emitOpsAlert({
+      alertKind: "place_order_error",
+      severity: "page",
+      path: PLACE_ORDER_PATH,
+      title: "place-order (invoice) complete-cart 400",
+      fingerprint: `place_order:invoice_complete_cart:${errors[0].error?.name || ""}`,
+      meta: {
+        cart_id: cartId,
+        workflow_error: errors[0].error?.message?.slice(0, 300),
+      },
+      logger: req.scope.resolve(ContainerRegistrationKeys.LOGGER),
+    });
+    return res.status(400).json({
+      type: "cart",
+      error: {
+        message,
+        name: errors[0].error?.name,
+        type: errors[0].error?.type,
+      },
+    });
+  }
+
+  const order = await retrieveOrder(req, result.id);
+  if (!order) {
+    await emitOpsAlert({
+      alertKind: "place_order_error",
+      severity: "page",
+      path: PLACE_ORDER_PATH,
+      title: "place-order (invoice) order created but not retrievable",
+      fingerprint: "place_order:invoice_order_created_not_retrievable",
+      meta: { cart_id: cartId, order_id: result?.id },
+      logger: req.scope.resolve(ContainerRegistrationKeys.LOGGER),
+    });
+    return jsonError(res, 500, "Order was created but could not be retrieved.");
+  }
+
+  // Track catch-weight packing/weighing via a finalization row, but NO payment setup (no card).
+  // The final weight is invoiced (Phase 4) rather than charged.
+  const finalization = await ensureFinalizationForOrder(db, order);
+
+  const metadata = {
+    ...metadataObject(order.metadata),
+    ...invoiceFields,
+    catch_weight_status: "pending_pack",
+    finalization_id: finalization.finalization.id,
+    finalization_status: finalization.finalization.status,
+    estimated_total: finalization.finalization.estimated_order_total,
+  };
+
+  await orderModule.updateOrders(order.id, { metadata });
+  order.metadata = metadata;
+
+  return res.status(200).json({ type: "order", order });
+}
+
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const body = (req.body || {}) as PlaceOrderBody;
   const cartId = body.cart_id;
   const paymentMethodId = body.payment_method_id;
+  const wantsInvoice = body.payment_method === "invoice";
 
   if (!cartId) {
     return jsonError(res, 400, "Cart id is required.");
-  }
-  if (!paymentMethodId) {
-    return jsonError(res, 400, "A saved card is required.");
-  }
-  if (!body.consent_version || !body.consent_text) {
-    return jsonError(res, 400, "Final charge consent is required.");
   }
 
   try {
@@ -193,6 +334,30 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       await getPaymentContextCustomer(req);
     if (!customer) {
       return jsonError(res, 401, "You must be signed in to place this order.");
+    }
+
+    // #283: approved B2B accounts can place a no-card invoice order. Fail closed — a
+    // non-approved customer asking to pay by invoice is rejected, never silently let through.
+    if (wantsInvoice) {
+      if (!isOfflinePaymentApproved((customer as any).metadata)) {
+        return jsonError(
+          res,
+          403,
+          "This account is not approved to pay by invoice.",
+        );
+      }
+      return await placeInvoiceOrder(req, res, {
+        cartId,
+        customer,
+        staffTargetCustomerId,
+      });
+    }
+
+    if (!paymentMethodId) {
+      return jsonError(res, 400, "A saved card is required.");
+    }
+    if (!body.consent_version || !body.consent_text) {
+      return jsonError(res, 400, "Final charge consent is required.");
     }
 
     await verifyStripeSetupIntent({

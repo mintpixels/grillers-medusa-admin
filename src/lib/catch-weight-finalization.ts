@@ -2,6 +2,10 @@ import { randomUUID } from "crypto"
 
 export const PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE =
   "setup_then_final_charge"
+// #283: approved B2B accounts pay by invoice (A/R), no card. This distinct, truthy value keeps
+// orderRequiresFinalCharge() false (so the pre-shipment card gate is skipped) AND survives the
+// order.placed subscriber's `metadata.payment_workflow || DEFAULT` re-stamp.
+export const PAYMENT_WORKFLOW_INVOICE_AR = "invoice_ar"
 export const SYSTEM_PAYMENT_PROVIDER_ID = "pp_system_default"
 export const FINALIZATION_PENDING_PICK = "pending_pick"
 export const FINALIZATION_PICKING = "picking"
