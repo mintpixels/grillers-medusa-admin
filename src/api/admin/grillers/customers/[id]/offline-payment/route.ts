@@ -89,6 +89,19 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     // #291: transition the self-serve invoice application status alongside the terms change.
     const currentAppStatus = readInvoiceApplicationStatus(existingMeta)
+
+    // Codex P2 (x2): a decline only applies to a PENDING, not-yet-approved application. Refuse
+    // to "decline" an approved account (even one with stale `pending` metadata) or one with no
+    // application — that would wipe its terms via the revoke path. Use the explicit approve
+    // toggle (approved=false) to revoke an approved account instead.
+    if (declineApplication && (currentAppStatus !== "pending" || before.approved)) {
+      return res.status(409).json({
+        type: "no_pending_application",
+        message:
+          "This account has no pending application to decline. Use the approval toggle to change an approved account.",
+      })
+    }
+
     let applicationMeta: Record<string, unknown> = {}
     let action = "offline_payment_terms_updated"
     if (declineApplication) {

@@ -11,6 +11,7 @@ import {
   createStripeFinalPaymentIntent,
   finalChargeOrderMetadata,
   finalChargeSucceeded,
+  isInvoiceOrder,
   metadataObject,
   previewFinalization,
   recordFinalChargeAttempt,
@@ -48,6 +49,16 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
   if (!order) {
     return jsonError(res, 404, "Order was not found.")
+  }
+
+  // #283: invoice (A/R) orders are never card-charged. Refuse before any card-status logic so an
+  // invoice order is neither stranded in nor accidentally routed through the card-charge path.
+  if (isInvoiceOrder(order)) {
+    return jsonError(
+      res,
+      409,
+      "This is a pay-by-invoice order. It bills to accounts receivable and is not charged to a card; it releases to fulfillment once packed.",
+    )
   }
 
   if (finalChargeSucceeded(order)) {

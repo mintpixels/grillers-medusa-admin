@@ -365,6 +365,24 @@ export const orderRequiresFinalCharge = (order: Record<string, any>) => {
   return metadata.payment_workflow === PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE
 }
 
+// #283/#285: a pay-by-invoice (A/R) order. It is packed and weighed like any catch-weight
+// order, but there is no card to charge — once cleanly packed it is released to fulfillment,
+// and the card charge-and-release path must refuse it.
+export const isInvoiceOrder = (order: Record<string, any>) => {
+  const metadata = metadataObject(order?.metadata)
+  return metadata.payment_workflow === PAYMENT_WORKFLOW_INVOICE_AR
+}
+
+/**
+ * The terminal status a cleanly-packed (no-error) order should land in: invoice orders are
+ * released straight to fulfillment (no card charge), card orders wait at packed_pending_charge
+ * for the final Stripe charge.
+ */
+export const finalizationReadyStatus = (order: Record<string, any>) =>
+  isInvoiceOrder(order)
+    ? FINALIZATION_RELEASED_TO_FULFILLMENT
+    : FINALIZATION_PACKED_PENDING_CHARGE
+
 export const finalChargeSucceeded = (orderOrMetadata: Record<string, any>) => {
   const metadata =
     "payment_workflow" in orderOrMetadata || "final_charge_status" in orderOrMetadata
@@ -2314,6 +2332,12 @@ export async function previewFinalization(
     delta_total: deltaTotal,
   }
 
+  // Codex P2: compute the persisted status ONCE and return it, so callers (the preview route)
+  // write the same status to order metadata that the DB row received — invoice orders release.
+  const persistedStatus = errors.length
+    ? FINALIZATION_PACKED_PENDING_REVIEW
+    : finalizationReadyStatus(order)
+
   if (options.persist) {
     await Promise.all(
       calculatedLines.map((calculated) =>
@@ -2332,9 +2356,7 @@ export async function previewFinalization(
       .where({ id: detail.finalization.id })
       .update({
         ...summary,
-        status: errors.length
-          ? FINALIZATION_PACKED_PENDING_REVIEW
-          : FINALIZATION_PACKED_PENDING_CHARGE,
+        status: persistedStatus,
         reviewed_at: new Date(),
         updated_at: new Date(),
       })
@@ -2344,6 +2366,7 @@ export async function previewFinalization(
     finalization: {
       ...detail.finalization,
       ...summary,
+      ...(options.persist ? { status: persistedStatus } : {}),
     },
     lines: calculatedLines.map((calculated) => ({
       ...calculated.line,
@@ -2375,10 +2398,13 @@ export async function approveFinalization(
     throw new Error("Finalization cannot be approved until all line errors are fixed.")
   }
 
+  // #283: invoice orders have no card charge — approval releases them straight to fulfillment.
+  const readyStatus = finalizationReadyStatus(order)
+
   await db("gp_order_finalization")
     .where({ id: preview.finalization.id })
     .update({
-      status: FINALIZATION_PACKED_PENDING_CHARGE,
+      status: readyStatus,
       reviewed_at: new Date(),
       reviewed_by: actorId || null,
       updated_at: new Date(),
@@ -2388,7 +2414,7 @@ export async function approveFinalization(
     ...preview,
     finalization: {
       ...preview.finalization,
-      status: FINALIZATION_PACKED_PENDING_CHARGE,
+      status: readyStatus,
       reviewed_by: actorId || null,
     },
   }

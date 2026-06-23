@@ -212,6 +212,63 @@ describe("offline-payment approval route (#279/#282)", () => {
     expect(audit[audit.length - 1].action).toBe("invoice_application_declined")
   })
 
+  it("declining an account with no pending application is rejected (#291 Codex P2)", async () => {
+    process.env.GP_OFFLINE_PAYMENT_APPROVER_EMAILS = APPROVERS
+    const customerModule = {
+      // already approved, no pending application — a decline here would otherwise wipe terms
+      retrieveCustomer: jest.fn(async () => ({
+        id: "cus_1",
+        metadata: {
+          gp_offline_payment_approved: true,
+          gp_offline_methods: ["wire"],
+          gp_credit_limit: 5000,
+          gp_payment_terms: "Net 10",
+        },
+      })),
+      updateCustomers: jest.fn(async () => ({ id: "cus_1" })),
+    }
+    const res = makeRes()
+    await POST(
+      makeReq({
+        userModule: userModuleFor("avi@gp.com"),
+        customerModule,
+        body: { decline_application: true },
+      }),
+      res
+    )
+    expect(res.statusCode).toBe(409)
+    expect(customerModule.updateCustomers).not.toHaveBeenCalled()
+  })
+
+  it("declining an approved account with stale pending metadata is rejected (#291 Codex P2 x2)", async () => {
+    process.env.GP_OFFLINE_PAYMENT_APPROVER_EMAILS = APPROVERS
+    const customerModule = {
+      // inconsistent: approved AND a stale `pending` application status — must NOT wipe terms
+      retrieveCustomer: jest.fn(async () => ({
+        id: "cus_1",
+        metadata: {
+          gp_offline_payment_approved: true,
+          gp_offline_methods: ["wire"],
+          gp_credit_limit: 5000,
+          gp_payment_terms: "Net 10",
+          gp_invoice_application_status: "pending",
+        },
+      })),
+      updateCustomers: jest.fn(async () => ({ id: "cus_1" })),
+    }
+    const res = makeRes()
+    await POST(
+      makeReq({
+        userModule: userModuleFor("avi@gp.com"),
+        customerModule,
+        body: { decline_application: true },
+      }),
+      res
+    )
+    expect(res.statusCode).toBe(409)
+    expect(customerModule.updateCustomers).not.toHaveBeenCalled()
+  })
+
   it("approving a customer with NO application leaves application status untouched (#291)", async () => {
     process.env.GP_OFFLINE_PAYMENT_APPROVER_EMAILS = APPROVERS
     const customerModule = okCustomerModule()

@@ -28,6 +28,10 @@ import {
 } from "../../../../../lib/catch-weight-finalization";
 import { emitOpsAlert } from "../../../../../lib/ops-alert";
 import { isOfflinePaymentApproved } from "../../../../../lib/gp-offline-payment";
+import {
+  evaluateCreditLimit,
+  creditHoldMetadata,
+} from "../../../../../lib/gp-credit-limit";
 
 const PLACE_ORDER_PATH = "store/grillers/checkout/place-order";
 
@@ -178,6 +182,57 @@ async function retrieveOrder(req: MedusaRequest, orderId: string) {
 }
 
 /**
+ * #286 — sum the customer's OPEN invoice (A/R) balance: the totals of their other invoice_ar
+ * orders that are neither cancelled nor already marked paid. Used to enforce the credit limit.
+ */
+async function computeOpenInvoiceBalance(
+  req: MedusaRequest,
+  customerId: string,
+  excludeOrderId: string,
+): Promise<number> {
+  const query = req.scope.resolve(ContainerRegistrationKeys.QUERY);
+  const { data } = await query.graph({
+    entity: "order",
+    fields: ["id", "total", "status", "metadata"],
+    filters: { customer_id: customerId },
+  });
+  let sum = 0;
+  for (const o of (data || []) as any[]) {
+    if (!o || o.id === excludeOrderId) continue;
+    const meta = metadataObject(o.metadata);
+    if (meta.payment_workflow !== PAYMENT_WORKFLOW_INVOICE_AR) continue;
+    if (o.status === "canceled" || meta.invoice_paid === true) continue;
+    const total = typeof o.total === "number" ? o.total : Number(o.total) || 0;
+    if (Number.isFinite(total) && total > 0) sum += total;
+  }
+  return sum;
+}
+
+/** #286 — the cart's current (estimated) total, used to evaluate the credit limit pre-completion. */
+async function getCartTotal(
+  req: MedusaRequest,
+  cartId: string,
+): Promise<number> {
+  const query = req.scope.resolve(ContainerRegistrationKeys.QUERY);
+  const { data } = await query.graph({
+    entity: "cart",
+    fields: ["id", "total"],
+    filters: { id: cartId },
+  });
+  const total = (data?.[0] as any)?.total;
+  // Throw (→ caller's fail-safe hold) if the total is missing rather than reading 0 and
+  // under-holding a real order. A genuine $0 cart still returns a numeric 0.
+  if (total === null || total === undefined) {
+    throw new Error("Cart total unavailable for credit evaluation.");
+  }
+  const n = typeof total === "number" ? total : Number(total);
+  if (!Number.isFinite(n)) {
+    throw new Error("Cart total is not numeric.");
+  }
+  return n;
+}
+
+/**
  * #283 — place a no-card "pay by invoice" order for an approved B2B account.
  *
  * Mirrors the saved-card flow's completion (no-amount SYSTEM payment session → completeCart →
@@ -228,8 +283,44 @@ async function placeInvoiceOrder(
     fulfillment_gate_status: "open_invoice",
   };
 
+  // #286 (Codex P1): evaluate the credit limit BEFORE completing the cart, and stamp any hold
+  // onto the CART metadata. Medusa copies cart metadata to the order on completion, so the order
+  // is created already-held — a hold can never be lost in a post-completion failure window.
+  let creditMeta: Record<string, any> = {};
+  try {
+    const [outstanding, cartTotal] = await Promise.all([
+      computeOpenInvoiceBalance(req, customer.id, ""),
+      getCartTotal(req, cartId),
+    ]);
+    const evaluation = evaluateCreditLimit({
+      creditLimit: customerMeta.gp_credit_limit,
+      outstanding,
+      orderTotal: cartTotal,
+    });
+    if (evaluation.requiresSecondApproval) {
+      creditMeta = {
+        ...creditHoldMetadata(evaluation, new Date().toISOString()),
+        fulfillment_hold: {
+          held: true,
+          reason: "credit_limit_exceeded",
+          over_by: evaluation.overBy,
+        },
+      };
+    }
+  } catch {
+    // Fail safe: if exposure can't be computed, hold for review rather than extend credit blindly.
+    creditMeta = {
+      gp_credit_hold: {
+        held: true,
+        reason: "credit_check_unavailable",
+        placed_at: new Date().toISOString(),
+      },
+      fulfillment_hold: { held: true, reason: "credit_check_unavailable" },
+    };
+  }
+
   const checkoutMetadata = appendStaffAudit(
-    { ...existingMetadata, ...invoiceFields },
+    { ...existingMetadata, ...invoiceFields, ...creditMeta },
     {
       action: "checkout_pay_by_invoice",
       status: "order_ready_invoice",
@@ -304,9 +395,12 @@ async function placeInvoiceOrder(
   // The final weight is invoiced (Phase 4) rather than charged.
   const finalization = await ensureFinalizationForOrder(db, order);
 
+  // creditMeta was computed pre-completion and is already on the order via the cart copy; we
+  // re-stamp it here idempotently alongside the finalization fields.
   const metadata = {
     ...metadataObject(order.metadata),
     ...invoiceFields,
+    ...creditMeta,
     catch_weight_status: "pending_pack",
     finalization_id: finalization.finalization.id,
     finalization_status: finalization.finalization.status,
