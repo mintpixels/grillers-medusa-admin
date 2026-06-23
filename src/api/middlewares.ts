@@ -605,6 +605,12 @@ export default defineMiddlewares({
       middlewares: [authenticate("customer", ["session", "bearer"])],
     },
     {
+      // #291: self-serve B2B "pay by invoice" application intake.
+      matcher: "/store/grillers/invoice-applications*",
+      method: ["POST"],
+      middlewares: [authenticate("customer", ["session", "bearer"])],
+    },
+    {
       matcher: "/store/carts/:id/line-items",
       method: ["POST"],
       // Heal stale unserviceable methods first (always runs, fail-open), then

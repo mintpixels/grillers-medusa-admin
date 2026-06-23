@@ -154,4 +154,81 @@ describe("offline-payment approval route (#279/#282)", () => {
       gp_payment_terms: null,
     })
   })
+
+  it("approving a customer with a pending application marks it approved (#291)", async () => {
+    process.env.GP_OFFLINE_PAYMENT_APPROVER_EMAILS = APPROVERS
+    const customerModule = {
+      retrieveCustomer: jest.fn(async () => ({
+        id: "cus_1",
+        metadata: {
+          gp_invoice_application_status: "pending",
+          gp_invoice_application: { business_name: "Beth Shalom" },
+        },
+      })),
+      updateCustomers: jest.fn(async () => ({ id: "cus_1" })),
+    }
+    const res = makeRes()
+    await POST(
+      makeReq({
+        userModule: userModuleFor("peter@gp.com"),
+        customerModule,
+        body: { approved: true, methods: ["wire"], credit_limit: 5000, payment_terms: "Net 10" },
+      }),
+      res
+    )
+    expect(res.statusCode).toBe(200)
+    expect(res.body.application_status).toBe("approved")
+    const update: any = (customerModule.updateCustomers as jest.Mock).mock.calls[0][1]
+    expect(update.metadata.gp_invoice_application_status).toBe("approved")
+    expect(update.metadata.gp_invoice_application_decided_by).toBe("peter@gp.com")
+    const audit = JSON.parse(update.metadata.staff_audit_log)
+    expect(audit[audit.length - 1].action).toBe("invoice_application_approved")
+  })
+
+  it("declining a pending application sets declined without terms (#291)", async () => {
+    process.env.GP_OFFLINE_PAYMENT_APPROVER_EMAILS = APPROVERS
+    const customerModule = {
+      retrieveCustomer: jest.fn(async () => ({
+        id: "cus_1",
+        metadata: { gp_invoice_application_status: "pending" },
+      })),
+      updateCustomers: jest.fn(async () => ({ id: "cus_1" })),
+    }
+    const res = makeRes()
+    await POST(
+      makeReq({
+        userModule: userModuleFor("julie@gp.com"),
+        customerModule,
+        body: { decline_application: true },
+      }),
+      res
+    )
+    expect(res.statusCode).toBe(200)
+    expect(res.body.application_status).toBe("declined")
+    const update: any = (customerModule.updateCustomers as jest.Mock).mock.calls[0][1]
+    expect(update.metadata.gp_invoice_application_status).toBe("declined")
+    expect(update.metadata.gp_offline_payment_approved).toBe(false)
+    const audit = JSON.parse(update.metadata.staff_audit_log)
+    expect(audit[audit.length - 1].action).toBe("invoice_application_declined")
+  })
+
+  it("approving a customer with NO application leaves application status untouched (#291)", async () => {
+    process.env.GP_OFFLINE_PAYMENT_APPROVER_EMAILS = APPROVERS
+    const customerModule = okCustomerModule()
+    const res = makeRes()
+    await POST(
+      makeReq({
+        userModule: userModuleFor("avi@gp.com"),
+        customerModule,
+        body: { approved: true, methods: ["zelle"], credit_limit: 1000, payment_terms: "Net 10" },
+      }),
+      res
+    )
+    expect(res.statusCode).toBe(200)
+    expect(res.body.application_status).toBeUndefined()
+    const update: any = (customerModule.updateCustomers as jest.Mock).mock.calls[0][1]
+    expect(update.metadata.gp_invoice_application_status).toBeUndefined()
+    const audit = JSON.parse(update.metadata.staff_audit_log)
+    expect(audit[audit.length - 1].action).toBe("offline_payment_terms_updated")
+  })
 })

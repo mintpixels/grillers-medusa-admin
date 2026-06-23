@@ -13,6 +13,10 @@ import {
   appendStaffAudit,
   metadataObject,
 } from "../../../../../../lib/catch-weight-finalization"
+import {
+  readInvoiceApplicationStatus,
+  invoiceApplicationDecisionMetadata,
+} from "../../../../../../lib/gp-invoice-application"
 
 /**
  * #279 / #282 — set/clear a customer's approved offline-payment ("pay by invoice") terms.
@@ -59,6 +63,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     })
   }
 
+  // #291: an approver can decline a pending self-serve application without setting terms.
+  const declineApplication =
+    (req.body as any)?.decline_application === true ||
+    (req.body as any)?.decline_application === "true"
+
   const result = validateOfflinePayment((req.body || {}) as OfflinePaymentInput)
   if (!result.valid) {
     return res.status(400).json({
@@ -78,10 +87,30 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     const before = readOfflinePaymentMetadata(existingMeta)
     const after = result.normalized
 
+    // #291: transition the self-serve invoice application status alongside the terms change.
+    const currentAppStatus = readInvoiceApplicationStatus(existingMeta)
+    let applicationMeta: Record<string, unknown> = {}
+    let action = "offline_payment_terms_updated"
+    if (declineApplication) {
+      applicationMeta = invoiceApplicationDecisionMetadata(
+        "declined",
+        actorEmail,
+        new Date().toISOString()
+      )
+      action = "invoice_application_declined"
+    } else if (after.approved && currentAppStatus === "pending") {
+      applicationMeta = invoiceApplicationDecisionMetadata(
+        "approved",
+        actorEmail,
+        new Date().toISOString()
+      )
+      action = "invoice_application_approved"
+    }
+
     const metadata = appendStaffAudit(
-      { ...existingMeta, ...offlinePaymentMetadata(after) },
+      { ...existingMeta, ...offlinePaymentMetadata(after), ...applicationMeta },
       {
-        action: "offline_payment_terms_updated",
+        action,
         staff_actor_id: actorId,
         staff_actor_email: actorEmail,
         before,
@@ -91,10 +120,22 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     await customerModule.updateCustomers(customerId, { metadata })
     logger?.info?.(
-      `[offline-payment] ${actorEmail} set customer ${customerId} approved=${after.approved} limit=${after.credit_limit}`
+      `[offline-payment] ${actorEmail} set customer ${customerId} approved=${after.approved} limit=${after.credit_limit}` +
+        (applicationMeta.gp_invoice_application_status
+          ? ` application=${applicationMeta.gp_invoice_application_status}`
+          : "")
     )
 
-    return res.status(200).json({ customer_id: customerId, offline_payment: after })
+    return res.status(200).json({
+      customer_id: customerId,
+      offline_payment: after,
+      ...(applicationMeta.gp_invoice_application_status
+        ? {
+            application_status:
+              applicationMeta.gp_invoice_application_status,
+          }
+        : {}),
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     logger?.error?.(`[offline-payment] failed for ${customerId}: ${message}`)
