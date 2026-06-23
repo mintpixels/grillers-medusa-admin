@@ -2333,10 +2333,14 @@ export async function previewFinalization(
   }
 
   // Codex P2: compute the persisted status ONCE and return it, so callers (the preview route)
-  // write the same status to order metadata that the DB row received — invoice orders release.
+  // write the same status to order metadata that the DB row received.
+  // Codex round-3 P2: a PREVIEW must NEVER release an order — even a cleanly-packed invoice order
+  // stays at packed_pending_charge until the explicit approve action releases it (see
+  // approveFinalization, which uses finalizationReadyStatus). Releasing on preview/persist would
+  // let a `{persist:true}` preview ship an A/R order without the approval step.
   const persistedStatus = errors.length
     ? FINALIZATION_PACKED_PENDING_REVIEW
-    : finalizationReadyStatus(order)
+    : FINALIZATION_PACKED_PENDING_CHARGE
 
   if (options.persist) {
     await Promise.all(
