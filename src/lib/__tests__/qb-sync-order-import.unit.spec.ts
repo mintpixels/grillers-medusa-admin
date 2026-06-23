@@ -647,6 +647,55 @@ describe("qb-sync order import subscriber", () => {
     )
   })
 
+  it("injects UPS transit days for UPS orders and omits them for non-UPS (#287)", () => {
+    const ground = normalizeOrderForQbSync({
+      id: "order_ups_ground_transit",
+      total: 60,
+      subtotal: 60,
+      shipping_total: 14.25,
+      tax_total: 0,
+      discount_total: 0,
+      shipping_address: { province: "TN", postal_code: "38120" },
+      shipping_methods: [{ name: "UPS Ground", data: { service_code: "GROUND" } }],
+      metadata: {},
+      items: [{ title: "Item", quantity: 1, unit_price: 60, total: 60, subtotal: 60 }],
+    })
+    expect(typeof (ground.metadata as any).qbd_ups_transit_days).toBe("number")
+    expect((ground.metadata as any).qbd_ups_transit_days).toBeGreaterThan(0)
+
+    const overnight = normalizeOrderForQbSync({
+      id: "order_ups_overnight_transit",
+      total: 60,
+      subtotal: 60,
+      shipping_total: 40,
+      tax_total: 0,
+      discount_total: 0,
+      shipping_address: { province: "TN", postal_code: "38120" },
+      shipping_methods: [{ name: "UPS Overnight", data: { service_code: "OVERNIGHT" } }],
+      metadata: {},
+      items: [{ title: "Item", quantity: 1, unit_price: 60, total: 60, subtotal: 60 }],
+    })
+    expect((overnight.metadata as any).qbd_ups_transit_days).toBe(1)
+
+    const atlanta = normalizeOrderForQbSync({
+      id: "order_atlanta_no_transit",
+      total: 60,
+      subtotal: 60,
+      shipping_total: 12.5,
+      tax_total: 0,
+      discount_total: 0,
+      shipping_address: { province: "GA", postal_code: "30303" },
+      shipping_methods: [
+        { name: "Metro Atlanta Delivery", data: { service_code: "ATLANTA_DELIVERY" } },
+      ],
+      metadata: {},
+      items: [{ title: "Item", quantity: 1, unit_price: 60, total: 60, subtotal: 60 }],
+    })
+    expect(
+      (atlanta.metadata as Record<string, unknown>).qbd_ups_transit_days
+    ).toBeUndefined()
+  })
+
   it("adds out-of-state non-taxable metadata for QuickBooks", () => {
     const order = normalizeOrderForQbSync({
       id: "order_out_of_state_tax_profile",

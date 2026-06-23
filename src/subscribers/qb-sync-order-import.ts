@@ -4,6 +4,7 @@ import { createHmac } from "node:crypto"
 
 import { resolveFoodTaxForAddress } from "../modules/ga-tax/rules"
 import { emitOpsAlert } from "../lib/ops-alert"
+import { transitDaysForOrder } from "../lib/packaging-cost"
 
 export const ORDER_FIELDS = [
   "id",
@@ -502,6 +503,30 @@ export function normalizeOrderForQbSync(
   const baseMetadata = objectRecord(order.metadata)
   const enteredByStaffId = resolveEnteredByStaffId(baseMetadata)
 
+  // #287: UPS transit days for the QuickBooks memo + last SalesOrder line (dry-ice planning).
+  // Only for UPS services (Ground via the ZIP3 table, Overnight=1, 2-Day=2, 3-Day=3); never for
+  // Atlanta delivery / pickup / Southeast route, which carry no UPS transit.
+  const shippingMethod = Array.isArray(order.shipping_methods)
+    ? objectRecord(order.shipping_methods[0])
+    : {}
+  const serviceCode =
+    textValue(objectRecord(shippingMethod.data).service_code) ||
+    textValue(shippingMethod.name) ||
+    textValue(baseMetadata.service_code) ||
+    textValue(baseMetadata.fulfillmentType) ||
+    textValue(baseMetadata.fulfillment_type)
+  const isUpsService =
+    !!serviceCode &&
+    /(ups|ground|overnight|next.?day|2nd.?day|2.?day|3.?day)/i.test(serviceCode) &&
+    !/(atlanta|pickup|scheduled|southeast|local)/i.test(serviceCode)
+  const upsTransitMeta: Record<string, unknown> = {}
+  if (isUpsService) {
+    const days = transitDaysForOrder(serviceCode, textValue(shippingAddress.postal_code))
+    if (Number.isFinite(days) && days > 0) {
+      upsTransitMeta.qbd_ups_transit_days = days
+    }
+  }
+
   return {
     ...order,
     metadata: {
@@ -510,6 +535,8 @@ export function normalizeOrderForQbSync(
       // #276: pass the entering staff member through so the QuickBooks memo can attribute
       // the order. catch_weight_packages (shipper boxes) already flow through baseMetadata.
       ...(enteredByStaffId ? { qbd_entered_by_staff_id: enteredByStaffId } : {}),
+      // #287: UPS transit days for the QB memo + last SalesOrder line.
+      ...upsTransitMeta,
     },
     items,
     subtotal,
