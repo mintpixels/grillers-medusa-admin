@@ -4,6 +4,8 @@ import {
   fulfillmentGateAllowsShipment,
   isInvoiceOrder,
   finalizationReadyStatus,
+  invoiceArOrderMetadata,
+  QBD_ACTION_INVOICE_AR,
   FINALIZATION_RELEASED_TO_FULFILLMENT,
   FINALIZATION_PACKED_PENDING_CHARGE,
   PAYMENT_WORKFLOW_INVOICE_AR,
@@ -54,5 +56,42 @@ describe("invoice checkout gating (#283/#284)", () => {
       FINALIZATION_RELEASED_TO_FULFILLMENT
     )
     expect(finalizationReadyStatus(card)).toBe(FINALIZATION_PACKED_PENDING_CHARGE)
+  })
+
+  it("invoice_ar release stamps an A/R posting envelope with NO card fields (#285)", () => {
+    const meta = invoiceArOrderMetadata({
+      order: {
+        id: "order_inv1",
+        metadata: { payment_workflow: PAYMENT_WORKFLOW_INVOICE_AR },
+      },
+      finalization: {
+        id: "fin_1",
+        final_order_total: 250.5,
+        currency_code: "usd",
+        estimated_order_total: 240,
+        final_item_total: 230,
+        final_shipping_total: 15,
+        final_tax_total: 5.5,
+        final_discount_total: 0,
+        delta_total: 10.5,
+      },
+      actorId: "user_avi",
+    }) as Record<string, any>
+    // posts to A/R via the writer
+    expect(meta.qbd_posting_required).toBe(true)
+    expect(meta.qbd_posting_action).toBe(QBD_ACTION_INVOICE_AR)
+    expect(meta.qbd_posting_status).toBe("pending_manual")
+    // stable, order-keyed request key → idempotent on re-post
+    expect(meta.qbd_posting_request_key).toBe("invoice_ar:order_inv1")
+    expect(typeof meta.qbd_posting_amount).toBe("number")
+    expect(meta.qbd_posting_amount as number).toBeGreaterThan(0)
+    // released, invoice workflow, final total
+    expect(meta.payment_workflow).toBe(PAYMENT_WORKFLOW_INVOICE_AR)
+    expect(meta.finalization_status).toBe(FINALIZATION_RELEASED_TO_FULFILLMENT)
+    expect(meta.final_total).toBe(250.5)
+    // CRITICAL no-card invariant: no Stripe / charge fields
+    expect(meta.stripe_payment_intent_id).toBeUndefined()
+    expect(meta.stripe_charge_id).toBeUndefined()
+    expect(meta.final_charge_status).toBe("not_applicable_invoice")
   })
 })

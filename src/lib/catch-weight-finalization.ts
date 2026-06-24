@@ -2616,3 +2616,61 @@ export function finalChargeOrderMetadata(input: {
     }
   )
 }
+
+// #285: the QB writer action for a B2B "pay by invoice" (A/R) order.
+export const QBD_ACTION_INVOICE_AR = "invoice_ar_accounting_record"
+
+/**
+ * #285 — posting envelope stamped when an approved B2B invoice order is RELEASED at finalization
+ * (no card charge). Mirrors finalChargeOrderMetadata but carries NO Stripe/charge fields and the
+ * invoice_ar action, so the QB sync posts an UNPAID Invoice to A/R (no ReceivePayment). The amount
+ * is the FINALIZED total so the open A/R balance matches the shipped order. The request key is
+ * stable (keyed on the order) so re-posts (order.updated re-fires) de-dupe in the writer.
+ */
+export function invoiceArOrderMetadata(input: {
+  order: Record<string, any>
+  finalization: Record<string, any>
+  actorId?: string | null
+  staffAudit?: Record<string, any>
+}) {
+  const metadata = metadataObject(input.order.metadata)
+  const amountMinor = amountInMinorUnits(
+    input.finalization.final_order_total,
+    input.finalization.currency_code
+  )
+  const requestKey = `invoice_ar:${input.order.id}`
+
+  return appendStaffAudit(
+    {
+      ...metadata,
+      payment_workflow: PAYMENT_WORKFLOW_INVOICE_AR,
+      catch_weight_status: FINALIZATION_RELEASED_TO_FULFILLMENT,
+      finalization_id: input.finalization.id,
+      finalization_status: FINALIZATION_RELEASED_TO_FULFILLMENT,
+      estimated_total: input.finalization.estimated_order_total,
+      final_item_total: input.finalization.final_item_total,
+      final_shipping_total: input.finalization.final_shipping_total,
+      final_tax_total: input.finalization.final_tax_total,
+      final_discount_total: input.finalization.final_discount_total,
+      final_total: input.finalization.final_order_total,
+      catch_weight_delta: input.finalization.delta_total,
+      // No card. The invoice ages in QB A/R until paid (Zelle/check/wire, recorded manually).
+      final_charge_status: "not_applicable_invoice",
+      fulfillment_gate_status: "released",
+      qbd_posting_required: true,
+      qbd_posting_status: "pending_manual",
+      qbd_posting_action: QBD_ACTION_INVOICE_AR,
+      qbd_posting_amount: amountMinor,
+      qbd_posting_request_key: requestKey,
+      qbd_posting_requested_at: new Date().toISOString(),
+    },
+    {
+      action: "invoice_ar_released",
+      status: "released_to_fulfillment",
+      amount: input.finalization.final_order_total,
+      amount_minor: amountMinor,
+      staff_actor_id: input.actorId || null,
+      ...(input.staffAudit || {}),
+    }
+  )
+}
