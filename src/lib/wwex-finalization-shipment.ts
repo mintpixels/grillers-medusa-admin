@@ -7,10 +7,12 @@ import {
   type WwexQuoteResult,
 } from "../modules/fulfillment/wwex-speedship"
 import { metadataObject } from "./catch-weight-finalization"
+import { emitOpsAlert } from "./ops-alert"
 
 type LoggerLike = {
   warn?: (message: string) => void
   info?: (message: string) => void
+  error?: (message: string) => void
 }
 
 type FinalizationPreview = {
@@ -58,6 +60,57 @@ const envFlag = (name: string, fallback = false): boolean => {
   const raw = process.env[name]
   if (!raw) return fallback
   return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase())
+}
+
+function redactedErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || "")
+  return message
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .slice(0, 500)
+}
+
+function emitWwexFinalizationFailureAlert(input: {
+  alertKind:
+    | "wwex_finalization_quote_failed"
+    | "wwex_finalization_booking_failed"
+    | "wwex_finalization_label_failed"
+  title: string
+  order: Record<string, any>
+  logger?: LoggerLike
+  error: unknown
+  serviceCode?: string | null
+  packageCount?: number | null
+  offer?: WwexOffer | null
+  booking?: WwexBookingResult | null
+}) {
+  const logger =
+    input.logger?.warn && input.logger?.error
+      ? { warn: input.logger.warn, error: input.logger.error }
+      : undefined
+
+  void emitOpsAlert({
+    alertKind: input.alertKind,
+    severity: "warn",
+    title: input.title,
+    path: "src/lib/wwex-finalization-shipment.ts",
+    source: "medusa-server",
+    logger,
+    meta: {
+      order_id: input.order.id || null,
+      display_id: input.order.display_id || null,
+      service_code: input.serviceCode || null,
+      package_count: input.packageCount ?? null,
+      offer_id: input.offer?.offerId || null,
+      product_transaction_id:
+        input.booking?.productTransactionId ||
+        input.offer?.productTransactionId ||
+        null,
+      tracking_number: input.booking?.trackingNumber || null,
+      error: redactedErrorMessage(input.error),
+    },
+  }).catch(() => {
+    // Alerting must never change finalization behavior.
+  })
 }
 
 function firstText(...values: unknown[]): string {
@@ -204,6 +257,15 @@ export async function quoteWwexFinalizationShipping(input: {
     input.logger?.warn?.(
       `[wwex] final packed-box quote failed for order ${input.order.id}; preserving existing shipping total: ${message}`
     )
+    emitWwexFinalizationFailureAlert({
+      alertKind: "wwex_finalization_quote_failed",
+      title: `WWEX finalization quote failed for order ${input.order.id}`,
+      order: input.order,
+      logger: input.logger,
+      error,
+      serviceCode,
+      packageCount: packages.length,
+    })
     return {
       status: "quoted",
       quote: null as any,
@@ -282,6 +344,15 @@ export async function bookWwexFinalizationShipment(input: {
             error instanceof Error ? error.message : String(error)
           }`
         )
+        emitWwexFinalizationFailureAlert({
+          alertKind: "wwex_finalization_label_failed",
+          title: `WWEX label download failed for order ${input.order.id}`,
+          order: input.order,
+          logger: input.logger,
+          error,
+          offer: input.quote.offer,
+          booking,
+        })
       }
     }
 
@@ -301,6 +372,14 @@ export async function bookWwexFinalizationShipment(input: {
     input.logger?.warn?.(
       `[wwex] shipment booking failed for order ${input.order.id}: ${message}`
     )
+    emitWwexFinalizationFailureAlert({
+      alertKind: "wwex_finalization_booking_failed",
+      title: `WWEX shipment booking failed for order ${input.order.id}`,
+      order: input.order,
+      logger: input.logger,
+      error,
+      offer: input.quote.offer,
+    })
     return {
       status: "failed",
       reason: message,
@@ -312,4 +391,3 @@ export async function bookWwexFinalizationShipment(input: {
     }
   }
 }
-
