@@ -1,8 +1,9 @@
 import crypto from "crypto"
-import type { MedusaContainer } from "@medusajs/framework/types"
+import type { Logger, MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { Queue, Worker, type Job } from "bullmq"
 import IORedis from "ioredis"
+import { emitOpsAlert } from "../ops-alert"
 
 type KnexLike = any
 
@@ -36,6 +37,57 @@ function queue(name: string) {
       backoff: { type: "exponential", delay: 60_000 },
       removeOnComplete: 5000,
       removeOnFail: 5000,
+    },
+  })
+}
+
+function redactedErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || "")
+  return message
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .slice(0, 500)
+}
+
+export async function emitCommunicationWorkerJobFailedAlert({
+  workerName,
+  job,
+  error,
+  logger,
+}: {
+  workerName: string
+  job?: Pick<Job, "id" | "name" | "attemptsMade" | "opts" | "data"> | null
+  error: unknown
+  logger?: Pick<Logger, "warn" | "error">
+}) {
+  const data =
+    job?.data && typeof job.data === "object" && !Array.isArray(job.data)
+      ? (job.data as Record<string, any>)
+      : {}
+
+  return emitOpsAlert({
+    alertKind: "communications_worker_job_failed",
+    severity: "warn",
+    title: `Communications worker ${workerName} job ${job?.id || "unknown"} failed`,
+    path: "src/lib/communications/queue.ts:startCommunicationWorkers",
+    source: "medusa-server",
+    logger,
+    meta: {
+      worker_name: workerName,
+      job_id: job?.id || null,
+      job_name: job?.name || null,
+      attempts_made: job?.attemptsMade ?? null,
+      max_attempts: job?.opts?.attempts ?? null,
+      event_id: data.event_id || null,
+      event_name: data.event_name || null,
+      order_id: data.order_id || null,
+      cart_id: data.cart_id || null,
+      campaign_id: data.campaign_id || null,
+      flow_id: data.flow_id || null,
+      message_id: data.message_id || null,
+      template_key: data.template_key || null,
+      has_profile_id: Boolean(data.profile_id),
+      has_medusa_customer_id: Boolean(data.medusa_customer_id),
+      error: redactedErrorMessage(error),
     },
   })
 }
@@ -190,6 +242,14 @@ export function startCommunicationWorkers(container: MedusaContainer) {
       logger.error(
         `[communications-worker] ${worker.name} job=${job?.id} failed: ${err.message}`
       )
+      void emitCommunicationWorkerJobFailedAlert({
+        workerName: worker.name,
+        job,
+        error: err,
+        logger,
+      }).catch(() => {
+        // Alerting must never interfere with BullMQ retry/failure handling.
+      })
     })
   }
 
