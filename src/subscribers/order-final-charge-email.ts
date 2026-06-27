@@ -3,6 +3,7 @@ import { Modules } from "@medusajs/framework/utils"
 import { metadataObject } from "../lib/catch-weight-finalization"
 import { sendTrackedEmail } from "../lib/communications/core"
 import { fetchOrderForEmail } from "../lib/emails/order-fetch"
+import { emitTransactionalEmailPreconditionAlert } from "../lib/emails/ops-alerts"
 import { buildOrderFinalChargeEmail } from "../lib/emails/templates/order-final-charge"
 
 type FinalChargeEvent = {
@@ -22,8 +23,32 @@ export default async function orderFinalChargeEmailHandler({
   try {
     const order = await fetchOrderForEmail(container, orderId)
 
-    if (!order || !order.email) {
+    if (!order) {
       logger.warn(`[order-final-charge-email] order/email missing id=${orderId}`)
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "order-final-charge",
+        reason: "order_not_found",
+        path: "src/subscribers/order-final-charge-email.ts",
+        eventName: "order.final_charge_succeeded",
+        eventId: data.id,
+        orderId,
+      })
+      return
+    }
+
+    if (!order.email) {
+      logger.warn(`[order-final-charge-email] order/email missing id=${orderId}`)
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "order-final-charge",
+        reason: "order_missing_email",
+        path: "src/subscribers/order-final-charge-email.ts",
+        eventName: "order.final_charge_succeeded",
+        eventId: data.id,
+        orderId: order.id,
+        displayId: order.display_id,
+      })
       return
     }
 
