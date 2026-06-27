@@ -8,6 +8,7 @@ import {
   metadataObject,
 } from "../../../../../../../lib/catch-weight-finalization"
 import {
+  emitFinalizationRouteFailureAlert,
   jsonError,
   retrieveFinalizationOrder,
   staffAuditActorId,
@@ -65,6 +66,15 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       ...approved,
     })
   } catch (error) {
+    await emitFinalizationRouteFailureAlert({
+      req,
+      action: "approve_finalization",
+      error,
+      order,
+      orderId: req.params.id,
+      path: "src/api/admin/grillers/orders/[id]/finalization/approve/route.ts",
+      status: 409,
+    })
     return jsonError(
       res,
       409,

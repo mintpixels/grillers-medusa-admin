@@ -1,6 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { CATCH_WEIGHT_ORDER_FIELDS } from "../../../../../../lib/catch-weight-finalization"
+import { emitOpsAlert } from "../../../../../../lib/ops-alert"
 
 export function jsonError(
   res: MedusaResponse,
@@ -51,4 +52,37 @@ export function staffAuditFields(
 
 export function staffAuditActorId(fields: Record<string, any>) {
   return fields.staff_actor_customer_id || fields.staff_actor_id || null
+}
+
+function routeErrorMessage(error: unknown) {
+  if (error instanceof Error) return error.message
+  return String(error || "Unknown error")
+}
+
+export async function emitFinalizationRouteFailureAlert(input: {
+  req: MedusaRequest
+  action: string
+  error: unknown
+  order?: Record<string, any> | null
+  orderId?: string | null
+  path: string
+  status: number
+}) {
+  const logger = input.req.scope.resolve(ContainerRegistrationKeys.LOGGER)
+  const message = routeErrorMessage(input.error)
+
+  return emitOpsAlert({
+    alertKind: "catch_weight_finalization_route_failed",
+    title: `Catch-weight finalization route failed: ${input.action}`,
+    path: input.path,
+    source: "medusa-server",
+    severity: "page",
+    logger,
+    meta: {
+      action: input.action,
+      order_id: input.order?.id || input.orderId || null,
+      route_status: input.status,
+      error_message: message.slice(0, 500),
+    },
+  })
 }

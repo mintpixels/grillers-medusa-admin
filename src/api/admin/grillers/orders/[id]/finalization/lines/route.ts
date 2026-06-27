@@ -6,6 +6,7 @@ import {
   metadataObject,
 } from "../../../../../../../lib/catch-weight-finalization"
 import {
+  emitFinalizationRouteFailureAlert,
   jsonError,
   retrieveFinalizationOrder,
   staffAuditActorId,
@@ -56,6 +57,15 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     res.status(200).json({ line })
   } catch (error: any) {
+    await emitFinalizationRouteFailureAlert({
+      req,
+      action: "add_finalization_line",
+      error,
+      order,
+      orderId: req.params.id,
+      path: "src/api/admin/grillers/orders/[id]/finalization/lines/route.ts",
+      status: 400,
+    })
     return jsonError(res, 400, error?.message || "Could not add item.")
   }
 }

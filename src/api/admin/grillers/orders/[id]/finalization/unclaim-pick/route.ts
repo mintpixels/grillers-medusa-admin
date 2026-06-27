@@ -7,6 +7,7 @@ import {
   unclaimFinalizationPick,
 } from "../../../../../../../lib/catch-weight-finalization"
 import {
+  emitFinalizationRouteFailureAlert,
   jsonError,
   retrieveFinalizationOrder,
   staffAuditActorId,
@@ -54,6 +55,15 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       lines: detail.lines,
     })
   } catch (error: any) {
+    await emitFinalizationRouteFailureAlert({
+      req,
+      action: "unclaim_pick",
+      error,
+      order,
+      orderId: req.params.id,
+      path: "src/api/admin/grillers/orders/[id]/finalization/unclaim-pick/route.ts",
+      status: 409,
+    })
     return jsonError(res, 409, error.message || "Could not unclaim pick.")
   }
 }
