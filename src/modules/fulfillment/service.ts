@@ -381,22 +381,77 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
           }
         }
 
-        const response = await fetch(
-          `${process.env.STRAPI_URL}/api/shipping-zones?populate=*`,
-          {
-            method: "GET",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${process.env.STRAPI_TOKEN}`,
+        let response: Response;
+        let shippingZonesPayload: any = {};
+        try {
+          response = await fetch(
+            `${process.env.STRAPI_URL}/api/shipping-zones?populate=*`,
+            {
+              method: "GET",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${process.env.STRAPI_TOKEN}`,
+              },
+            }
+          );
+          shippingZonesPayload = await response.json().catch(() => ({}));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.logger_.warn(
+            `[fulfillment] failed to load shipping zones for service ${serviceCode || "unknown"}: ${message}`
+          );
+          await emitOpsAlert({
+            alertKind: "shipping_zone_catalog_unavailable",
+            title: `Shipping zone catalog unavailable for ${serviceCode || "unknown"}`,
+            path: "src/modules/fulfillment/service.ts",
+            source: "medusa",
+            severity: "warn",
+            logger: this.logger_,
+            meta: {
+              service_code: serviceCode || null,
+              destination_postal_code: zip || null,
+              destination_province: state || null,
+              item_count: items.length,
+              error_message: message.slice(0, 500),
             },
-          }
-        );
+          });
+          throw new MedusaError(
+            MedusaError.Types.NOT_ALLOWED,
+            `This shipping option isn’t available for ${zip || city || "this address"}. Please choose a different shipping option.`
+          );
+        }
 
         let tierSet: any[] = [];
         let zoneIsPercent = false;
         let expeditedFallback: any | null = null;
         let expeditedFallbackIsPercent = false;
-        const zones = (await response.json())?.data;
+        const zones = shippingZonesPayload?.data;
+        if (!response.ok || !Array.isArray(zones)) {
+          this.logger_.warn(
+            `[fulfillment] shipping zones response was unusable for service ${serviceCode || "unknown"}; surfacing NOT_ALLOWED`
+          );
+          await emitOpsAlert({
+            alertKind: "shipping_zone_catalog_unavailable",
+            title: `Shipping zone catalog unavailable for ${serviceCode || "unknown"}`,
+            path: "src/modules/fulfillment/service.ts",
+            source: "medusa",
+            severity: "warn",
+            logger: this.logger_,
+            meta: {
+              service_code: serviceCode || null,
+              destination_postal_code: zip || null,
+              destination_province: state || null,
+              item_count: items.length,
+              response_status: response.status || null,
+              response_ok: response.ok,
+              has_data_array: Array.isArray(zones),
+            },
+          });
+          throw new MedusaError(
+            MedusaError.Types.NOT_ALLOWED,
+            `This shipping option isn’t available for ${zip || city || "this address"}. Please choose a different shipping option.`
+          );
+        }
         for (let i = 0; i < zones.length; i++) {
           const z = zones[i];
           let validZone = false;
@@ -475,6 +530,22 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
           this.logger_.warn(
             `[fulfillment] no configured shipping rate tier matched service ${serviceCode || "unknown"} for ${zip || city || "unknown destination"}; surfacing NOT_ALLOWED`
           );
+          await emitOpsAlert({
+            alertKind: "shipping_rate_tier_missing",
+            title: `Shipping rate tier missing for ${serviceCode || "unknown"}; checkout blocked`,
+            path: "src/modules/fulfillment/service.ts",
+            source: "medusa",
+            severity: "warn",
+            logger: this.logger_,
+            meta: {
+              service_code: serviceCode || null,
+              destination_postal_code: zip || null,
+              destination_province: state || null,
+              item_count: items.length,
+              eligible_subtotal: eligibleSubtotal,
+              zone_count: zones.length,
+            },
+          });
           throw new MedusaError(
             MedusaError.Types.NOT_ALLOWED,
             `This shipping option isn’t available for ${zip || city || "this address"}. Please choose a different shipping option.`

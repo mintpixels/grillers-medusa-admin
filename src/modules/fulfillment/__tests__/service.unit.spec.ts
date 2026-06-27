@@ -413,6 +413,62 @@ describe("GrillersFulfillmentProviderService", () => {
     await expect(promise).rejects.toThrow(
       /isn’t available for 30340\. Please choose a different shipping option\./
     )
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "shipping_rate_tier_missing",
+        title: "Shipping rate tier missing for GROUND; checkout blocked",
+        path: "src/modules/fulfillment/service.ts",
+        source: "medusa",
+        severity: "warn",
+        meta: expect.objectContaining({
+          service_code: "GROUND",
+          destination_postal_code: "30340",
+          item_count: 1,
+          eligible_subtotal: 100,
+          zone_count: 0,
+        }),
+      })
+    )
+  })
+
+  it("alerts and fails soft when the Strapi shipping-zone catalog is unavailable", async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: "maintenance" }),
+    } as any)
+
+    const promise = service().calculatePrice(
+      { service_code: "GROUND" } as any,
+      {
+        shipping_address: { postal_code: "30340", province: "GA" },
+        items: [{ unit_price: 100, quantity: 1, metadata: {} }],
+      } as any,
+      {} as any
+    )
+
+    await expect(promise).rejects.toBeInstanceOf(MedusaError)
+    await expect(promise).rejects.toMatchObject({
+      type: MedusaError.Types.NOT_ALLOWED,
+    })
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "shipping_zone_catalog_unavailable",
+        title: "Shipping zone catalog unavailable for GROUND",
+        path: "src/modules/fulfillment/service.ts",
+        source: "medusa",
+        severity: "warn",
+        meta: expect.objectContaining({
+          service_code: "GROUND",
+          destination_postal_code: "30340",
+          destination_province: "GA",
+          item_count: 1,
+          response_status: 503,
+          response_ok: false,
+          has_data_array: false,
+        }),
+      })
+    )
   })
 
   it("emits an ops alert if a shipping provider returns the legacy -10 sentinel", async () => {
