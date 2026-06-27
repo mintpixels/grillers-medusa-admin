@@ -5,6 +5,7 @@ import type {
   ProviderIdentifyAnalyticsEventDTO,
 } from "@medusajs/types"
 import { createHash, randomUUID } from "crypto"
+import { emitOpsAlert } from "../../lib/ops-alert"
 
 type InjectedDependencies = {
   logger: Logger
@@ -36,6 +37,13 @@ const STAFF_SOURCES = new Set([
   "staff_impersonation",
   "admin_staff_reorder",
 ])
+const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi
+
+type AnalyticsDeliveryTarget = "jitsu" | "gp_analytics"
+type AnalyticsDeliveryStage =
+  | "http_rejected"
+  | "request_failed"
+  | "payload_build_failed"
 
 // Raw PII must NOT land in the analytics warehouse. The GP-mirror keeps IDs and
 // coarse geo (customer_id, order_id, value, zip, region) but strips anything
@@ -105,6 +113,12 @@ function firstText(...values: unknown[]): string {
   return ""
 }
 
+function redactedAnalyticsError(error: unknown): string {
+  const message =
+    error instanceof Error ? error.message : String(error || "analytics failure")
+  return message.replace(EMAIL_RE, "[redacted-email]").slice(0, 500)
+}
+
 class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
   static identifier = "gp-analytics"
 
@@ -152,10 +166,76 @@ class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
         "X-Auth-Token": jitsuServerSecret,
       },
       body: JSON.stringify(payload),
-    }).catch((err) => {
-      this.logger_.error(
-        `Analytics: Failed to send ${payload.event_type} to Jitsu: ${err.message}`
-      )
+    })
+      .then(async (res) => {
+        if (res.ok) return
+        const text =
+          typeof res.text === "function" ? await res.text().catch(() => "") : ""
+        const firstLine = text.split(/\r?\n/)[0] || ""
+        this.logger_.warn(
+          `Analytics: Jitsu rejected ${payload.event_type} with ${res.status}: ${firstLine}`
+        )
+        await this.emitAnalyticsDeliveryFailureAlert({
+          target: "jitsu",
+          eventType: String(payload.event_type || "unknown"),
+          stage: "http_rejected",
+          status: res.status,
+          error: firstLine || res.statusText || "Jitsu request rejected",
+          properties: payload.eventn_ctx,
+        })
+      })
+      .catch((err) => {
+        this.logger_.error(
+          `Analytics: Failed to send ${payload.event_type} to Jitsu: ${err.message}`
+        )
+        void this.emitAnalyticsDeliveryFailureAlert({
+          target: "jitsu",
+          eventType: String(payload.event_type || "unknown"),
+          stage: "request_failed",
+          error: err,
+          properties: payload.eventn_ctx,
+        }).catch(() => undefined)
+      })
+  }
+
+  private emitAnalyticsDeliveryFailureAlert(input: {
+    target: AnalyticsDeliveryTarget
+    eventType: string
+    stage: AnalyticsDeliveryStage
+    status?: number
+    error: unknown
+    properties?: Record<string, any>
+  }) {
+    if (input.eventType === "ops_alert") {
+      return Promise.resolve({ ok: false, skipped: true })
+    }
+
+    const properties = input.properties || {}
+    const orderId = firstText(properties.order_id, properties.transaction_id)
+
+    return emitOpsAlert({
+      alertKind: "analytics_delivery_failed",
+      severity: "warn",
+      title: `Analytics delivery to ${input.target} failed for ${input.eventType}`,
+      path: "src/modules/gp-analytics/service.ts",
+      source: "medusa-server",
+      logger: this.logger_,
+      meta: {
+        target: input.target,
+        event_type: input.eventType,
+        stage: input.stage,
+        status: input.status ?? null,
+        order_id: orderId || null,
+        cart_id: firstText(properties.cart_id) || null,
+        customer_id: firstText(properties.customer_id) || null,
+        idempotency_key:
+          firstText(properties.idempotency_key, properties.medusa_event_id) ||
+          null,
+        route_market: firstText(properties.route_market) || null,
+        customer_type: firstText(properties.customer_type) || null,
+        source: firstText(properties.source) || null,
+        error: redactedAnalyticsError(input.error),
+      },
     })
   }
 
@@ -468,11 +548,26 @@ class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
         this.logger_.warn(
           `Analytics: GP analytics rejected ${eventType} with ${res.status}: ${firstLine}`
         )
+        await this.emitAnalyticsDeliveryFailureAlert({
+          target: "gp_analytics",
+          eventType,
+          stage: "http_rejected",
+          status: res.status,
+          error: firstLine || res.statusText || "GP analytics request rejected",
+          properties: sourceProperties,
+        })
       })
       .catch((err) => {
         this.logger_.error(
           `Analytics: Failed to send ${eventType} to GP analytics: ${err.message}`
         )
+        void this.emitAnalyticsDeliveryFailureAlert({
+          target: "gp_analytics",
+          eventType,
+          stage: "request_failed",
+          error: err,
+          properties: sourceProperties,
+        }).catch(() => undefined)
       })
   }
 
@@ -501,6 +596,13 @@ class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
             err instanceof Error ? err.message : String(err)
           }`
         )
+        void this.emitAnalyticsDeliveryFailureAlert({
+          target: "jitsu",
+          eventType: data.event,
+          stage: "payload_build_failed",
+          error: err,
+          properties: data.properties,
+        }).catch(() => undefined)
       }
     }
 
@@ -512,6 +614,13 @@ class GpAnalyticsProviderService extends AbstractAnalyticsProviderService {
           err instanceof Error ? err.message : String(err)
         }`
       )
+      void this.emitAnalyticsDeliveryFailureAlert({
+        target: "gp_analytics",
+        eventType: data.event,
+        stage: "payload_build_failed",
+        error: err,
+        properties: data.properties,
+      }).catch(() => undefined)
     }
   }
 

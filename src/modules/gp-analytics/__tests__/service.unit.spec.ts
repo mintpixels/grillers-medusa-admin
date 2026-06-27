@@ -1,4 +1,9 @@
 import GpAnalyticsProviderService from "../service"
+import { emitOpsAlert } from "../../../lib/ops-alert"
+
+jest.mock("../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -14,6 +19,12 @@ describe("GpAnalyticsProviderService", () => {
     jest.clearAllMocks()
     global.fetch = jest.fn().mockResolvedValue({ ok: true }) as any
   })
+
+  const flushAnalyticsDelivery = async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  }
 
   it("dual-runs tracked events to the GP analytics endpoint", async () => {
     const service = new GpAnalyticsProviderService(
@@ -135,13 +146,144 @@ describe("GpAnalyticsProviderService", () => {
         cart_id: "cart_123",
         customer_type: "dtc",
         route_market: "national",
+        email: "avi@example.com",
       },
     } as any)
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushAnalyticsDelivery()
 
     expect(logger.warn).toHaveBeenCalledWith(
       "Analytics: GP analytics rejected order_completed with 400: session_id must be uuid"
+    )
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "analytics_delivery_failed",
+        severity: "warn",
+        title: "Analytics delivery to gp_analytics failed for order_completed",
+        path: "src/modules/gp-analytics/service.ts",
+        source: "medusa-server",
+        logger,
+        meta: expect.objectContaining({
+          target: "gp_analytics",
+          event_type: "order_completed",
+          stage: "http_rejected",
+          status: 400,
+          order_id: "order_123",
+          cart_id: "cart_123",
+          customer_id: null,
+          route_market: "national",
+          customer_type: "dtc",
+          error: "session_id must be uuid",
+        }),
+      })
+    )
+    expect(JSON.stringify((emitOpsAlert as jest.Mock).mock.calls[0][0].meta))
+      .not.toContain("avi@example.com")
+  })
+
+  it("alerts when GP analytics delivery fails at the network layer", async () => {
+    ;(global.fetch as jest.Mock).mockImplementation((url) => {
+      if (String(url).startsWith("https://analytics.example.com")) {
+        return Promise.reject(new Error("socket closed for buyer@example.com"))
+      }
+
+      return Promise.resolve({ ok: true })
+    })
+
+    const service = new GpAnalyticsProviderService(
+      { logger } as any,
+      {
+        jitsuHost: "https://jitsu.example.com",
+        jitsuServerSecret: "jitsu-secret",
+        gpAnalyticsEndpoint: "https://analytics.example.com/",
+        gpAnalyticsServerKey: "server-key",
+      }
+    )
+
+    await service.track({
+      event: "order_received",
+      actor_id: "cus_123",
+      properties: {
+        transaction_id: "order_456",
+        cart_id: "cart_456",
+        customer_id: "cus_123",
+        idempotency_key: "order.placed:order_456:order_received",
+        route_market: "national",
+        customer_type: "dtc",
+        email: "buyer@example.com",
+      },
+    } as any)
+    await flushAnalyticsDelivery()
+
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "analytics_delivery_failed",
+        title: "Analytics delivery to gp_analytics failed for order_received",
+        meta: expect.objectContaining({
+          target: "gp_analytics",
+          event_type: "order_received",
+          stage: "request_failed",
+          status: null,
+          order_id: "order_456",
+          cart_id: "cart_456",
+          customer_id: "cus_123",
+          idempotency_key: "order.placed:order_456:order_received",
+          error: "socket closed for [redacted-email]",
+        }),
+      })
+    )
+    expect(JSON.stringify((emitOpsAlert as jest.Mock).mock.calls[0][0].meta))
+      .not.toContain("buyer@example.com")
+  })
+
+  it("alerts when legacy Jitsu delivery is rejected", async () => {
+    ;(global.fetch as jest.Mock).mockImplementation((url) => {
+      if (String(url).includes("/api/v1/s2s/event")) {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          text: () => Promise.resolve("queue full for ops@example.com\nlater"),
+        })
+      }
+
+      return Promise.resolve({ ok: true })
+    })
+
+    const service = new GpAnalyticsProviderService(
+      { logger } as any,
+      {
+        jitsuHost: "https://jitsu.example.com",
+        jitsuServerSecret: "jitsu-secret",
+        gpAnalyticsEndpoint: "https://analytics.example.com/",
+        gpAnalyticsServerKey: "server-key",
+      }
+    )
+
+    await service.track({
+      event: "cart_updated",
+      actor_id: "cus_789",
+      properties: {
+        cart_id: "cart_789",
+        customer_id: "cus_789",
+        route_market: "national",
+        email: "ops@example.com",
+      },
+    } as any)
+    await flushAnalyticsDelivery()
+
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "analytics_delivery_failed",
+        title: "Analytics delivery to jitsu failed for cart_updated",
+        meta: expect.objectContaining({
+          target: "jitsu",
+          event_type: "cart_updated",
+          stage: "http_rejected",
+          status: 503,
+          cart_id: "cart_789",
+          customer_id: "cus_789",
+          error: "queue full for [redacted-email]",
+        }),
+      })
     )
   })
 
@@ -292,11 +434,25 @@ describe("GpAnalyticsProviderService", () => {
         customer_type: "dtc",
       },
     } as any)
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushAnalyticsDelivery()
 
     expect(logger.warn).toHaveBeenCalledWith(
       "Analytics: GP analytics rejected order_completed with 422: anonymous_id must be uuid"
+    )
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "analytics_delivery_failed",
+        title: "Analytics delivery to gp_analytics failed for order_completed",
+        meta: expect.objectContaining({
+          target: "gp_analytics",
+          event_type: "order_completed",
+          stage: "http_rejected",
+          status: 422,
+          order_id: "order_guest_3",
+          cart_id: "cart_guest_3",
+          error: "anonymous_id must be uuid",
+        }),
+      })
     )
   })
 
