@@ -9,7 +9,9 @@ import {
 } from "../../subscribers/qb-sync-order-import"
 import { emitOpsAlert } from "../ops-alert"
 import { config as canceledOrderImportConfig } from "../../subscribers/qb-sync-order-canceled-import"
-import { config as refundedPaymentImportConfig } from "../../subscribers/qb-sync-payment-refunded-import"
+import qbSyncPaymentRefundedImportHandler, {
+  config as refundedPaymentImportConfig,
+} from "../../subscribers/qb-sync-payment-refunded-import"
 
 jest.mock("../ops-alert", () => ({
   emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
@@ -196,6 +198,47 @@ describe("qb-sync order import subscriber", () => {
 
   it("registers a refund subscriber so staff refunds refresh the sync app", () => {
     expect(refundedPaymentImportConfig.event).toBe("payment.refunded")
+  })
+
+  it("emits an ops alert when a refund event cannot be linked to an order", async () => {
+    const logger = { warn: jest.fn(), info: jest.fn(), error: jest.fn() }
+    const container = {
+      resolve: jest.fn((key: string) => {
+        if (key === "logger") return logger
+        throw new Error(`unexpected dependency ${key}`)
+      }),
+    }
+
+    ;(emitOpsAlert as jest.Mock).mockClear()
+
+    await qbSyncPaymentRefundedImportHandler({
+      event: {
+        name: "payment.refunded",
+        data: {
+          id: "payment_123",
+          payment_id: "pay_123",
+          refund_id: "refund_123",
+          order_id: null,
+        },
+      },
+      container,
+    } as any)
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("missing order_id")
+    )
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "qbd_refund_import_skipped",
+        path: "src/subscribers/qb-sync-payment-refunded-import.ts",
+        severity: "page",
+        meta: expect.objectContaining({
+          source_event: "payment.refunded",
+          refund_id: "refund_123",
+          payment_id: "pay_123",
+        }),
+      })
+    )
   })
 
   it("normalizes Medusa order line totals when graph payloads omit computed item fields", () => {
