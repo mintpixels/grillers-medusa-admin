@@ -160,6 +160,106 @@ describe("qb-sync order import subscriber", () => {
     )
   })
 
+  it("emits an ops alert when QBD sync import config is missing", async () => {
+    const previousEndpoint = process.env.QB_SYNC_ORDER_IMPORT_URL
+    const previousToken = process.env.QB_SYNC_ORDER_IMPORT_TOKEN
+    const logger = { warn: jest.fn(), info: jest.fn(), error: jest.fn() }
+    const query = { graph: jest.fn() }
+    const db = jest.fn()
+    const container = {
+      resolve: jest.fn((key: string) => {
+        if (key === "logger") return logger
+        if (key === "query") return query
+        return db
+      }),
+    }
+
+    delete process.env.QB_SYNC_ORDER_IMPORT_URL
+    delete process.env.QB_SYNC_ORDER_IMPORT_TOKEN
+    ;(emitOpsAlert as jest.Mock).mockClear()
+
+    try {
+      await importOrderToQbSync({
+        orderId: "order_missing_qbd_config",
+        container: container as any,
+        source: "order.placed",
+      })
+    } finally {
+      process.env.QB_SYNC_ORDER_IMPORT_URL = previousEndpoint
+      process.env.QB_SYNC_ORDER_IMPORT_TOKEN = previousToken
+    }
+
+    expect(query.graph).not.toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "qbd_push_skipped",
+        path: "src/subscribers/qb-sync-order-import.ts",
+        severity: "page",
+        meta: expect.objectContaining({
+          order_id: "order_missing_qbd_config",
+          source_event: "order.placed",
+          missing_url: true,
+          missing_token: true,
+        }),
+      })
+    )
+  })
+
+  it("emits an ops alert when an order event references a missing order", async () => {
+    const previousEndpoint = process.env.QB_SYNC_ORDER_IMPORT_URL
+    const previousToken = process.env.QB_SYNC_ORDER_IMPORT_TOKEN
+    const previousFetch = global.fetch
+    const fetchMock = jest.fn()
+    const logger = { warn: jest.fn(), info: jest.fn(), error: jest.fn() }
+    const query = {
+      graph: jest.fn(async () => ({
+        data: [],
+      })),
+    }
+    const db = jest.fn()
+    const container = {
+      resolve: jest.fn((key: string) => {
+        if (key === "logger") return logger
+        if (key === "query") return query
+        return db
+      }),
+    }
+
+    process.env.QB_SYNC_ORDER_IMPORT_URL =
+      "https://sync.example.test/api/medusa/orders"
+    process.env.QB_SYNC_ORDER_IMPORT_TOKEN = "sync-token"
+    global.fetch = fetchMock as unknown as typeof fetch
+    ;(emitOpsAlert as jest.Mock).mockClear()
+
+    try {
+      await importOrderToQbSync({
+        orderId: "order_missing",
+        container: container as any,
+        source: "order.updated",
+      })
+    } finally {
+      process.env.QB_SYNC_ORDER_IMPORT_URL = previousEndpoint
+      process.env.QB_SYNC_ORDER_IMPORT_TOKEN = previousToken
+      global.fetch = previousFetch
+    }
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("order not found")
+    )
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "qbd_push_skipped",
+        path: "src/subscribers/qb-sync-order-import.ts",
+        severity: "page",
+        meta: expect.objectContaining({
+          order_id: "order_missing",
+          source_event: "order.updated",
+        }),
+      })
+    )
+  })
+
   it("requests order item relations that include Medusa computed quantity and variant data", () => {
     expect(ORDER_FIELDS).toEqual(
       expect.arrayContaining([

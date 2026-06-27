@@ -688,6 +688,20 @@ export async function importOrderToQbSync({
     logger.warn(
       `[qb-sync-order-import] QB_SYNC_ORDER_IMPORT_URL or QB_SYNC_ORDER_IMPORT_TOKEN missing; skipped order=${orderId} source=${source}`
     )
+    await emitOpsAlert({
+      alertKind: "qbd_push_skipped",
+      title: "QBD order import skipped because sync config is missing",
+      path: "src/subscribers/qb-sync-order-import.ts",
+      source: "medusa",
+      severity: "page",
+      logger,
+      meta: {
+        order_id: orderId,
+        source_event: source,
+        missing_url: !endpoint,
+        missing_token: !token,
+      },
+    })
     return
   }
 
@@ -701,6 +715,18 @@ export async function importOrderToQbSync({
     const order = orders?.[0] as Record<string, unknown> | undefined
     if (!order) {
       logger.warn(`[qb-sync-order-import] order not found id=${orderId} source=${source}`)
+      await emitOpsAlert({
+        alertKind: "qbd_push_skipped",
+        title: "QBD order import skipped because order was not found",
+        path: "src/subscribers/qb-sync-order-import.ts",
+        source: "medusa",
+        severity: "page",
+        logger,
+        meta: {
+          order_id: orderId,
+          source_event: source,
+        },
+      })
       return
     }
 
