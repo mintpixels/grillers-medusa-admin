@@ -1,16 +1,23 @@
 import { Modules } from "@medusajs/framework/utils";
+import { emitOpsAlert } from "../../../../lib/ops-alert";
 import {
   DEFAULT_PAYMENT_METHOD_METADATA_KEY,
   STAFF_TARGET_CUSTOMER_ID_HEADER,
   STRIPE_PROVIDER_ID,
   assertPaymentMethodBelongsToCustomer,
+  emitPaymentMethodRouteFailureAlert,
   getPaymentContextCustomer,
   getOrCreateStripeAccountHolder,
   getStripeAccountHolder,
   getStripeCustomerId,
+  handleRouteError,
   listStripePaymentMethods,
   setCustomerDefaultPaymentMethod,
 } from "../utils";
+
+jest.mock("../../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}));
 
 function makeReq(
   resolvers: Record<string, unknown>,
@@ -34,6 +41,10 @@ function makeReq(
 }
 
 describe("payment-method route utils", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   it("selects only the Stripe account holder", () => {
     const customer = {
       id: "cus_local",
@@ -346,5 +357,87 @@ describe("payment-method route utils", () => {
     await expect(getPaymentContextCustomer(req)).rejects.toThrow(
       "Staff access required",
     );
+  });
+
+  it("emits a redacted ops alert for payment-method route failures", async () => {
+    const logger = { error: jest.fn(), warn: jest.fn() };
+    const req = makeReq(
+      { logger },
+      {
+        actorId: "cus_actor",
+        headers: { [STAFF_TARGET_CUSTOMER_ID_HEADER]: "cus_target" },
+      },
+    );
+
+    await emitPaymentMethodRouteFailureAlert({
+      req,
+      fallbackMessage: "Could not start a card setup. Please try again.",
+      error: new Error(
+        "Stripe rejected pm_123 for avi@example.com while confirming seti_123",
+      ),
+      logger,
+    });
+
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "payment_method_route_failed",
+        severity: "warn",
+        title: "Payment method setup_intent failed",
+        path: "src/api/store/payment-methods",
+        source: "medusa-server",
+        logger,
+        meta: expect.objectContaining({
+          operation: "setup_intent",
+          actor_id: "cus_actor",
+          has_staff_target_customer_id: true,
+          staff_target_customer_id: "cus_target",
+          error_message:
+            "Stripe rejected [redacted-stripe-id] for [redacted-email] while confirming [redacted-stripe-id]",
+        }),
+      }),
+    );
+    expect(JSON.stringify((emitOpsAlert as jest.Mock).mock.calls[0][0].meta))
+      .not.toContain("avi@example.com");
+    expect(JSON.stringify((emitOpsAlert as jest.Mock).mock.calls[0][0].meta))
+      .not.toContain("pm_123");
+  });
+
+  it("keeps the payment-method route response generic while alerting", () => {
+    const logger = { error: jest.fn(), warn: jest.fn() };
+    const req = makeReq({ logger }, { actorId: "cus_actor" });
+    const res = {
+      status: jest.fn(function status() {
+        return this;
+      }),
+      json: jest.fn(),
+    } as any;
+
+    handleRouteError(
+      req,
+      res,
+      new Error("Stripe unavailable"),
+      "Could not delete payment method.",
+    );
+
+    expect(logger.error).toHaveBeenCalledWith(
+      "[payment-methods] Could not delete payment method.: Stripe unavailable",
+    );
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "payment_method_route_failed",
+        title: "Payment method delete failed",
+        meta: expect.objectContaining({
+          operation: "delete",
+          actor_id: "cus_actor",
+          has_staff_target_customer_id: false,
+          staff_target_customer_id: null,
+          error_message: "Stripe unavailable",
+        }),
+      }),
+    );
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({
+      message: "Could not delete payment method.",
+    });
   });
 });

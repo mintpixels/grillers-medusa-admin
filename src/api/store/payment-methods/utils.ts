@@ -1,5 +1,6 @@
 import type { MedusaRequest } from "@medusajs/framework/http";
 import { Modules } from "@medusajs/framework/utils";
+import { emitOpsAlert } from "../../../lib/ops-alert";
 
 export const STRIPE_PROVIDER_ID = "pp_stripe_stripe";
 export const DEFAULT_PAYMENT_METHOD_METADATA_KEY = "default_payment_method_id";
@@ -112,6 +113,52 @@ export function jsonError(
   res.status(status).json({ message });
 }
 
+function redactedErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return message
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(/\b(?:pm|pi|seti|cus)_[A-Za-z0-9_]+/g, "[redacted-stripe-id]")
+    .slice(0, 500);
+}
+
+function paymentMethodOperation(fallbackMessage: string) {
+  const lower = fallbackMessage.toLowerCase();
+  if (lower.includes("load")) return "list";
+  if (lower.includes("start a card setup")) return "setup_intent";
+  if (lower.includes("delete")) return "delete";
+  if (lower.includes("default")) return "set_default";
+  return "unknown";
+}
+
+export async function emitPaymentMethodRouteFailureAlert(input: {
+  req: MedusaRequest;
+  fallbackMessage: string;
+  error: unknown;
+  logger?: { warn?: (message: string) => void; error?: (message: string) => void };
+}) {
+  const authContext = (input.req as any).auth_context || {};
+  const staffTargetCustomerId = normalizedHeaderValue(
+    input.req,
+    STAFF_TARGET_CUSTOMER_ID_HEADER,
+  );
+
+  return emitOpsAlert({
+    alertKind: "payment_method_route_failed",
+    severity: "warn",
+    title: `Payment method ${paymentMethodOperation(input.fallbackMessage)} failed`,
+    path: "src/api/store/payment-methods",
+    source: "medusa-server",
+    logger: input.logger as any,
+    meta: {
+      operation: paymentMethodOperation(input.fallbackMessage),
+      actor_id: authContext.actor_id || null,
+      has_staff_target_customer_id: Boolean(staffTargetCustomerId),
+      staff_target_customer_id: staffTargetCustomerId || null,
+      error_message: redactedErrorMessage(input.error),
+    },
+  });
+}
+
 export function handleRouteError(
   req: MedusaRequest,
   res: { status: (code: number) => { json: (body: unknown) => void } },
@@ -120,9 +167,18 @@ export function handleRouteError(
 ) {
   const logger = req.scope.resolve("logger") as {
     error: (message: string) => void;
+    warn?: (message: string) => void;
   };
   const message = error instanceof Error ? error.message : String(error);
   logger.error(`[payment-methods] ${fallbackMessage}: ${message}`);
+  void emitPaymentMethodRouteFailureAlert({
+    req,
+    fallbackMessage,
+    error,
+    logger,
+  }).catch(() => {
+    // Alerting must never delay or break the account payment-method response.
+  });
   jsonError(res, 500, fallbackMessage);
 }
 
