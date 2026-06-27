@@ -1,9 +1,10 @@
 import crypto from "crypto"
-import type { MedusaContainer } from "@medusajs/framework/types"
+import type { Logger, MedusaContainer } from "@medusajs/framework/types"
 import {
   ContainerRegistrationKeys,
   Modules,
 } from "@medusajs/framework/utils"
+import { emitOpsAlert } from "../ops-alert"
 
 type KnexLike = any
 
@@ -72,6 +73,14 @@ export type SendTrackedEmailInput = {
   postmark_template_alias?: string | null
   template_model?: Record<string, any> | null
   metadata?: Record<string, any> | null
+}
+
+type CommunicationEmailFailureAlertInput = {
+  logger?: Pick<Logger, "warn" | "error">
+  input: SendTrackedEmailInput
+  purpose: CommunicationPurpose
+  messageLogId: string
+  error: string
 }
 
 export const DEFAULT_NEWSLETTER_PREFERENCES = {
@@ -222,6 +231,46 @@ function experimentContextFrom(...values: unknown[]): Record<string, any> | null
     if (Object.keys(nested).length) return nested
   }
   return null
+}
+
+function redactedProviderError(error: string): string {
+  return String(error || "")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .slice(0, 500)
+}
+
+export async function emitCommunicationEmailFailureAlert({
+  logger,
+  input,
+  purpose,
+  messageLogId,
+  error,
+}: CommunicationEmailFailureAlertInput) {
+  return emitOpsAlert({
+    alertKind: "communications_email_send_failed",
+    severity: "warn",
+    title: `${input.template_key} email send failed`,
+    path: "src/lib/communications/core.ts:sendTrackedEmail",
+    source: "medusa-server",
+    logger,
+    meta: {
+      message_log_id: messageLogId,
+      stream: input.stream,
+      purpose,
+      template_key: input.template_key,
+      topic: input.topic || null,
+      order_id: input.order_id || null,
+      cart_id: input.cart_id || null,
+      campaign_id: input.campaign_id || null,
+      flow_id: input.flow_id || null,
+      flow_key: input.flow_key || null,
+      flow_enrollment_id: input.flow_enrollment_id || null,
+      postmark_template_alias: input.postmark_template_alias || null,
+      has_profile_id: Boolean(input.profile_id),
+      has_medusa_customer_id: Boolean(input.medusa_customer_id),
+      provider_error: redactedProviderError(error),
+    },
+  })
 }
 
 export async function upsertCustomerProfile(
@@ -825,6 +874,13 @@ export async function sendTrackedEmail(
       message_id: messageRow.id,
       properties: { stream: input.stream, error },
       context: experimentContext ? { experiment_context: experimentContext } : {},
+    })
+    await emitCommunicationEmailFailureAlert({
+      logger,
+      input,
+      purpose,
+      messageLogId: messageRow.id,
+      error,
     })
     return { ok: false, error }
   }
