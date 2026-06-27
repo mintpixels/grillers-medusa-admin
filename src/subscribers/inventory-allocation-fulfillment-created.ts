@@ -1,6 +1,7 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { fulfillAllocationsForFulfillment } from "../lib/inventory-allocation"
+import { emitInventoryAllocationSubscriberFailureAlert } from "./inventory-allocation-alerts"
 
 export default async function inventoryAllocationFulfillmentCreatedHandler({
   event: { data },
@@ -24,6 +25,12 @@ export default async function inventoryAllocationFulfillmentCreatedHandler({
     logger.error(
       `[inventory-allocation] failed to fulfill allocation for fulfillment=${data.id}: ${message}`
     )
+    await emitInventoryAllocationSubscriberFailureAlert({
+      action: "fulfillment_complete",
+      fulfillmentId: data.id,
+      error: err,
+      logger,
+    })
   }
 }
 

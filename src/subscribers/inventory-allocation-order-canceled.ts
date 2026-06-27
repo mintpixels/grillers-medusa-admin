@@ -1,6 +1,7 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { releaseAllocationsForOrder } from "../lib/inventory-allocation"
+import { emitInventoryAllocationSubscriberFailureAlert } from "./inventory-allocation-alerts"
 
 export default async function inventoryAllocationOrderCanceledHandler({
   event: { data },
@@ -42,6 +43,12 @@ export default async function inventoryAllocationOrderCanceledHandler({
     logger.error(
       `[inventory-allocation] failed to release canceled order=${data.id}: ${message}`
     )
+    await emitInventoryAllocationSubscriberFailureAlert({
+      action: "order_cancel_release",
+      orderId: data.id,
+      error: err,
+      logger,
+    })
   }
 }
 

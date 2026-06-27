@@ -2,6 +2,7 @@ import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { createAllocationsForOrder } from "../lib/inventory-allocation"
 import { emitOpsAlert } from "../lib/ops-alert"
+import { emitInventoryAllocationSubscriberFailureAlert } from "./inventory-allocation-alerts"
 
 export default async function inventoryAllocationOrderPlacedHandler({
   event: { data },
@@ -64,6 +65,12 @@ export default async function inventoryAllocationOrderPlacedHandler({
     logger.error(
       `[inventory-allocation] failed to allocate order=${data.id}: ${message}`
     )
+    await emitInventoryAllocationSubscriberFailureAlert({
+      action: "order_allocate",
+      orderId: data.id,
+      error: err,
+      logger,
+    })
   }
 }
 
