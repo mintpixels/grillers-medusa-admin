@@ -107,6 +107,7 @@ const forecastCart = {
 describe("GrillersFulfillmentProviderService", () => {
   beforeEach(() => {
     jest.restoreAllMocks()
+    jest.clearAllMocks()
     clearWwexEnv()
     clearForecastEnv()
   })
@@ -204,6 +205,81 @@ describe("GrillersFulfillmentProviderService", () => {
 
     expect(result.calculated_amount).toBe(17.59)
     expect(global.fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it("alerts and falls back to Strapi zones when a live WWEX checkout quote fails", async () => {
+    setWwexEnv()
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: "token", expires_in: 86400 }),
+      } as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          clientStatus: {
+            success: false,
+            message: "carrier maintenance window",
+          },
+        }),
+      } as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [
+            {
+              ZoneCode: "FedexGround",
+              Description: "Ground Estimated Shipping Charge",
+              ShippingZoneBreakpoints: [
+                { BreakpointPrice: 0, ShippingRate: 75 },
+              ],
+            },
+          ],
+        }),
+      } as any)
+
+    const result = await service().calculatePrice(
+      { service_code: "GROUND" } as any,
+      {
+        shipping_address: {
+          address_1: "3838 Oak Lawn Ave",
+          city: "Highland Park",
+          province: "TX",
+          postal_code: "75219",
+          country_code: "US",
+          first_name: "Test",
+          last_name: "Customer",
+          phone: "2148798521",
+        },
+        items: [
+          { unit_price: 100, quantity: 1, metadata: {} },
+          { unit_price: 200, quantity: 2, metadata: {} },
+        ],
+      } as any,
+      {} as any
+    )
+
+    expect(result.calculated_amount).toBe(75)
+    expect(global.fetch).toHaveBeenCalledTimes(3)
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "wwex_checkout_quote_failed",
+        title: "WWEX checkout GROUND quote failed; using Strapi fallback",
+        path: "src/modules/fulfillment/service.ts",
+        source: "medusa",
+        severity: "warn",
+        meta: expect.objectContaining({
+          service_code: "GROUND",
+          fallback: "strapi_shipping_zones",
+          destination_country: "US",
+          destination_province: "TX",
+          item_count: 2,
+          error_message:
+            "WWEX shopFlow failed: carrier maintenance window",
+        }),
+      })
+    )
   })
 
   it("uses the historical shipping forecast (mean + p75 buffer) for UPS rates only when enabled", async () => {

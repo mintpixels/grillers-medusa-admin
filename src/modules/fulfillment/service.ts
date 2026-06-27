@@ -523,6 +523,27 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
       this.logger_.warn(
         `[wwex] live UPS ${serviceCode} quote failed; falling back to Strapi shipping zones: ${message}`
       );
+      const shippingAddress = (data.shipping_address || {}) as Record<
+        string,
+        unknown
+      >;
+      const items = Array.isArray(data.items) ? data.items : [];
+      await emitOpsAlert({
+        alertKind: "wwex_checkout_quote_failed",
+        title: `WWEX checkout ${serviceCode} quote failed; using Strapi fallback`,
+        path: "src/modules/fulfillment/service.ts",
+        source: "medusa",
+        severity: "warn",
+        logger: this.logger_,
+        meta: {
+          service_code: serviceCode,
+          fallback: "strapi_shipping_zones",
+          destination_country: shippingAddress.country_code || null,
+          destination_province: shippingAddress.province || null,
+          item_count: items.length,
+          error_message: message.slice(0, 500),
+        },
+      });
       return null;
     }
   }
