@@ -1,5 +1,6 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { fetchOrderForEmail } from "../lib/emails/order-fetch"
+import { emitTransactionalEmailPreconditionAlert } from "../lib/emails/ops-alerts"
 import { buildOrderCanceledEmail } from "../lib/emails/templates/order-canceled"
 import { sendTrackedEmail } from "../lib/communications/core"
 
@@ -11,7 +12,31 @@ export default async function orderCanceledEmailHandler({
 
   try {
     const order = await fetchOrderForEmail(container, data.id)
-    if (!order || !order.email) return
+    if (!order) {
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "order-canceled",
+        reason: "order_not_found",
+        path: "src/subscribers/order-canceled-email.ts",
+        eventName: "order.canceled",
+        eventId: data.id,
+        orderId: data.id,
+      })
+      return
+    }
+    if (!order.email) {
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "order-canceled",
+        reason: "order_missing_email",
+        path: "src/subscribers/order-canceled-email.ts",
+        eventName: "order.canceled",
+        eventId: data.id,
+        orderId: order.id,
+        displayId: order.display_id,
+      })
+      return
+    }
 
     const { subject, html, text } = buildOrderCanceledEmail({
       order,

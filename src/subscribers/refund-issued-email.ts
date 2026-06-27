@@ -1,5 +1,6 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { fetchOrderForEmail } from "../lib/emails/order-fetch"
+import { emitTransactionalEmailPreconditionAlert } from "../lib/emails/ops-alerts"
 import { buildRefundIssuedEmail } from "../lib/emails/templates/refund-issued"
 import { sendTrackedEmail } from "../lib/communications/core"
 
@@ -109,11 +110,49 @@ export default async function refundIssuedEmailHandler({
       logger.warn(
         `[refund-issued-email] could not resolve order_id for payment=${paymentId} refund=${refundId || "unknown"}`
       )
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "refund-issued",
+        reason: "order_id_not_resolved",
+        path: "src/subscribers/refund-issued-email.ts",
+        eventName: "payment.refunded",
+        eventId: data.id,
+        paymentId,
+        refundId,
+      })
       return
     }
 
     const order = await fetchOrderForEmail(container, orderId)
-    if (!order || !order.email) return
+    if (!order) {
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "refund-issued",
+        reason: "order_not_found",
+        path: "src/subscribers/refund-issued-email.ts",
+        eventName: "payment.refunded",
+        eventId: data.id,
+        orderId,
+        paymentId,
+        refundId,
+      })
+      return
+    }
+    if (!order.email) {
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "refund-issued",
+        reason: "order_missing_email",
+        path: "src/subscribers/refund-issued-email.ts",
+        eventName: "payment.refunded",
+        eventId: data.id,
+        orderId: order.id,
+        displayId: order.display_id,
+        paymentId,
+        refundId,
+      })
+      return
+    }
 
     const { subject, html, text } = buildRefundIssuedEmail({
       order,

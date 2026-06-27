@@ -1,5 +1,6 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { fetchOrderForEmail } from "../lib/emails/order-fetch"
+import { emitTransactionalEmailPreconditionAlert } from "../lib/emails/ops-alerts"
 import { buildOrderShippedEmail } from "../lib/emails/templates/order-shipped"
 import { sendTrackedEmail } from "../lib/communications/core"
 
@@ -30,6 +31,15 @@ export default async function orderShippedEmailHandler({
       const shipment = shipments?.[0] as any
       if (!shipment) {
         logger.warn(`[order-shipped-email] no fulfillment found for ${data.id}`)
+        void emitTransactionalEmailPreconditionAlert({
+          logger,
+          templateKey: "order-shipped",
+          reason: "fulfillment_not_found",
+          path: "src/subscribers/order-shipped-email.ts",
+          eventName: "shipment.created",
+          eventId: data.id,
+          fulfillmentId: data.id,
+        })
         return
       }
     }
@@ -45,11 +55,46 @@ export default async function orderShippedEmailHandler({
 
     if (!orderId) {
       logger.warn(`[order-shipped-email] could not resolve order_id for fulfillment ${data.id}`)
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "order-shipped",
+        reason: "order_id_not_resolved",
+        path: "src/subscribers/order-shipped-email.ts",
+        eventName: "shipment.created",
+        eventId: data.id,
+        fulfillmentId: data.id,
+      })
       return
     }
 
     const order = await fetchOrderForEmail(container, orderId)
-    if (!order || !order.email) return
+    if (!order) {
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "order-shipped",
+        reason: "order_not_found",
+        path: "src/subscribers/order-shipped-email.ts",
+        eventName: "shipment.created",
+        eventId: data.id,
+        orderId,
+        fulfillmentId: data.id,
+      })
+      return
+    }
+    if (!order.email) {
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "order-shipped",
+        reason: "order_missing_email",
+        path: "src/subscribers/order-shipped-email.ts",
+        eventName: "shipment.created",
+        eventId: data.id,
+        orderId: order.id,
+        displayId: order.display_id,
+        fulfillmentId: data.id,
+      })
+      return
+    }
 
     const firstTracking = Array.isArray(data.tracking_numbers)
       ? data.tracking_numbers[0]

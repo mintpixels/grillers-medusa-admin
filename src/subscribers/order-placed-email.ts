@@ -1,5 +1,6 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { fetchOrderForEmail } from "../lib/emails/order-fetch"
+import { emitTransactionalEmailPreconditionAlert } from "../lib/emails/ops-alerts"
 import { buildOrderPlacedEmail } from "../lib/emails/templates/order-placed"
 import { sendTrackedEmail } from "../lib/communications/core"
 
@@ -14,10 +15,29 @@ export default async function orderPlacedEmailHandler({
 
     if (!order) {
       logger.warn(`[order-placed-email] order not found for id=${data.id}`)
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "order-placed",
+        reason: "order_not_found",
+        path: "src/subscribers/order-placed-email.ts",
+        eventName: "order.placed",
+        eventId: data.id,
+        orderId: data.id,
+      })
       return
     }
     if (!order.email) {
       logger.warn(`[order-placed-email] order ${order.id} has no email`)
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "order-placed",
+        reason: "order_missing_email",
+        path: "src/subscribers/order-placed-email.ts",
+        eventName: "order.placed",
+        eventId: data.id,
+        orderId: order.id,
+        displayId: order.display_id,
+      })
       return
     }
 
