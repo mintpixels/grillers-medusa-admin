@@ -8,22 +8,61 @@ import {
   ensureFinalizationForOrder,
   orderPlacedFinalizationMetadata,
 } from "../lib/catch-weight-finalization"
+import { emitOpsAlert } from "../lib/ops-alert"
+
+function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message
+  return String(error || "Unknown error")
+}
+
+function emitCatchWeightFinalizationSubscriberAlert(input: {
+  alertKind:
+    | "catch_weight_finalization_skipped"
+    | "catch_weight_finalization_failed"
+  title: string
+  orderId?: string | null
+  error?: unknown
+  logger: Parameters<typeof emitOpsAlert>[0]["logger"]
+}) {
+  return emitOpsAlert({
+    alertKind: input.alertKind,
+    title: input.title,
+    path: "src/subscribers/catch-weight-finalization-order-placed.ts",
+    source: "medusa-server",
+    severity: "page",
+    logger: input.logger,
+    meta: {
+      action: "order_placed_finalization_init",
+      source_event: "order.placed",
+      order_id: input.orderId || null,
+      error_message: input.error
+        ? errorMessage(input.error).slice(0, 500)
+        : null,
+    },
+  })
+}
 
 export default async function catchWeightFinalizationOrderPlacedHandler({
   event: { data },
   container,
 }: SubscriberArgs<{ id: string; order_id?: string }>) {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
-  const query = container.resolve(ContainerRegistrationKeys.QUERY)
-  const db = container.resolve(ContainerRegistrationKeys.PG_CONNECTION)
-  const orderModule = container.resolve(Modules.ORDER)
   const orderId = data.order_id || data.id
 
   if (!orderId) {
+    await emitCatchWeightFinalizationSubscriberAlert({
+      alertKind: "catch_weight_finalization_skipped",
+      title: "Catch-weight finalization initialization skipped because order id is missing",
+      orderId: null,
+      logger,
+    })
     return
   }
 
   try {
+    const query = container.resolve(ContainerRegistrationKeys.QUERY)
+    const db = container.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+    const orderModule = container.resolve(Modules.ORDER)
     const { data: orders } = await query.graph({
       entity: "order",
       fields: CATCH_WEIGHT_ORDER_FIELDS,
@@ -33,6 +72,12 @@ export default async function catchWeightFinalizationOrderPlacedHandler({
 
     if (!order) {
       logger.warn(`[catch-weight-finalization] order not found id=${orderId}`)
+      await emitCatchWeightFinalizationSubscriberAlert({
+        alertKind: "catch_weight_finalization_skipped",
+        title: "Catch-weight finalization initialization skipped because order was not found",
+        orderId,
+        logger,
+      })
       return
     }
 
@@ -45,10 +90,17 @@ export default async function catchWeightFinalizationOrderPlacedHandler({
       `[catch-weight-finalization] order=${order.id} finalization=${finalization.id} lines=${lines.length} status=${finalization.status}`
     )
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = errorMessage(err)
     logger.error(
       `[catch-weight-finalization] failed to initialize order=${orderId}: ${message}`
     )
+    await emitCatchWeightFinalizationSubscriberAlert({
+      alertKind: "catch_weight_finalization_failed",
+      title: "Catch-weight finalization initialization failed",
+      orderId,
+      error: err,
+      logger,
+    })
   }
 }
 
