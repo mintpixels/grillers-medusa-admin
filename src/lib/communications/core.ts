@@ -83,6 +83,16 @@ type CommunicationEmailFailureAlertInput = {
   error: string
 }
 
+type CommunicationEventSideEffect =
+  | "destination_delivery"
+  | "automation_side_effect"
+
+type CommunicationEventSideEffectAlertInput = {
+  row: Record<string, any>
+  sideEffect: CommunicationEventSideEffect
+  error: unknown
+}
+
 export const DEFAULT_NEWSLETTER_PREFERENCES = {
   promotions: true,
   new_products: true,
@@ -239,6 +249,11 @@ function redactedProviderError(error: string): string {
     .slice(0, 500)
 }
 
+function redactedErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || "")
+  return redactedProviderError(message)
+}
+
 export async function emitCommunicationEmailFailureAlert({
   logger,
   input,
@@ -269,6 +284,41 @@ export async function emitCommunicationEmailFailureAlert({
       has_profile_id: Boolean(input.profile_id),
       has_medusa_customer_id: Boolean(input.medusa_customer_id),
       provider_error: redactedProviderError(error),
+    },
+  })
+}
+
+export async function emitCommunicationEventSideEffectAlert({
+  row,
+  sideEffect,
+  error,
+}: CommunicationEventSideEffectAlertInput) {
+  const readableSideEffect =
+    sideEffect === "destination_delivery"
+      ? "destination delivery"
+      : "automation side effect"
+
+  return emitOpsAlert({
+    alertKind: `communications_event_${sideEffect}_failed`,
+    severity: "warn",
+    title: `Communications ${readableSideEffect} failed for ${row.event_name || "unknown event"}`,
+    path: "src/lib/communications/core.ts:recordCommunicationEvent",
+    source: "medusa-server",
+    meta: {
+      side_effect: sideEffect,
+      communication_event_id: row.id || null,
+      event_id: row.event_id || null,
+      event_name: row.event_name || null,
+      event_source: row.source || null,
+      template_key: row.template_key || null,
+      order_id: row.order_id || null,
+      cart_id: row.cart_id || null,
+      campaign_id: row.campaign_id || null,
+      flow_id: row.flow_id || null,
+      message_id: row.message_id || null,
+      has_profile_id: Boolean(row.profile_id),
+      has_medusa_customer_id: Boolean(row.medusa_customer_id),
+      error: redactedErrorMessage(error),
     },
   })
 }
@@ -505,7 +555,14 @@ export async function recordCommunicationEvent(
   try {
     const { writeEventDestinations } = await import("./destinations.js")
     await writeEventDestinations(db, row)
-  } catch {
+  } catch (error) {
+    void emitCommunicationEventSideEffectAlert({
+      row,
+      sideEffect: "destination_delivery",
+      error,
+    }).catch(() => {
+      // Alerting must never block event ingestion.
+    })
     // External delivery must never block event ingestion.
   }
 
@@ -522,7 +579,14 @@ export async function recordCommunicationEvent(
         await evaluateFlowsForEvent(db, row)
       }
     }
-  } catch {
+  } catch (error) {
+    void emitCommunicationEventSideEffectAlert({
+      row,
+      sideEffect: "automation_side_effect",
+      error,
+    }).catch(() => {
+      // Alerting must never block event ingestion.
+    })
     // Automation side effects must never block event ingestion.
   }
 

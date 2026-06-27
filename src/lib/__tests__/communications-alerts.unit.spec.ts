@@ -1,5 +1,8 @@
 import { emitOpsAlert } from "../ops-alert"
-import { emitCommunicationEmailFailureAlert } from "../communications/core"
+import {
+  emitCommunicationEmailFailureAlert,
+  emitCommunicationEventSideEffectAlert,
+} from "../communications/core"
 
 jest.mock("../ops-alert", () => ({
   emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
@@ -73,4 +76,68 @@ describe("communications ops alerts", () => {
     const meta = (emitOpsAlert as jest.Mock).mock.calls[0][0].meta
     expect(JSON.stringify(meta)).not.toContain("avi@example.com")
   })
+
+  it.each([
+    [
+      "destination_delivery",
+      "communications_event_destination_delivery_failed",
+      "Communications destination delivery failed for order_completed",
+    ],
+    [
+      "automation_side_effect",
+      "communications_event_automation_side_effect_failed",
+      "Communications automation side effect failed for order_completed",
+    ],
+  ] as const)(
+    "emits a safe ops alert when a communications event %s fails",
+    async (sideEffect, alertKind, title) => {
+      await emitCommunicationEventSideEffectAlert({
+        sideEffect,
+        error: new Error("destination rejected avi@example.com"),
+        row: {
+          id: "gpcevt_123",
+          event_id: "evt_123",
+          event_name: "order_completed",
+          source: "medusa-server",
+          profile_id: "gpcprof_123",
+          medusa_customer_id: "cus_123",
+          order_id: "order_123",
+          cart_id: "cart_123",
+          campaign_id: "camp_123",
+          flow_id: "flow_123",
+          template_key: "order-placed",
+          message_id: "gpmsg_123",
+        },
+      })
+
+      expect(emitOpsAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          alertKind,
+          severity: "warn",
+          title,
+          path: "src/lib/communications/core.ts:recordCommunicationEvent",
+          source: "medusa-server",
+          meta: expect.objectContaining({
+            side_effect: sideEffect,
+            communication_event_id: "gpcevt_123",
+            event_id: "evt_123",
+            event_name: "order_completed",
+            event_source: "medusa-server",
+            template_key: "order-placed",
+            order_id: "order_123",
+            cart_id: "cart_123",
+            campaign_id: "camp_123",
+            flow_id: "flow_123",
+            message_id: "gpmsg_123",
+            has_profile_id: true,
+            has_medusa_customer_id: true,
+            error: "destination rejected [redacted-email]",
+          }),
+        })
+      )
+
+      const meta = (emitOpsAlert as jest.Mock).mock.calls[0][0].meta
+      expect(JSON.stringify(meta)).not.toContain("avi@example.com")
+    }
+  )
 })
