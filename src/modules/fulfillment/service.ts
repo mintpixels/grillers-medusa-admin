@@ -348,6 +348,8 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         const eligibleSubtotalInCents = eligibleSubtotalCents(items);
 
         if (serviceCode == "ATLANTA_DELIVERY" && zip) {
+          let structuredRateFallbackReason: string | null = null;
+          let structuredRateResponseStatus: number | null = null;
           try {
             const params = new URLSearchParams({
               "filters[ZipCode][$eq]": zip,
@@ -364,6 +366,7 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
                 },
               }
             );
+            structuredRateResponseStatus = response.status || null;
             if (response.ok) {
               const zone = strapiRow<AtlantaDeliveryZoneRate>(
                 (await response.json())?.data?.[0]
@@ -373,11 +376,61 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
                   atlantaDeliveryRateCents(zone, eligibleSubtotalInCents) / 100
                 );
               }
+              structuredRateFallbackReason = "missing_active_zone";
+            } else {
+              structuredRateFallbackReason = "non_ok_response";
             }
           } catch (error) {
+            structuredRateFallbackReason = "request_failed";
+            const message = error instanceof Error ? error.message : String(error);
             this.logger_.warn(
-              `[fulfillment] failed to load structured Atlanta delivery rate for ${zip}; falling back to shipping-zones`
+              `[fulfillment] failed to load structured Atlanta delivery rate for ${zip}; falling back to shipping-zones: ${message}`
             );
+            await emitOpsAlert({
+              alertKind: "atlanta_delivery_structured_rate_fallback",
+              title:
+                "Atlanta delivery structured rate unavailable; using shipping-zone fallback",
+              path: "src/modules/fulfillment/service.ts",
+              source: "medusa",
+              severity: "warn",
+              logger: this.logger_,
+              meta: {
+                service_code: serviceCode,
+                fallback: "shipping_zones",
+                fallback_reason: structuredRateFallbackReason,
+                destination_postal_code: zip,
+                destination_province: state || null,
+                item_count: items.length,
+                eligible_subtotal: eligibleSubtotal,
+                error_message: message.slice(0, 500),
+              },
+            });
+            structuredRateFallbackReason = null;
+          }
+
+          if (structuredRateFallbackReason) {
+            this.logger_.warn(
+              `[fulfillment] structured Atlanta delivery rate ${structuredRateFallbackReason} for ${zip}; falling back to shipping-zones`
+            );
+            await emitOpsAlert({
+              alertKind: "atlanta_delivery_structured_rate_fallback",
+              title:
+                "Atlanta delivery structured rate unavailable; using shipping-zone fallback",
+              path: "src/modules/fulfillment/service.ts",
+              source: "medusa",
+              severity: "warn",
+              logger: this.logger_,
+              meta: {
+                service_code: serviceCode,
+                fallback: "shipping_zones",
+                fallback_reason: structuredRateFallbackReason,
+                destination_postal_code: zip,
+                destination_province: state || null,
+                item_count: items.length,
+                eligible_subtotal: eligibleSubtotal,
+                response_status: structuredRateResponseStatus,
+              },
+            });
           }
         }
 

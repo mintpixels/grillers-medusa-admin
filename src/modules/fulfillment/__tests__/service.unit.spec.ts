@@ -150,6 +150,63 @@ describe("GrillersFulfillmentProviderService", () => {
     expect(result.calculated_amount).toBe(75)
   })
 
+  it("alerts when Atlanta structured delivery rates fall back to shipping zones", async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [] }),
+      } as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [
+            {
+              ZIPCode: "30340",
+              Description: "Atlanta delivery fallback",
+              ShippingZoneBreakpoints: [
+                { BreakpointPrice: 0, ShippingRate: 12 },
+              ],
+            },
+          ],
+        }),
+      } as any)
+
+    const result = await service().calculatePrice(
+      { service_code: "ATLANTA_DELIVERY" } as any,
+      {
+        shipping_address: { postal_code: "30340", province: "GA" },
+        items: [{ unit_price: 100, quantity: 1, metadata: {} }],
+      } as any,
+      {} as any
+    )
+
+    expect(result.calculated_amount).toBe(12)
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "atlanta_delivery_structured_rate_fallback",
+        title:
+          "Atlanta delivery structured rate unavailable; using shipping-zone fallback",
+        path: "src/modules/fulfillment/service.ts",
+        source: "medusa",
+        severity: "warn",
+        meta: expect.objectContaining({
+          service_code: "ATLANTA_DELIVERY",
+          fallback: "shipping_zones",
+          fallback_reason: "missing_active_zone",
+          destination_postal_code: "30340",
+          destination_province: "GA",
+          item_count: 1,
+          eligible_subtotal: 100,
+          response_status: 200,
+        }),
+      })
+    )
+  })
+
   it("uses WWEX Speedship quotes for UPS services when configured", async () => {
     setWwexEnv()
     global.fetch = jest
