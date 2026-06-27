@@ -5,6 +5,9 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 const mockCreateStripeFinalPaymentIntent = jest.fn()
 const mockPreviewFinalization = jest.fn()
 const mockRecordFinalChargeAttempt = jest.fn()
+const mockEmitFinalizationRouteFailureAlert = jest.fn(async (_input: any) => ({
+  ok: true,
+}))
 
 jest.mock("../../../../../../../../lib/catch-weight-finalization", () => {
   const actual = jest.requireActual(
@@ -21,6 +24,8 @@ jest.mock("../../../../../../../../lib/catch-weight-finalization", () => {
 })
 
 jest.mock("../../utils", () => ({
+  emitFinalizationRouteFailureAlert: (input: any) =>
+    mockEmitFinalizationRouteFailureAlert(input),
   jsonError: (res: any, status: number, message: string, extra?: any) => {
     res.status(status).json({ message, ...(extra || {}) })
     return res
@@ -186,5 +191,34 @@ describe("charge-and-release PI gate", () => {
     expect(updatedToReady).toBe(false)
     // Response is the existing 402 charge-failed-hold path, unchanged.
     expect(res.status).toHaveBeenCalledWith(402)
+  })
+
+  it("pages route failure telemetry when final charge preflight throws", async () => {
+    mockPreviewFinalization.mockRejectedValueOnce(
+      new Error("preview persistence failed")
+    )
+
+    const db = makeDb()
+    const { scope } = makeScope(db)
+    const req = { params: { id: "order_123" }, body: {}, scope } as any
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(mockCreateStripeFinalPaymentIntent).not.toHaveBeenCalled()
+    expect(mockEmitFinalizationRouteFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "charge_and_release_preflight",
+        error: expect.any(Error),
+        order: expect.objectContaining({ id: "order_123" }),
+        orderId: "order_123",
+        path: "src/api/admin/grillers/orders/[id]/finalization/charge-and-release/route.ts",
+        status: 409,
+      })
+    )
+    expect(res.status).toHaveBeenCalledWith(409)
+    expect(res.json).toHaveBeenCalledWith({
+      message: "preview persistence failed",
+    })
   })
 })

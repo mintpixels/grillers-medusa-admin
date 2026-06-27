@@ -17,6 +17,7 @@ import {
   recordFinalChargeAttempt,
 } from "../../../../../../../lib/catch-weight-finalization"
 import {
+  emitFinalizationRouteFailureAlert,
   jsonError,
   retrieveFinalizationOrder,
   staffAuditActorId,
@@ -76,62 +77,87 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const body = (req.body || {}) as ChargeBody
   const staffAudit = staffAuditFields(req, body)
   const staffActor = staffAuditActorId(staffAudit)
-  const preview = await previewFinalization(db, order, { persist: true })
+  let preview: Awaited<ReturnType<typeof previewFinalization>>
+  let wwexQuote: Awaited<ReturnType<typeof quoteWwexFinalizationShipping>>
+  let effectiveTotals: Record<string, any>
+  let finalOrderTotal: number
+  let idempotencyKey: string
 
-  if (preview.errors.length) {
-    return jsonError(res, 409, "Finalization has unresolved line errors.", {
-      errors: preview.errors,
+  try {
+    preview = await previewFinalization(db, order, { persist: true })
+
+    if (preview.errors.length) {
+      return jsonError(res, 409, "Finalization has unresolved line errors.", {
+        errors: preview.errors,
+      })
+    }
+
+    if (
+      preview.finalization.status !== FINALIZATION_PACKED_PENDING_CHARGE &&
+      preview.finalization.status !== FINALIZATION_CHARGE_FAILED_HOLD
+    ) {
+      return jsonError(
+        res,
+        409,
+        "Order must be approved before the final charge can be attempted.",
+        { status: preview.finalization.status }
+      )
+    }
+
+    if (!preview.payment_setup?.stripe_payment_method_id) {
+      return jsonError(res, 409, "Order does not have a saved Stripe card.")
+    }
+
+    if (!preview.payment_setup?.stripe_customer_id) {
+      return jsonError(res, 409, "Order does not have a Stripe customer id.")
+    }
+
+    wwexQuote = await quoteWwexFinalizationShipping({
+      order,
+      preview,
+      logger,
     })
-  }
+    effectiveTotals = wwexQuote?.totals || preview.totals
 
-  if (
-    preview.finalization.status !== FINALIZATION_PACKED_PENDING_CHARGE &&
-    preview.finalization.status !== FINALIZATION_CHARGE_FAILED_HOLD
-  ) {
+    finalOrderTotal = effectiveTotals.final_order_total
+    if (finalOrderTotal === null || finalOrderTotal === undefined) {
+      return jsonError(
+        res,
+        409,
+        "Final order total is not available until all catch-weight lines are complete."
+      )
+    }
+
+    idempotencyKey =
+      body.idempotency_key ||
+      `final-charge:${order.id}:${preview.finalization.id}:${randomUUID()}`
+
+    await db("gp_order_finalization")
+      .where({ id: preview.finalization.id })
+      .update({
+        status: FINALIZATION_CHARGE_ATTEMPTING,
+        charge_attempted_at: new Date(),
+        charged_by: staffActor,
+        updated_at: new Date(),
+      })
+  } catch (error) {
+    await emitFinalizationRouteFailureAlert({
+      req,
+      action: "charge_and_release_preflight",
+      error,
+      order,
+      orderId: req.params.id,
+      path: "src/api/admin/grillers/orders/[id]/finalization/charge-and-release/route.ts",
+      status: 409,
+    })
     return jsonError(
       res,
       409,
-      "Order must be approved before the final charge can be attempted.",
-      { status: preview.finalization.status }
+      error instanceof Error
+        ? error.message
+        : "Could not prepare the final charge."
     )
   }
-
-  if (!preview.payment_setup?.stripe_payment_method_id) {
-    return jsonError(res, 409, "Order does not have a saved Stripe card.")
-  }
-
-  if (!preview.payment_setup?.stripe_customer_id) {
-    return jsonError(res, 409, "Order does not have a Stripe customer id.")
-  }
-
-  const wwexQuote = await quoteWwexFinalizationShipping({
-    order,
-    preview,
-    logger,
-  })
-  const effectiveTotals = wwexQuote?.totals || preview.totals
-
-  const finalOrderTotal = effectiveTotals.final_order_total
-  if (finalOrderTotal === null || finalOrderTotal === undefined) {
-    return jsonError(
-      res,
-      409,
-      "Final order total is not available until all catch-weight lines are complete."
-    )
-  }
-
-  const idempotencyKey =
-    body.idempotency_key ||
-    `final-charge:${order.id}:${preview.finalization.id}:${randomUUID()}`
-
-  await db("gp_order_finalization")
-    .where({ id: preview.finalization.id })
-    .update({
-      status: FINALIZATION_CHARGE_ATTEMPTING,
-      charge_attempted_at: new Date(),
-      charged_by: staffActor,
-      updated_at: new Date(),
-    })
 
   try {
     const paymentIntent = await createStripeFinalPaymentIntent({
