@@ -7,6 +7,7 @@ import {
   metadataObject,
 } from "../../../../../../../lib/catch-weight-finalization"
 import {
+  emitFinalizationRouteFailureAlert,
   jsonError,
   retrieveFinalizationOrder,
   staffAuditActorId,
@@ -25,26 +26,46 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const body = (req.body || {}) as Record<string, any>
   const staffAudit = staffAuditFields(req, body)
   const actor = staffAuditActorId(staffAudit)
-  const detail = await markFinalizationReadyForPacking(db, order, actor)
 
-  const metadata = appendStaffAudit(
-    {
-      ...metadataObject(order.metadata),
-      finalization_id: detail.finalization.id,
-      finalization_status: FINALIZATION_READY_FOR_PACKING,
-      catch_weight_status: FINALIZATION_READY_FOR_PACKING,
-    },
-    {
-      action: "catch_weight_ready_for_packing",
-      status: FINALIZATION_READY_FOR_PACKING,
-      ...staffAudit,
-    }
-  )
-  await orderModule.updateOrders(order.id, { metadata })
+  try {
+    const detail = await markFinalizationReadyForPacking(db, order, actor)
 
-  res.status(200).json({
-    order,
-    finalization: detail.finalization,
-    lines: detail.lines,
-  })
+    const metadata = appendStaffAudit(
+      {
+        ...metadataObject(order.metadata),
+        finalization_id: detail.finalization.id,
+        finalization_status: FINALIZATION_READY_FOR_PACKING,
+        catch_weight_status: FINALIZATION_READY_FOR_PACKING,
+      },
+      {
+        action: "catch_weight_ready_for_packing",
+        status: FINALIZATION_READY_FOR_PACKING,
+        ...staffAudit,
+      }
+    )
+    await orderModule.updateOrders(order.id, { metadata })
+
+    res.status(200).json({
+      order,
+      finalization: detail.finalization,
+      lines: detail.lines,
+    })
+  } catch (error) {
+    await emitFinalizationRouteFailureAlert({
+      req,
+      action: "ready_for_packing",
+      error,
+      order,
+      orderId: req.params.id,
+      path: "src/api/admin/grillers/orders/[id]/finalization/ready-for-packing/route.ts",
+      status: 409,
+    })
+    return jsonError(
+      res,
+      409,
+      error instanceof Error
+        ? error.message
+        : "Could not mark order ready for packing."
+    )
+  }
 }

@@ -7,6 +7,7 @@ import {
   returnFinalizationToPicking,
 } from "../../../../../../../lib/catch-weight-finalization"
 import {
+  emitFinalizationRouteFailureAlert,
   jsonError,
   retrieveFinalizationOrder,
   staffAuditActorId,
@@ -29,27 +30,46 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     typeof body.reason === "string" && body.reason.trim()
       ? body.reason.trim()
       : "Packer found a mismatch during packing."
-  const detail = await returnFinalizationToPicking(db, order, actor, reason)
+  try {
+    const detail = await returnFinalizationToPicking(db, order, actor, reason)
 
-  const metadata = appendStaffAudit(
-    {
-      ...metadataObject(order.metadata),
-      finalization_id: detail.finalization.id,
-      finalization_status: FINALIZATION_PICKING,
-      catch_weight_status: FINALIZATION_PICKING,
-    },
-    {
-      action: "catch_weight_returned_to_picking",
-      status: FINALIZATION_PICKING,
-      reason,
-      ...staffAudit,
-    }
-  )
-  await orderModule.updateOrders(order.id, { metadata })
+    const metadata = appendStaffAudit(
+      {
+        ...metadataObject(order.metadata),
+        finalization_id: detail.finalization.id,
+        finalization_status: FINALIZATION_PICKING,
+        catch_weight_status: FINALIZATION_PICKING,
+      },
+      {
+        action: "catch_weight_returned_to_picking",
+        status: FINALIZATION_PICKING,
+        reason,
+        ...staffAudit,
+      }
+    )
+    await orderModule.updateOrders(order.id, { metadata })
 
-  res.status(200).json({
-    order,
-    finalization: detail.finalization,
-    lines: detail.lines,
-  })
+    res.status(200).json({
+      order,
+      finalization: detail.finalization,
+      lines: detail.lines,
+    })
+  } catch (error) {
+    await emitFinalizationRouteFailureAlert({
+      req,
+      action: "return_to_picking",
+      error,
+      order,
+      orderId: req.params.id,
+      path: "src/api/admin/grillers/orders/[id]/finalization/return-to-picking/route.ts",
+      status: 409,
+    })
+    return jsonError(
+      res,
+      409,
+      error instanceof Error
+        ? error.message
+        : "Could not return order to picking."
+    )
+  }
 }

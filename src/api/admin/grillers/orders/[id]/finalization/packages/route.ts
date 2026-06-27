@@ -8,6 +8,7 @@ import {
   updateFinalizationPackages,
 } from "../../../../../../../lib/catch-weight-finalization"
 import {
+  emitFinalizationRouteFailureAlert,
   jsonError,
   retrieveFinalizationOrder,
   staffAuditActorId,
@@ -38,35 +39,53 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const orderModule = req.scope.resolve(Modules.ORDER)
   const staffAudit = staffAuditFields(req, body as Record<string, any>)
   const actor = staffAuditActorId(staffAudit)
-  await updateFinalizationPackages(db, order, packages, actor)
-  const detail = await previewFinalization(db, order, { persist: false })
 
-  const metadata = appendStaffAudit(
-    {
-      ...metadataObject(order.metadata),
-      finalization_id: detail.finalization.id,
-      finalization_status: FINALIZATION_PACKED_PENDING_REVIEW,
-      catch_weight_status: FINALIZATION_PACKED_PENDING_REVIEW,
-    },
-    {
-      action: "catch_weight_packages_updated",
-      status: FINALIZATION_PACKED_PENDING_REVIEW,
-      package_count: detail.packages?.length || 0,
-      ...staffAudit,
-    }
-  )
-  await orderModule.updateOrders(order.id, { metadata })
+  try {
+    await updateFinalizationPackages(db, order, packages, actor)
+    const detail = await previewFinalization(db, order, { persist: false })
 
-  res.status(200).json({
-    order,
-    finalization: detail.finalization,
-    lines: detail.lines,
-    package_capture_required: detail.package_capture_required,
-    packages: detail.packages,
-    payment_setup: detail.payment_setup,
-    charge_attempts: detail.charge_attempts,
-    errors: detail.errors,
-    warnings: detail.warnings,
-    totals: detail.totals,
-  })
+    const metadata = appendStaffAudit(
+      {
+        ...metadataObject(order.metadata),
+        finalization_id: detail.finalization.id,
+        finalization_status: FINALIZATION_PACKED_PENDING_REVIEW,
+        catch_weight_status: FINALIZATION_PACKED_PENDING_REVIEW,
+      },
+      {
+        action: "catch_weight_packages_updated",
+        status: FINALIZATION_PACKED_PENDING_REVIEW,
+        package_count: detail.packages?.length || 0,
+        ...staffAudit,
+      }
+    )
+    await orderModule.updateOrders(order.id, { metadata })
+
+    res.status(200).json({
+      order,
+      finalization: detail.finalization,
+      lines: detail.lines,
+      package_capture_required: detail.package_capture_required,
+      packages: detail.packages,
+      payment_setup: detail.payment_setup,
+      charge_attempts: detail.charge_attempts,
+      errors: detail.errors,
+      warnings: detail.warnings,
+      totals: detail.totals,
+    })
+  } catch (error) {
+    await emitFinalizationRouteFailureAlert({
+      req,
+      action: "update_packages",
+      error,
+      order,
+      orderId: req.params.id,
+      path: "src/api/admin/grillers/orders/[id]/finalization/packages/route.ts",
+      status: 400,
+    })
+    return jsonError(
+      res,
+      400,
+      error instanceof Error ? error.message : "Could not update packages."
+    )
+  }
 }
