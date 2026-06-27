@@ -1,6 +1,7 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework";
 import StrapiModuleService from "../modules/strapi/service";
 import { STRAPI_MODULE } from "../modules/strapi";
+import { emitProductStrapiSyncFailureAlert } from "./product-strapi-sync-alert";
 
 export default async function productDeletedHandler(args: SubscriberArgs<{ id: string }>) {
   const {
@@ -24,6 +25,12 @@ export default async function productDeletedHandler(args: SubscriberArgs<{ id: s
       `product.deleted → failed to delete Strapi entry for Medusa ID ${data.id}:`,
       err.response?.data ?? err.message ?? err
     );
+    await emitProductStrapiSyncFailureAlert({
+      action: "deleted",
+      medusaProductId: data.id,
+      error: err,
+      logger,
+    });
   }
 }
 
