@@ -2,10 +2,40 @@ import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { generateResetPasswordTokenWorkflow } from "@medusajs/core-flows";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { buildPasswordResetEmail } from "../../../lib/emails/templates/password-reset";
+import { emitOpsAlert } from "../../../lib/ops-alert";
 
 console.log("[FP-LOAD] /store/forgot-password route loaded at boot");
 
 type Body = { email?: string };
+
+function redactedProviderError(error: string): string {
+  return String(error || "")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .slice(0, 500);
+}
+
+async function emitForgotPasswordEmailFailureAlert(input: {
+  logger: any;
+  failureStage: "missing_config" | "postmark_rejected" | "request_failed";
+  responseStatus?: number | null;
+  providerError?: string;
+}) {
+  await emitOpsAlert({
+    alertKind: "forgot_password_email_failed",
+    severity: "warn",
+    title: "Forgot-password email failed",
+    path: "src/api/store/forgot-password/route.ts",
+    source: "medusa-server",
+    logger: input.logger,
+    meta: {
+      failure_stage: input.failureStage,
+      response_status: input.responseStatus ?? null,
+      provider_error: input.providerError
+        ? redactedProviderError(input.providerError)
+        : null,
+    },
+  });
+}
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const logger = req.scope.resolve("logger");
@@ -57,6 +87,10 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     logger.error(
       `[forgot-password] missing Postmark config: hasToken=${!!apiToken} hasFrom=${!!fromAddress}`
     );
+    await emitForgotPasswordEmailFailureAlert({
+      logger,
+      failureStage: "missing_config",
+    });
     res.status(500).json({ error: "email service misconfigured" });
     return;
   }
@@ -65,28 +99,47 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     `[forgot-password] POST api.postmarkapp.com from=${fromAddress} to=${email}`
   );
 
-  const postmarkRes = await fetch("https://api.postmarkapp.com/email", {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "X-Postmark-Server-Token": apiToken,
-    },
-    body: JSON.stringify({
-      From: fromAddress,
-      To: email,
-      Subject: emailContent.subject,
-      HtmlBody: emailContent.html,
-      TextBody: emailContent.text,
-      MessageStream: "outbound",
-    }),
-  });
+  let postmarkRes: Response;
+  try {
+    postmarkRes = await fetch("https://api.postmarkapp.com/email", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-Postmark-Server-Token": apiToken,
+      },
+      body: JSON.stringify({
+        From: fromAddress,
+        To: email,
+        Subject: emailContent.subject,
+        HtmlBody: emailContent.html,
+        TextBody: emailContent.text,
+        MessageStream: "outbound",
+      }),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error(`[forgot-password] Postmark request failed: ${message}`);
+    await emitForgotPasswordEmailFailureAlert({
+      logger,
+      failureStage: "request_failed",
+      providerError: message,
+    });
+    res.status(500).json({ error: "email send failed" });
+    return;
+  }
 
   if (!postmarkRes.ok) {
     const errBody = await postmarkRes.text();
     logger.error(
       `[forgot-password] Postmark rejected: status=${postmarkRes.status} body=${errBody}`
     );
+    await emitForgotPasswordEmailFailureAlert({
+      logger,
+      failureStage: "postmark_rejected",
+      responseStatus: postmarkRes.status,
+      providerError: errBody,
+    });
     res.status(500).json({ error: "email send failed" });
     return;
   }
