@@ -1,4 +1,5 @@
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { emitOpsAlert } from "../../../../../lib/ops-alert"
 import {
   authorizeStaffCaller,
   getStaffEmails,
@@ -6,6 +7,10 @@ import {
   requiresStaffAuth,
   __resetStaffCache,
 } from "../staff-auth"
+
+jest.mock("../../../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
 
 // ───────────────────────── helpers ─────────────────────────
 
@@ -48,6 +53,7 @@ const ENV_KEYS = [
 let saved: Record<string, string | undefined>
 
 beforeEach(() => {
+  jest.clearAllMocks()
   saved = {}
   for (const k of ENV_KEYS) saved[k] = process.env[k]
   for (const k of ENV_KEYS) delete process.env[k]
@@ -194,6 +200,17 @@ describe("authorizeStaffCaller — identity mode", () => {
     )
     expect(result.ok).toBe(false)
     expect(!result.ok && result.reason).toBe("email_unresolved")
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "slack_staff_auth_failed",
+        fingerprint: "slack_staff_auth_failed:email_unresolved",
+        meta: expect.objectContaining({
+          slack_command: "/gp",
+          auth_reason: "email_unresolved",
+          auth_stage: "resolve_slack_email",
+        }),
+      })
+    )
   })
 
   it("BLOCKS (fails closed) when the staff lookup throws", async () => {
@@ -216,6 +233,18 @@ describe("authorizeStaffCaller — identity mode", () => {
     )
     expect(result.ok).toBe(false)
     expect(!result.ok && result.reason).toBe("staff_lookup_failed")
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "slack_staff_auth_failed",
+        fingerprint: "slack_staff_auth_failed:staff_lookup_failed",
+        meta: expect.objectContaining({
+          slack_command: "/gp",
+          auth_reason: "staff_lookup_failed",
+          auth_stage: "load_staff_emails",
+          error_name: "Error",
+        }),
+      })
+    )
   })
 })
 
@@ -249,6 +278,7 @@ describe("authorizeStaffCaller — allowlist fallback", () => {
     const result = await authorizeStaffCaller(scope, { user_id: "U999", channel_id: "C999" })
     expect(result.ok).toBe(false)
     expect(!result.ok && result.reason).toBe("not_allowlisted")
+    expect(emitOpsAlert).not.toHaveBeenCalled()
   })
 
   it("prefers allowlist over identity when BOTH a token and an allowlist are set", async () => {
@@ -276,5 +306,16 @@ describe("authorizeStaffCaller — allowlist fallback", () => {
     expect(result.ok).toBe(false)
     expect(!result.ok && result.reason).toBe("not_configured")
     expect(logger.error).toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "slack_staff_auth_failed",
+        fingerprint: "slack_staff_auth_failed:not_configured",
+        meta: expect.objectContaining({
+          slack_command: "/gp",
+          auth_reason: "not_configured",
+          auth_stage: "authorization_config",
+        }),
+      })
+    )
   })
 })

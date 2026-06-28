@@ -81,6 +81,29 @@ export function emitSlackCommandHandlerFailedAlert(input: {
   })
 }
 
+export function emitSlackStaffAuthFailedAlert(input: {
+  reason: string
+  stage: string
+  error?: unknown
+  logger?: SlackAlertLogger
+}) {
+  const reason = safeSlug(input.reason)
+  return emitOpsAlert({
+    alertKind: "slack_staff_auth_failed",
+    title: "Slack /gp staff authorization failed",
+    path: "/webhooks/slack/command",
+    severity: "warn",
+    fingerprint: `slack_staff_auth_failed:${reason}`,
+    meta: {
+      slack_command: "/gp",
+      auth_reason: reason,
+      auth_stage: safeSlug(input.stage),
+      ...(input.error === undefined ? {} : errorMeta(input.error)),
+    },
+    logger: input.logger,
+  })
+}
+
 export function emitSlackOrderHoldMissingAlert(input: {
   action: "hold" | "release"
   orderId: string

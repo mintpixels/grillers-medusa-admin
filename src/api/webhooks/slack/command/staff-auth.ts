@@ -1,4 +1,5 @@
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { emitSlackStaffAuthFailedAlert } from "../_shared/alerts"
 
 // ───────────────────────── staff authorization ─────────────────────────
 //
@@ -148,6 +149,11 @@ export async function authorizeStaffCaller(
       opts?.logger?.error?.(
         "[slack-command] no SLACK_BOT_TOKEN and no SLACK_GP_ALLOWED_* allowlist — denying all data subcommands"
       )
+      await emitSlackStaffAuthFailedAlert({
+        reason: "not_configured",
+        stage: "authorization_config",
+        logger: opts?.logger,
+      })
       return { ok: false, reason: "not_configured" }
     }
     if (
@@ -173,6 +179,11 @@ export async function authorizeStaffCaller(
     logger: opts?.logger,
   })
   if (!email) {
+    await emitSlackStaffAuthFailedAlert({
+      reason: "email_unresolved",
+      stage: "resolve_slack_email",
+      logger: opts?.logger,
+    })
     return { ok: false, reason: "email_unresolved" }
   }
 
@@ -184,6 +195,12 @@ export async function authorizeStaffCaller(
     opts?.logger?.warn?.(
       `[slack-command] staff-email lookup failed: ${message}`
     )
+    await emitSlackStaffAuthFailedAlert({
+      reason: "staff_lookup_failed",
+      stage: "load_staff_emails",
+      error,
+      logger: opts?.logger,
+    })
     return { ok: false, reason: "staff_lookup_failed" }
   }
 
