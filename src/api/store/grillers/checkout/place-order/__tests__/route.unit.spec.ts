@@ -52,7 +52,7 @@ describe("place-order route ops alerting", () => {
 
   it("emits a severity:page place_order_error alert and returns 500 when the handler throws", async () => {
     ;(getPaymentContextCustomer as jest.Mock).mockRejectedValueOnce(
-      new Error("boom: stripe unavailable")
+      new Error("boom: stripe unavailable for pm_test_123 and avi@example.com")
     )
 
     const { req, res } = makeReqRes()
@@ -75,7 +75,8 @@ describe("place-order route ops alerting", () => {
         meta: expect.objectContaining({
           cart_id: "cart_test_123",
           error_name: "Error",
-          error_message: "boom: stripe unavailable",
+          error_message:
+            "boom: stripe unavailable for [redacted-id] and [redacted-email]",
         }),
       })
     )
@@ -85,5 +86,6 @@ describe("place-order route ops alerting", () => {
     expect(meta).not.toHaveProperty("payment_method_id")
     expect(meta).not.toHaveProperty("setup_intent_id")
     expect(JSON.stringify(meta)).not.toContain("pm_test_123")
+    expect(JSON.stringify(meta)).not.toContain("avi@example.com")
   })
 })

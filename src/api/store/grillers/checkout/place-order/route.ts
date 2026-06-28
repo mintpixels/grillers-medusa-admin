@@ -35,6 +35,15 @@ import {
 
 const PLACE_ORDER_PATH = "store/grillers/checkout/place-order";
 
+const redactedErrorMessage = (message?: string | null) =>
+  String(message || "")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(
+      /\b(?:order|cart|pi|pm|py|pay|refund|re|fin|attempt|prod|variant|seti)_[A-Za-z0-9_]+/g,
+      "[redacted-id]",
+    )
+    .slice(0, 300);
+
 type PlaceOrderBody = {
   cart_id?: string;
   payment_method_id?: string;
@@ -363,7 +372,7 @@ async function placeInvoiceOrder(
       fingerprint: `place_order:invoice_complete_cart:${errors[0].error?.name || ""}`,
       meta: {
         cart_id: cartId,
-        workflow_error: errors[0].error?.message?.slice(0, 300),
+        workflow_error: redactedErrorMessage(errors[0].error?.message),
       },
       logger: req.scope.resolve(ContainerRegistrationKeys.LOGGER),
     });
@@ -557,7 +566,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         fingerprint: `place_order:complete_cart:${errors[0].error?.name || ""}`,
         meta: {
           cart_id: cartId,
-          workflow_error: errors[0].error?.message?.slice(0, 300),
+          workflow_error: redactedErrorMessage(errors[0].error?.message),
         },
         logger: req.scope.resolve(ContainerRegistrationKeys.LOGGER),
       });
@@ -647,7 +656,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       meta: {
         cart_id: cartId,
         error_name: err?.name,
-        error_message: err?.message?.slice(0, 300),
+        error_message: redactedErrorMessage(err?.message),
       },
       logger,
     });
