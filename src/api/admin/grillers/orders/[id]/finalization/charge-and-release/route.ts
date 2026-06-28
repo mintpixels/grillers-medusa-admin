@@ -19,7 +19,7 @@ import {
 import {
   emitFinalizationRouteFailureAlert,
   jsonError,
-  retrieveFinalizationOrder,
+  loadFinalizationOrderForRoute,
   staffAuditActorId,
   staffAuditFields,
 } from "../utils"
@@ -46,11 +46,11 @@ const stripeChargeId = (paymentIntent: {
 }) => paymentIntent.latest_charge || paymentIntent.charges?.data?.[0]?.id || null
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
-  const order = await retrieveFinalizationOrder(req, req.params.id)
-
-  if (!order) {
-    return jsonError(res, 404, "Order was not found.")
-  }
+  const order = await loadFinalizationOrderForRoute(req, res, {
+    action: "charge_and_release_load_order",
+    path: "src/api/admin/grillers/orders/[id]/finalization/charge-and-release/route.ts",
+  })
+  if (!order) return
 
   // #283: invoice (A/R) orders are never card-charged. Refuse before any card-status logic so an
   // invoice order is neither stranded in nor accidentally routed through the card-charge path.

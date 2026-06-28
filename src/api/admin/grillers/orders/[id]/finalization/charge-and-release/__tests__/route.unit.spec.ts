@@ -30,6 +30,7 @@ jest.mock("../../utils", () => ({
     res.status(status).json({ message, ...(extra || {}) })
     return res
   },
+  loadFinalizationOrderForRoute: async () => mockRetrieveFinalizationOrder(),
   retrieveFinalizationOrder: (...args: any[]) =>
     mockRetrieveFinalizationOrder(...args),
   staffAuditActorId: () => "user_123",

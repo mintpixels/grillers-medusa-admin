@@ -10,7 +10,7 @@ import {
 import {
   emitFinalizationRouteFailureAlert,
   jsonError,
-  retrieveFinalizationOrder,
+  loadFinalizationOrderForRoute,
   staffAuditActorId,
   staffAuditFields,
 } from "../utils"
@@ -27,14 +27,14 @@ type PackagesBody = {
 }
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
-  const order = await retrieveFinalizationOrder(req, req.params.id)
-
-  if (!order) {
-    return jsonError(res, 404, "Order was not found.")
-  }
-
   const body = (req.body || {}) as PackagesBody
   const packages = Array.isArray(body.packages) ? body.packages : []
+  const order = await loadFinalizationOrderForRoute(req, res, {
+    action: "update_packages",
+    path: "src/api/admin/grillers/orders/[id]/finalization/packages/route.ts",
+  })
+  if (!order) return
+
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
   const orderModule = req.scope.resolve(Modules.ORDER)
   const staffAudit = staffAuditFields(req, body as Record<string, any>)

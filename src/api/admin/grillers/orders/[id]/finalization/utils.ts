@@ -25,6 +25,42 @@ export async function retrieveFinalizationOrder(
   return data?.[0] || null
 }
 
+export async function loadFinalizationOrderForRoute(
+  req: MedusaRequest,
+  res: MedusaResponse,
+  input: {
+    action: string
+    path: string
+    failureMessage?: string
+  }
+) {
+  try {
+    const order = await retrieveFinalizationOrder(req, req.params.id)
+
+    if (!order) {
+      jsonError(res, 404, "Order was not found.")
+      return null
+    }
+
+    return order
+  } catch (error) {
+    await emitFinalizationRouteFailureAlert({
+      req,
+      action: input.action,
+      error,
+      orderId: req.params.id,
+      path: input.path,
+      status: 500,
+    })
+    jsonError(
+      res,
+      500,
+      input.failureMessage || "Could not load finalization order."
+    )
+    return null
+  }
+}
+
 export function actorId(req: MedusaRequest) {
   return (req as any).auth_context?.actor_id || null
 }

@@ -9,17 +9,17 @@ import {
 import {
   emitFinalizationRouteFailureAlert,
   jsonError,
-  retrieveFinalizationOrder,
+  loadFinalizationOrderForRoute,
   staffAuditActorId,
   staffAuditFields,
 } from "../utils"
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
-  const order = await retrieveFinalizationOrder(req, req.params.id)
-
-  if (!order) {
-    return jsonError(res, 404, "Order was not found.")
-  }
+  const order = await loadFinalizationOrderForRoute(req, res, {
+    action: "ready_for_packing",
+    path: "src/api/admin/grillers/orders/[id]/finalization/ready-for-packing/route.ts",
+  })
+  if (!order) return
 
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
   const orderModule = req.scope.resolve(Modules.ORDER)

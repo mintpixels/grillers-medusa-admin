@@ -8,21 +8,21 @@ import {
 import {
   emitFinalizationRouteFailureAlert,
   jsonError,
-  retrieveFinalizationOrder,
+  loadFinalizationOrderForRoute,
   staffAuditFields,
 } from "../utils"
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
-  const order = await retrieveFinalizationOrder(req, req.params.id)
-
-  if (!order) {
-    return jsonError(res, 404, "Order was not found.")
-  }
+  const body = (req.body as Record<string, any> | undefined) || {}
+  const persist = Boolean(body.persist)
+  const order = await loadFinalizationOrderForRoute(req, res, {
+    action: persist ? "persist_finalization_preview" : "preview_finalization",
+    path: "src/api/admin/grillers/orders/[id]/finalization/preview/route.ts",
+  })
+  if (!order) return
 
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
   const orderModule = req.scope.resolve(Modules.ORDER)
-  const body = (req.body as Record<string, any> | undefined) || {}
-  const persist = Boolean(body.persist)
 
   try {
     const preview = await previewFinalization(db, order, {

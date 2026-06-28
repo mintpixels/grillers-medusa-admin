@@ -29,10 +29,14 @@ function makeRes() {
   } as any
 }
 
-function makeScope() {
+function makeScope(
+  overrides: {
+    queryGraph?: jest.Mock
+  } = {}
+) {
   const logger = { error: jest.fn(), info: jest.fn(), warn: jest.fn() }
   const query = {
-    graph: jest.fn(async () => ({
+    graph: overrides.queryGraph || jest.fn(async () => ({
       data: [{ id: "order_123", metadata: {} }],
     })),
   }
@@ -102,6 +106,46 @@ describe("packages finalization route alerts", () => {
           order_id: "order_123",
           route_status: 400,
           error_message: "box weight is invalid",
+        }),
+      })
+    )
+  })
+
+  it("alerts when package capture cannot load the order", async () => {
+    const queryGraph = jest.fn(async () => {
+      throw new Error("order lookup failed for order_123 and avi@example.com")
+    })
+    const { logger, scope } = makeScope({ queryGraph })
+    const req = {
+      auth_context: { actor_id: "user_123" },
+      body: {
+        packages: [{ package_type: "box", packed_weight_lb: "10" }],
+      },
+      params: { id: "order_123" },
+      scope,
+    } as any
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(mockUpdateFinalizationPackages).not.toHaveBeenCalled()
+    expect(res.status).toHaveBeenCalledWith(500)
+    expect(res.json).toHaveBeenCalledWith({
+      message: "Could not load finalization order.",
+    })
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "catch_weight_finalization_route_failed",
+        severity: "page",
+        title: "Catch-weight finalization route failed: update_packages",
+        path: "src/api/admin/grillers/orders/[id]/finalization/packages/route.ts",
+        logger,
+        meta: expect.objectContaining({
+          action: "update_packages",
+          order_id: "order_123",
+          route_status: 500,
+          error_message:
+            "order lookup failed for [redacted-id] and [redacted-email]",
         }),
       })
     )
