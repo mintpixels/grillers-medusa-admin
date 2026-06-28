@@ -1,6 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http";
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils";
 import { emitOpsAlert } from "../../../../../lib/ops-alert";
+import { emitStaleQbdPostingAlertForOrders } from "../../../../../lib/qbd-pending-posting-alerts";
 
 const DEFAULT_STATUSES = [
   "pending_pick",
@@ -262,6 +263,11 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
         .map((row: Record<string, any>) => row.order_id)
         .filter(Boolean),
     );
+    const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER);
+    await emitStaleQbdPostingAlertForOrders({
+      orders: Array.from(orders.values()),
+      logger,
+    });
 
     const finalizations = (rows || [])
       .map((row: Record<string, any>) => {
