@@ -3,6 +3,7 @@ import {
   verifySlackSignature,
   rawBodyString,
 } from "../_shared/verify"
+import { emitOpsAlert } from "../../../../lib/ops-alert"
 import { emitOpsAlertAck } from "../_shared/emit-ack"
 import {
   OPS_ACK_ACTION_ID,
@@ -17,7 +18,15 @@ import {
 } from "../interactivity/route"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 
+jest.mock("../../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
+
 const SIGNING_SECRET = "slack-signing-secret"
+
+beforeEach(() => {
+  ;(emitOpsAlert as jest.Mock).mockClear()
+})
 
 function signedHeaders(rawBody: string, ts: number) {
   const sig =
@@ -670,6 +679,58 @@ describe("interactivity POST handler — order hold/release routing", () => {
 
     expect(res.statusCode).toBe(200)
     expect(updateOrders).not.toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "slack_order_hold_order_missing",
+        fingerprint: "slack_order_hold_order_missing:hold",
+        path: "/webhooks/slack/interactivity",
+        severity: "warn",
+        meta: expect.objectContaining({
+          slack_action: "order_hold",
+          order_id: "order_missing",
+        }),
+      })
+    )
+  })
+
+  it("alerts when a signed order-hold click fails inside the handler", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "",
+      GP_ANALYTICS_SERVER_KEY: "",
+    }
+    signedFetchCapture()
+    const rawBody = orderRawBody(ORDER_HOLD_ACTION_ID, "order_01H")
+    const ts = Math.floor(Date.now() / 1000)
+    const updateOrders = jest.fn(async () => {
+      throw new Error("metadata write failed for order_01H")
+    })
+    const { req } = makeOrderReq(rawBody, signedHeaders(rawBody, ts), {
+      updateOrders,
+    })
+    const res = makeRes()
+    await POST(req, res)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toEqual({ ok: true })
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "slack_interactivity_handler_failed",
+        fingerprint: "slack_interactivity_handler_failed:order_hold",
+        path: "/webhooks/slack/interactivity",
+        severity: "warn",
+        meta: expect.objectContaining({
+          slack_action: "order_hold",
+          order_id: "order_01H",
+          error_name: "Error",
+        }),
+      })
+    )
+    expect(
+      (emitOpsAlert as jest.Mock).mock.calls[0][0].meta.error_message_hash
+    ).toMatch(/^[0-9a-f]{40}$/)
   })
 
   it("ROUTING: an ops_ack payload still hits the ack path and never calls updateOrders", async () => {

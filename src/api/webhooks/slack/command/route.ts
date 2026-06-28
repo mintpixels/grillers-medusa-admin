@@ -1,6 +1,10 @@
 import { createHmac, timingSafeEqual } from "node:crypto"
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import {
+  emitSlackCommandHandlerFailedAlert,
+  emitSlackCommandLookupFailedAlert,
+} from "../_shared/alerts"
 import { authorizeStaffCaller, requiresStaffAuth } from "./staff-auth"
 
 // Slack signs slash-command requests as:
@@ -462,6 +466,12 @@ export async function dispatchCommand(
     opts?.logger?.warn?.(
       `[slack-command] lookup failed for ${parsed.subcommand}: ${message}`
     )
+    await emitSlackCommandLookupFailedAlert({
+      subcommand: parsed.subcommand,
+      hasArgument: Boolean(parsed.arg?.trim()),
+      error,
+      logger: opts?.logger,
+    })
     return ephemeral(
       `Sorry — couldn't complete \`/gp ${sanitizeEcho(parsed.subcommand)}\`. ${
         parsed.arg ? `Check the value \`${sanitizeEcho(parsed.arg)}\` and try again.` : ""
@@ -505,9 +515,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   // Past the signature gate: NOTHING should surface a 500 to Slack (it renders
   // 500s as "dispatch_failed"). Wrap parse + dispatch so any unexpected throw
   // (e.g. a malformed body) still returns a friendly 200 ephemeral message.
+  let parsedForAlert: ParsedCommand | null = null
   try {
     const payload = parseSlackPayload(rawBody)
     const parsed = parseCommandText(payload.text)
+    parsedForAlert = parsed
 
     // Authorization gate: the signature only proves the request came from the
     // Slack workspace, NOT that the CALLER is allowed to read customer PII.
@@ -540,6 +552,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     logger?.error?.(`[slack-command] unexpected handler error: ${reason}`)
+    await emitSlackCommandHandlerFailedAlert({
+      subcommand: parsedForAlert?.subcommand,
+      hasArgument: Boolean(parsedForAlert?.arg?.trim()),
+      error,
+      logger,
+    })
     res.status(200).json({
       response_type: "ephemeral",
       text: "Sorry — something went wrong handling that command. Try `/gp help`.",

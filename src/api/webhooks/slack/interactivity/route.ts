@@ -1,6 +1,10 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { metadataObject } from "../../../../lib/catch-weight-finalization"
+import {
+  emitSlackInteractivityHandlerFailedAlert,
+  emitSlackOrderHoldMissingAlert,
+} from "../_shared/alerts"
 import { emitOpsAlertAck } from "../_shared/emit-ack"
 import { emitOrderFulfillmentHold } from "../_shared/emit-order-hold"
 import { rawBodyString, verifySlackSignature } from "../_shared/verify"
@@ -396,6 +400,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
   // Past the signature gate: NEVER surface a 500 to Slack. Any throw becomes a
   // friendly 200 so Slack doesn't render an error or retry-storm the endpoint.
+  let actionForAlert: string | null = null
+  let orderIdForAlert: string | null = null
   try {
     const payload = parseInteractivityPayload(rawBody)
 
@@ -404,6 +410,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     // approval-hold Hold/Release, else ignore.
     const ack = extractAckAction(payload)
     if (ack) {
+      actionForAlert = OPS_ACK_ACTION_ID
       // Emit the ack event — the durable signal the ops-pager reads. AWAIT this
       // (it's the whole point of the click); it is timeout-bounded (2.5s) and
       // fail-soft. The cosmetic message update is NOT awaited so total latency
@@ -432,6 +439,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     const orderAction = extractOrderAction(payload)
     if (orderAction) {
+      actionForAlert =
+        orderAction.action === "hold"
+          ? ORDER_HOLD_ACTION_ID
+          : ORDER_RELEASE_ACTION_ID
+      orderIdForAlert = orderAction.orderId
+
       // The point of the click: write the hold/release to order metadata. AWAIT
       // it — if the order id doesn't resolve, applyOrderHold no-ops (no write).
       const applyResult = await applyOrderHold(req, orderAction, logger)
@@ -458,6 +471,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         logger?.warn?.(
           `[slack-interactivity] order_${orderAction.action} for ${orderAction.orderId} was a no-op (order not found)`
         )
+        await emitSlackOrderHoldMissingAlert({
+          action: orderAction.action,
+          orderId: orderAction.orderId,
+          logger,
+        })
       }
 
       const message = buildOrderHoldMessage({
@@ -478,6 +496,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     logger?.error?.(`[slack-interactivity] unexpected handler error: ${reason}`)
+    await emitSlackInteractivityHandlerFailedAlert({
+      actionId: actionForAlert,
+      orderId: orderIdForAlert,
+      error,
+      logger,
+    })
     res.status(200).json({ ok: true })
   }
 }

@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { emitOpsAlert } from "../../../../../lib/ops-alert"
 import {
   verifySlackSignature,
   parseSlackPayload,
@@ -9,7 +10,15 @@ import {
   sanitizeEcho,
 } from "../route"
 
+jest.mock("../../../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
+
 const SECRET = "test_signing_secret_abc123"
+
+beforeEach(() => {
+  ;(emitOpsAlert as jest.Mock).mockClear()
+})
 
 function sign(rawBody: string, timestamp: number): string {
   return (
@@ -351,6 +360,23 @@ describe("slack /gp — dispatch", () => {
     expect(msg.response_type).toBe("ephemeral")
     expect(msg.text.toLowerCase()).toContain("couldn't complete")
     expect(logger.warn).toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "slack_command_lookup_failed",
+        fingerprint: "slack_command_lookup_failed:order",
+        path: "/webhooks/slack/command",
+        severity: "warn",
+        meta: expect.objectContaining({
+          slack_command: "/gp",
+          slack_subcommand: "order",
+          has_argument: true,
+          error_name: "Error",
+        }),
+      })
+    )
+    expect(
+      (emitOpsAlert as jest.Mock).mock.calls[0][0].meta.error_message_hash
+    ).toMatch(/^[0-9a-f]{40}$/)
   })
 })
 
