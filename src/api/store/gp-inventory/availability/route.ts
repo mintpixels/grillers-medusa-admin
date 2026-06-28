@@ -1,6 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { checkInventoryAvailability } from "../../../../lib/inventory-allocation"
+import { emitInventoryAvailabilityRouteFailureAlert } from "../../../../lib/inventory-availability-route-alerts"
 
 type AvailabilityBody = {
   cart_id?: string
@@ -32,20 +33,44 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
 
-  const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
-  const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
+  const source = "customer_web"
+  const includeInternal = false
+  const recordSnapshots = true
 
-  const availability = await checkInventoryAvailability({
-    db,
-    query,
-    lines,
-    cart_id: body.cart_id,
-    fulfillment_type: body.fulfillment_type,
-    requested_fulfillment_date: body.requested_fulfillment_date,
-    source: "customer_web",
-    include_internal: false,
-    record_snapshots: true,
-  })
+  try {
+    const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+    const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
 
-  res.status(200).json({ ok: true, lines: availability })
+    const availability = await checkInventoryAvailability({
+      db,
+      query,
+      lines,
+      cart_id: body.cart_id,
+      fulfillment_type: body.fulfillment_type,
+      requested_fulfillment_date: body.requested_fulfillment_date,
+      source,
+      include_internal: includeInternal,
+      record_snapshots: recordSnapshots,
+    })
+
+    res.status(200).json({ ok: true, lines: availability })
+  } catch (error) {
+    await emitInventoryAvailabilityRouteFailureAlert({
+      req,
+      error,
+      path: "src/api/store/gp-inventory/availability/route.ts",
+      surface: "store",
+      source,
+      lines,
+      cartId: body.cart_id || null,
+      fulfillmentType: body.fulfillment_type || null,
+      requestedFulfillmentDate: body.requested_fulfillment_date || null,
+      includeInternal,
+      recordSnapshots,
+    })
+    res.status(500).json({
+      ok: false,
+      message: "Could not check inventory availability.",
+    })
+  }
 }
