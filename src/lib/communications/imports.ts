@@ -1,6 +1,7 @@
 import crypto from "crypto"
 import type { MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { emitOpsAlert } from "../ops-alert"
 import {
   recordCommunicationEvent,
   recordSuppression,
@@ -11,6 +12,37 @@ type KnexLike = any
 
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID()}`
 const now = () => new Date()
+
+async function emitConstantContactImportFailedRowsAlert(input: {
+  importRunId: string
+  stats: Record<string, number>
+  metadata: Record<string, any>
+}) {
+  try {
+    await emitOpsAlert({
+      alertKind: "constant_contact_import_failed_rows",
+      severity: "warn",
+      title: "Constant Contact import completed with row failures",
+      path: "src/lib/communications/imports.ts",
+      source: "medusa-server",
+      fingerprint: "constant_contact_import:failed_rows",
+      meta: {
+        import_run_id: input.importRunId,
+        total_count: input.stats.total,
+        imported_count: input.stats.imported,
+        skipped_count: input.stats.skipped,
+        failed_count: input.stats.failed,
+        subscribed_count: input.stats.subscribed,
+        unsubscribed_count: input.stats.unsubscribed,
+        bounced_count: input.stats.bounced,
+        has_uploaded_by: Boolean(input.metadata.uploaded_by),
+        has_filename: Boolean(input.metadata.filename),
+      },
+    })
+  } catch {
+    // Import completion must not be reversed by alert delivery failure.
+  }
+}
 
 function field(row: Record<string, any>, names: string[]) {
   for (const name of names) {
@@ -160,6 +192,14 @@ export async function importConstantContactRows(
     stats,
     updated_at: now(),
   })
+
+  if (stats.failed > 0) {
+    await emitConstantContactImportFailedRowsAlert({
+      importRunId: run.id,
+      stats,
+      metadata,
+    })
+  }
 
   return { import_run_id: run.id, status, stats }
 }
