@@ -1,6 +1,7 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework";
 import { buildPasswordResetEmail } from "../lib/emails/templates/password-reset";
 import { sendTrackedEmail } from "../lib/communications/core";
+import { emitTransactionalEmailHandlerFailureAlert } from "../lib/emails/ops-alerts";
 
 console.log("[CPR-LOAD] customer-password-reset subscriber module loaded at boot");
 
@@ -23,12 +24,12 @@ export default async function customerPasswordResetHandler({
     return;
   }
 
-  const { subject, html, text } = buildPasswordResetEmail({
-    email: entity_id,
-    token,
-  });
-
   try {
+    const { subject, html, text } = buildPasswordResetEmail({
+      email: entity_id,
+      token,
+    });
+
     await sendTrackedEmail(container, {
       to: entity_id,
       stream: "transactional",
@@ -48,6 +49,13 @@ export default async function customerPasswordResetHandler({
     logger.error(
       `[customer-password-reset] failed to send email to ${entity_id}: ${err instanceof Error ? err.message : String(err)}`
     );
+    void emitTransactionalEmailHandlerFailureAlert({
+      logger,
+      templateKey: "customer-password-reset",
+      path: "src/subscribers/customer-password-reset.ts",
+      eventName: "auth.password_reset",
+      error: err,
+    });
   }
 }
 

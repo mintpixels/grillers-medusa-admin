@@ -1,28 +1,30 @@
-import { emitOpsAlert } from "../../lib/ops-alert"
+import { emitOpsAlert } from "../ops-alert"
 import {
   refreshProfileLifecycle,
   runCommunicationMaintenance,
-} from "../../lib/communications/admin"
-import { runDueFlowEnrollments } from "../../lib/communications/flows"
+} from "../communications/admin"
+import { runDueFlowEnrollments } from "../communications/flows"
 
-jest.mock("../../lib/ops-alert", () => ({
+jest.mock("../ops-alert", () => ({
   emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
 }))
 
-jest.mock("../../lib/communications/admin", () => ({
+jest.mock("../communications/admin", () => ({
   refreshProfileLifecycle: jest.fn(),
   runCommunicationMaintenance: jest.fn(),
 }))
 
-jest.mock("../../lib/communications/flows", () => ({
+jest.mock("../communications/flows", () => ({
   runDueFlowEnrollments: jest.fn(),
 }))
 
 // Import after mocks are registered.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const gpCommunicationsFlowRunner = require("../gp-communications-flow-runner").default
+const gpCommunicationsFlowRunner =
+  require("../../jobs/gp-communications-flow-runner").default
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const gpCommunicationsLifecycle = require("../gp-communications-lifecycle").default
+const gpCommunicationsLifecycle =
+  require("../../jobs/gp-communications-lifecycle").default
 
 function makeContainer() {
   const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn() }

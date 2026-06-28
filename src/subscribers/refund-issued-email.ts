@@ -1,6 +1,9 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { fetchOrderForEmail } from "../lib/emails/order-fetch"
-import { emitTransactionalEmailPreconditionAlert } from "../lib/emails/ops-alerts"
+import {
+  emitTransactionalEmailHandlerFailureAlert,
+  emitTransactionalEmailPreconditionAlert,
+} from "../lib/emails/ops-alerts"
 import { buildRefundIssuedEmail } from "../lib/emails/templates/refund-issued"
 import { sendTrackedEmail } from "../lib/communications/core"
 
@@ -185,6 +188,17 @@ export default async function refundIssuedEmailHandler({
     logger.error(
       `[refund-issued-email] failed: ${err instanceof Error ? err.message : String(err)}`
     )
+    void emitTransactionalEmailHandlerFailureAlert({
+      logger,
+      templateKey: "refund-issued",
+      path: "src/subscribers/refund-issued-email.ts",
+      eventName: "payment.refunded",
+      eventId: data.id,
+      orderId: data.order_id,
+      paymentId: data.payment_id || data.id,
+      refundId: data.refund_id,
+      error: err,
+    })
   }
 }
 

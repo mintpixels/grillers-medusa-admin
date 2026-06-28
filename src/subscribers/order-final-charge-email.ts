@@ -3,7 +3,10 @@ import { Modules } from "@medusajs/framework/utils"
 import { metadataObject } from "../lib/catch-weight-finalization"
 import { sendTrackedEmail } from "../lib/communications/core"
 import { fetchOrderForEmail } from "../lib/emails/order-fetch"
-import { emitTransactionalEmailPreconditionAlert } from "../lib/emails/ops-alerts"
+import {
+  emitTransactionalEmailHandlerFailureAlert,
+  emitTransactionalEmailPreconditionAlert,
+} from "../lib/emails/ops-alerts"
 import { buildOrderFinalChargeEmail } from "../lib/emails/templates/order-final-charge"
 
 type FinalChargeEvent = {
@@ -98,6 +101,15 @@ export default async function orderFinalChargeEmailHandler({
         err instanceof Error ? err.message : String(err)
       }`
     )
+    void emitTransactionalEmailHandlerFailureAlert({
+      logger,
+      templateKey: "order-final-charge",
+      path: "src/subscribers/order-final-charge-email.ts",
+      eventName: "order.final_charge_succeeded",
+      eventId: data.id,
+      orderId,
+      error: err,
+    })
   }
 }
 

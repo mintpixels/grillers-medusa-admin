@@ -1,8 +1,8 @@
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
-import { ensureFinalizationForOrder } from "../../lib/catch-weight-finalization"
-import { emitOpsAlert } from "../../lib/ops-alert"
+import { ensureFinalizationForOrder } from "../catch-weight-finalization"
+import { emitOpsAlert } from "../ops-alert"
 
-jest.mock("../../lib/catch-weight-finalization", () => ({
+jest.mock("../catch-weight-finalization", () => ({
   CATCH_WEIGHT_ORDER_FIELDS: ["id", "metadata"],
   ensureFinalizationForOrder: jest.fn(),
   orderPlacedFinalizationMetadata: jest.fn(() => ({
@@ -10,14 +10,14 @@ jest.mock("../../lib/catch-weight-finalization", () => ({
   })),
 }))
 
-jest.mock("../../lib/ops-alert", () => ({
+jest.mock("../ops-alert", () => ({
   emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
 }))
 
 // Import after mocks are registered.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const catchWeightFinalizationOrderPlacedHandler =
-  require("../catch-weight-finalization-order-placed").default
+  require("../../subscribers/catch-weight-finalization-order-placed").default
 
 function makeContainer({
   orders = [{ id: "order_123", metadata: {} }],

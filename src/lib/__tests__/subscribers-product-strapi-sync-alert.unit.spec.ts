@@ -1,4 +1,4 @@
-import { emitOpsAlert } from "../../lib/ops-alert"
+import { emitOpsAlert } from "../ops-alert"
 
 const mockRun = jest.fn()
 
@@ -6,17 +6,17 @@ jest.mock("../../workflows/sync-product-to-strapi", () => ({
   syncProductWorkflow: jest.fn(() => ({ run: mockRun })),
 }))
 
-jest.mock("../../lib/ops-alert", () => ({
+jest.mock("../ops-alert", () => ({
   emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
 }))
 
 // Import after mocks are registered.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const productCreatedHandler = require("../product-created").default
+const productCreatedHandler = require("../../subscribers/product-created").default
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const productUpdatedHandler = require("../product-updated").default
+const productUpdatedHandler = require("../../subscribers/product-updated").default
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const productDeletedHandler = require("../product-deleted").default
+const productDeletedHandler = require("../../subscribers/product-deleted").default
 
 function makeContainer(extra: Record<string, unknown> = {}) {
   const logger = { error: jest.fn(), warn: jest.fn() }

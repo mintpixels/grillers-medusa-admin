@@ -1,5 +1,8 @@
 import { emitOpsAlert } from "../ops-alert"
-import { emitTransactionalEmailPreconditionAlert } from "../emails/ops-alerts"
+import {
+  emitTransactionalEmailHandlerFailureAlert,
+  emitTransactionalEmailPreconditionAlert,
+} from "../emails/ops-alerts"
 
 jest.mock("../ops-alert", () => ({
   emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
@@ -72,5 +75,43 @@ describe("transactional email ops alerts", () => {
       })
     )
     expect(JSON.stringify(meta)).not.toContain("@")
+  })
+
+  it("emits a redacted handler failure alert for unexpected subscriber errors", async () => {
+    const logger = { warn: jest.fn(), error: jest.fn() }
+
+    await emitTransactionalEmailHandlerFailureAlert({
+      logger,
+      templateKey: "order-final-charge",
+      path: "src/subscribers/order-final-charge-email.ts",
+      eventName: "order.final_charge_succeeded",
+      eventId: "evt_final_charge_123",
+      orderId: "order_123",
+      displayId: 1001,
+      error: new Error("Post-render failed for customer@example.com"),
+    })
+
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "transactional_email_handler_failed",
+        severity: "warn",
+        title: "order-final-charge email handler failed",
+        path: "src/subscribers/order-final-charge-email.ts",
+        source: "medusa-server",
+        logger,
+        meta: expect.objectContaining({
+          template_key: "order-final-charge",
+          event_name: "order.final_charge_succeeded",
+          event_id: "evt_final_charge_123",
+          order_id: "order_123",
+          display_id: 1001,
+          customer_id: null,
+          fulfillment_id: null,
+          payment_id: null,
+          refund_id: null,
+          error_message: "Post-render failed for [redacted-email]",
+        }),
+      })
+    )
   })
 })

@@ -1,6 +1,9 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { fetchOrderForEmail } from "../lib/emails/order-fetch"
-import { emitTransactionalEmailPreconditionAlert } from "../lib/emails/ops-alerts"
+import {
+  emitTransactionalEmailHandlerFailureAlert,
+  emitTransactionalEmailPreconditionAlert,
+} from "../lib/emails/ops-alerts"
 import { buildOrderPlacedEmail } from "../lib/emails/templates/order-placed"
 import { sendTrackedEmail } from "../lib/communications/core"
 
@@ -69,6 +72,15 @@ export default async function orderPlacedEmailHandler({
     logger.error(
       `[order-placed-email] failed for order ${data.id}: ${err instanceof Error ? err.message : String(err)}`
     )
+    void emitTransactionalEmailHandlerFailureAlert({
+      logger,
+      templateKey: "order-placed",
+      path: "src/subscribers/order-placed-email.ts",
+      eventName: "order.placed",
+      eventId: data.id,
+      orderId: data.id,
+      error: err,
+    })
   }
 }
 

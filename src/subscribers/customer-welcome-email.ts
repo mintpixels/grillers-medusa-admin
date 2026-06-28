@@ -6,6 +6,7 @@ import {
   upsertCustomerProfile,
 } from "../lib/communications/core"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { emitTransactionalEmailHandlerFailureAlert } from "../lib/emails/ops-alerts"
 
 type CustomerCreatedEvent = {
   id: string
@@ -69,6 +70,15 @@ export default async function customerWelcomeEmailHandler({
     logger.error(
       `[customer-welcome-email] failed for customer ${data.id}: ${err instanceof Error ? err.message : String(err)}`
     )
+    void emitTransactionalEmailHandlerFailureAlert({
+      logger,
+      templateKey: "customer-welcome",
+      path: "src/subscribers/customer-welcome-email.ts",
+      eventName: "customer.created",
+      eventId: data.id,
+      customerId: data.id,
+      error: err,
+    })
   }
 }
 

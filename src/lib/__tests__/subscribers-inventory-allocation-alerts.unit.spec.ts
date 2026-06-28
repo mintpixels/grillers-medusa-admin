@@ -3,27 +3,29 @@ import {
   createAllocationsForOrder,
   fulfillAllocationsForFulfillment,
   releaseAllocationsForOrder,
-} from "../../lib/inventory-allocation"
-import { emitOpsAlert } from "../../lib/ops-alert"
+} from "../inventory-allocation"
+import { emitOpsAlert } from "../ops-alert"
 
-jest.mock("../../lib/inventory-allocation", () => ({
+jest.mock("../inventory-allocation", () => ({
   createAllocationsForOrder: jest.fn(),
   releaseAllocationsForOrder: jest.fn(),
   fulfillAllocationsForFulfillment: jest.fn(),
 }))
 
-jest.mock("../../lib/ops-alert", () => ({
+jest.mock("../ops-alert", () => ({
   emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
 }))
 
 // Import after mocks are registered.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const orderPlacedHandler = require("../inventory-allocation-order-placed").default
+const orderPlacedHandler =
+  require("../../subscribers/inventory-allocation-order-placed").default
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const orderCanceledHandler = require("../inventory-allocation-order-canceled").default
+const orderCanceledHandler =
+  require("../../subscribers/inventory-allocation-order-canceled").default
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const fulfillmentCreatedHandler =
-  require("../inventory-allocation-fulfillment-created").default
+  require("../../subscribers/inventory-allocation-fulfillment-created").default
 
 function makeContainer() {
   const logger = { error: jest.fn(), info: jest.fn(), warn: jest.fn() }

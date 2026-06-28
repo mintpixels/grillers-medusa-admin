@@ -1,6 +1,9 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { fetchOrderForEmail } from "../lib/emails/order-fetch"
-import { emitTransactionalEmailPreconditionAlert } from "../lib/emails/ops-alerts"
+import {
+  emitTransactionalEmailHandlerFailureAlert,
+  emitTransactionalEmailPreconditionAlert,
+} from "../lib/emails/ops-alerts"
 import { buildOrderCanceledEmail } from "../lib/emails/templates/order-canceled"
 import { sendTrackedEmail } from "../lib/communications/core"
 
@@ -68,6 +71,15 @@ export default async function orderCanceledEmailHandler({
     logger.error(
       `[order-canceled-email] failed for order ${data.id}: ${err instanceof Error ? err.message : String(err)}`
     )
+    void emitTransactionalEmailHandlerFailureAlert({
+      logger,
+      templateKey: "order-canceled",
+      path: "src/subscribers/order-canceled-email.ts",
+      eventName: "order.canceled",
+      eventId: data.id,
+      orderId: data.id,
+      error: err,
+    })
   }
 }
 
