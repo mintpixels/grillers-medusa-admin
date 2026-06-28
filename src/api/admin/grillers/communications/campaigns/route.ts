@@ -1,6 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { createCampaign } from "../../../../../lib/communications/admin"
+import { emitAdminCommunicationsRouteFailureAlert } from "../_shared/alerts"
 
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
@@ -19,16 +20,29 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
   const actor = (req as any).auth_context?.actor_id || null
-  const campaign = await createCampaign(req.scope, {
-    name: body.name,
-    subject: body.subject,
-    segment_key: body.segment_key,
-    intro: body.intro,
-    body: body.body,
-    cta_label: body.cta_label,
-    cta_url: body.cta_url,
-    scheduled_at: body.scheduled_at,
-    approved_by: actor,
-  })
-  res.status(201).json({ campaign })
+  try {
+    const campaign = await createCampaign(req.scope, {
+      name: body.name,
+      subject: body.subject,
+      segment_key: body.segment_key,
+      intro: body.intro,
+      body: body.body,
+      cta_label: body.cta_label,
+      cta_url: body.cta_url,
+      scheduled_at: body.scheduled_at,
+      approved_by: actor,
+    })
+    res.status(201).json({ campaign })
+  } catch (error) {
+    await emitAdminCommunicationsRouteFailureAlert({
+      req,
+      action: "create_campaign",
+      error,
+      meta: {
+        has_segment_key: Boolean(body.segment_key),
+        scheduled: Boolean(body.scheduled_at),
+      },
+    })
+    res.status(500).json({ ok: false, error: "campaign_create_failed" })
+  }
 }
