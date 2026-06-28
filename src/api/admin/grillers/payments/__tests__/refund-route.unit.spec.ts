@@ -332,4 +332,167 @@ describe("staff payment refund route", () => {
       })
     )
   })
+
+  it("alerts when the refund provider rejects before money moves", async () => {
+    const paymentModule = {
+      retrievePayment: jest.fn(async () => ({
+        id: "pay_123",
+        payment_collection_id: "paycol_123",
+        currency_code: "usd",
+        refunds: [],
+      })),
+      refundPayment: jest.fn(async () => {
+        throw new Error("Stripe rejected re_123 for avi@example.com")
+      }),
+    }
+    const orderModule = {
+      listOrderTransactions: jest.fn(),
+      addOrderTransactions: jest.fn(),
+      retrieveOrder: jest.fn(),
+      updateOrders: jest.fn(),
+    }
+    const eventBus = { emit: jest.fn() }
+    const query = { graph: jest.fn() }
+    const logger = { warn: jest.fn(), error: jest.fn() }
+    const { db } = makeAllocationDb()
+    const req = {
+      params: { id: "pay_123" },
+      body: { amount: 5, note: "Customer refund test" },
+      scope: {
+        resolve: (key: string) => {
+          if (key === Modules.PAYMENT) return paymentModule
+          if (key === Modules.ORDER) return orderModule
+          if (key === Modules.EVENT_BUS) return eventBus
+          if (key === "query") return query
+          if (key === ContainerRegistrationKeys.PG_CONNECTION) return db
+          if (key === ContainerRegistrationKeys.LOGGER) return logger
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+      auth_context: { actor_id: "user_123" },
+    } as any
+    const res = {
+      status: jest.fn(function status() {
+        return this
+      }),
+      json: jest.fn(),
+    } as any
+    ;(emitOpsAlert as jest.Mock).mockClear()
+
+    await POST(req, res)
+
+    expect(res.status).toHaveBeenCalledWith(500)
+    expect(res.json).toHaveBeenCalledWith({
+      message: "Could not refund payment. Please try again.",
+    })
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "staff_refund_route_failed",
+        severity: "page",
+        title: "Staff refund failed during refund_payment",
+        path: "src/api/admin/grillers/payments/[id]/refund/route.ts",
+        logger,
+        meta: expect.objectContaining({
+          stage: "refund_payment",
+          payment_id: "pay_123",
+          order_id: null,
+          refund_id: null,
+          refund_completed: false,
+          allocation_release_count: 0,
+          actor_id: "user_123",
+          error_message: "Stripe rejected [redacted-id] for [redacted-email]",
+        }),
+      })
+    )
+  })
+
+  it("warns staff not to retry when follow-up recording fails after refund", async () => {
+    const refund = {
+      id: "refund_123",
+      amount: 5,
+      raw_amount: { value: "5" },
+      data: { id: "re_123" },
+    }
+    const paymentModule = {
+      retrievePayment: jest.fn(async () => ({
+        id: "pay_123",
+        payment_collection_id: "paycol_123",
+        currency_code: "usd",
+        refunds: [],
+      })),
+      refundPayment: jest.fn(async () => ({
+        id: "pay_123",
+        payment_collection_id: "paycol_123",
+        currency_code: "usd",
+        refunds: [refund],
+      })),
+    }
+    const orderModule = {
+      listOrderTransactions: jest.fn(async () => []),
+      addOrderTransactions: jest.fn(async () => {
+        throw new Error("ledger write failed for refund_123")
+      }),
+      retrieveOrder: jest.fn(),
+      updateOrders: jest.fn(),
+    }
+    const eventBus = { emit: jest.fn() }
+    const query = {
+      graph: jest.fn(async () => ({
+        data: [{ order_id: "order_123" }],
+      })),
+    }
+    const logger = { warn: jest.fn(), error: jest.fn() }
+    const { db } = makeAllocationDb()
+    const req = {
+      params: { id: "pay_123" },
+      body: { amount: 5, note: "Customer refund test" },
+      scope: {
+        resolve: (key: string) => {
+          if (key === Modules.PAYMENT) return paymentModule
+          if (key === Modules.ORDER) return orderModule
+          if (key === Modules.EVENT_BUS) return eventBus
+          if (key === "query") return query
+          if (key === ContainerRegistrationKeys.PG_CONNECTION) return db
+          if (key === ContainerRegistrationKeys.LOGGER) return logger
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+      auth_context: { actor_id: "user_123" },
+    } as any
+    const res = {
+      status: jest.fn(function status() {
+        return this
+      }),
+      json: jest.fn(),
+    } as any
+    ;(emitOpsAlert as jest.Mock).mockClear()
+
+    await POST(req, res)
+
+    expect(res.status).toHaveBeenCalledWith(500)
+    expect(res.json).toHaveBeenCalledWith({
+      message:
+        "Refund was issued, but follow-up recording failed. Do not retry until support checks the order.",
+    })
+    expect(eventBus.emit).not.toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "staff_refund_route_failed",
+        severity: "page",
+        title: "Staff refund failed during record_order_transaction",
+        path: "src/api/admin/grillers/payments/[id]/refund/route.ts",
+        logger,
+        meta: expect.objectContaining({
+          stage: "record_order_transaction",
+          payment_id: "pay_123",
+          order_id: "order_123",
+          refund_id: "refund_123",
+          refund_completed: true,
+          allocation_release_count: 0,
+          actor_id: "user_123",
+          error_message: "ledger write failed for [redacted-id]",
+        }),
+      })
+    )
+  })
 })
