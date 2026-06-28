@@ -6,6 +6,9 @@ import {
   normalizeReviewTimestamp,
   type OrderForReviewAcquisitionMetadata,
 } from "../lib/review-acquisition-metadata"
+import { emitOpsAlert } from "../lib/ops-alert"
+
+const ALERT_PATH = "src/subscribers/review-acquisition-delivery-metadata.ts"
 
 type DeliveryEventData = {
   id: string
@@ -20,6 +23,39 @@ type Query = {
 }
 
 type DbConnection = (tableName: string) => any
+
+function emitReviewDeliveryMetadataAlert(input: {
+  logger: Parameters<typeof emitOpsAlert>[0]["logger"]
+  reason:
+    | "no_fulfillment_delivery"
+    | "order_id_not_resolved"
+    | "order_not_found"
+    | "handler_failed"
+  fulfillmentId: string
+  orderId?: string
+  error?: unknown
+}) {
+  const errorMessage =
+    input.error instanceof Error
+      ? input.error.message
+      : input.error
+        ? String(input.error)
+        : null
+
+  void emitOpsAlert({
+    alertKind: "review_acquisition_delivery_metadata_failed",
+    severity: "warn",
+    title: `review acquisition delivery metadata ${input.reason}`,
+    path: ALERT_PATH,
+    logger: input.logger,
+    meta: {
+      reason: input.reason,
+      fulfillment_id: input.fulfillmentId,
+      order_id: input.orderId || null,
+      error_message: errorMessage ? errorMessage.slice(0, 300) : null,
+    },
+  })
+}
 
 async function resolveOrderIdForFulfillment(
   query: Query,
@@ -129,6 +165,11 @@ export default async function reviewAcquisitionDeliveryMetadataHandler({
       logger.warn(
         `[review-acquisition-delivery-metadata] no fulfillment delivery found for ${data.id}`
       )
+      emitReviewDeliveryMetadataAlert({
+        logger,
+        reason: "no_fulfillment_delivery",
+        fulfillmentId: data.id,
+      })
       return
     }
 
@@ -137,6 +178,11 @@ export default async function reviewAcquisitionDeliveryMetadataHandler({
       logger.warn(
         `[review-acquisition-delivery-metadata] could not resolve order for fulfillment ${data.id}`
       )
+      emitReviewDeliveryMetadataAlert({
+        logger,
+        reason: "order_id_not_resolved",
+        fulfillmentId: data.id,
+      })
       return
     }
 
@@ -145,6 +191,12 @@ export default async function reviewAcquisitionDeliveryMetadataHandler({
       logger.warn(
         `[review-acquisition-delivery-metadata] order ${orderId} not found`
       )
+      emitReviewDeliveryMetadataAlert({
+        logger,
+        reason: "order_not_found",
+        fulfillmentId: data.id,
+        orderId,
+      })
       return
     }
 
@@ -172,6 +224,12 @@ export default async function reviewAcquisitionDeliveryMetadataHandler({
         err instanceof Error ? err.message : String(err)
       }`
     )
+    emitReviewDeliveryMetadataAlert({
+      logger,
+      reason: "handler_failed",
+      fulfillmentId: data.id,
+      error: err,
+    })
   }
 }
 
