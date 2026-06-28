@@ -2,6 +2,7 @@ import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { upsertLegacyItemMapping } from "../../../../lib/legacy-item-mapping"
 import { getLegacyItemMappingCandidate } from "../../../../lib/legacy-item-mapping-review"
+import { emitOpsAlert } from "../../../../lib/ops-alert"
 
 function normalizeText(value: unknown): string | null {
   const text = String(value ?? "").trim()
@@ -10,6 +11,7 @@ function normalizeText(value: unknown): string | null {
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+  const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
   const body = (req.body ?? {}) as {
     qbd_item_list_id?: string | null
     sku?: string | null
@@ -106,8 +108,27 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       result,
     })
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    await emitOpsAlert({
+      alertKind: "legacy_item_mapping_failed",
+      severity: "warn",
+      path: "src/api/admin/legacy-item-mapping-candidates/map/route.ts",
+      title: "Legacy item mapping candidate failed",
+      fingerprint: "legacy_item_mapping:candidate:400",
+      meta: {
+        qbd_item_list_id: candidate.qbd_item_list_id,
+        sku: candidate.sku || null,
+        mapping_candidate_key: candidate.key,
+        medusa_variant_id: medusaVariantId,
+        medusa_sku: medusaSku,
+        dry_run: Boolean(body.dry_run),
+        staff_actor_id: normalizeText((req as any).auth_context?.actor_id),
+        error_message: message.slice(0, 300),
+      },
+      logger,
+    })
     res.status(400).json({
-      message: err instanceof Error ? err.message : String(err),
+      message,
     })
   }
 }

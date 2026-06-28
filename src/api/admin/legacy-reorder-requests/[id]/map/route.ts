@@ -1,6 +1,7 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { upsertLegacyItemMapping } from "../../../../../lib/legacy-item-mapping"
+import { emitOpsAlert } from "../../../../../lib/ops-alert"
 
 function normalizeText(value: unknown): string | null {
   const text = String(value ?? "").trim()
@@ -13,6 +14,7 @@ function isGenericHistoryKey(value: unknown) {
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+  const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
   const id = String(req.params.id)
   const body = (req.body ?? {}) as {
     medusa_variant_id?: string
@@ -56,9 +58,10 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
 
+  const actorId = normalizeText((req as any).auth_context?.actor_id)
+  const dryRun = Boolean(body.dry_run)
+
   try {
-    const actorId = normalizeText((req as any).auth_context?.actor_id)
-    const dryRun = Boolean(body.dry_run)
     const result = await upsertLegacyItemMapping(db, {
       qbdItemListId: request.legacy_item_id,
       qbdName: request.title,
@@ -115,8 +118,28 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       result,
     })
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    await emitOpsAlert({
+      alertKind: "legacy_item_mapping_failed",
+      severity: "warn",
+      path: "src/api/admin/legacy-reorder-requests/[id]/map/route.ts",
+      title: "Legacy reorder request mapping failed",
+      fingerprint: "legacy_item_mapping:reorder_request:400",
+      meta: {
+        request_id: id,
+        legacy_history_key: request.legacy_history_key,
+        qbd_item_list_id: request.legacy_item_id || null,
+        sku: request.sku || null,
+        medusa_variant_id: medusaVariantId,
+        medusa_sku: medusaSku,
+        dry_run: dryRun,
+        staff_actor_id: actorId,
+        error_message: message.slice(0, 300),
+      },
+      logger,
+    })
     res.status(400).json({
-      message: err instanceof Error ? err.message : String(err),
+      message,
     })
   }
 }
