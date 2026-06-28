@@ -97,6 +97,19 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     logger?.error?.(
       `[invoice-application] failed for ${customerId}: ${message}`
     )
+    await emitOpsAlert({
+      alertKind: "b2b_invoice_application_error",
+      severity: "page",
+      path: "store/grillers/invoice-applications",
+      title: "B2B invoice application submission failed",
+      fingerprint: "b2b_invoice_application:submit_500",
+      meta: {
+        customer_id: customerId,
+        error_name: err instanceof Error ? err.name : undefined,
+        error_message: message.slice(0, 300),
+      },
+      logger: logger as any,
+    })
     return res.status(500).json({
       type: "server_error",
       message: "Could not submit your application. Please try again.",

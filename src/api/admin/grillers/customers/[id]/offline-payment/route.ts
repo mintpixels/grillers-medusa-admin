@@ -17,6 +17,7 @@ import {
   readInvoiceApplicationStatus,
   invoiceApplicationDecisionMetadata,
 } from "../../../../../../lib/gp-invoice-application"
+import { emitOpsAlert } from "../../../../../../lib/ops-alert"
 
 /**
  * #279 / #282 — set/clear a customer's approved offline-payment ("pay by invoice") terms.
@@ -152,6 +153,21 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     logger?.error?.(`[offline-payment] failed for ${customerId}: ${message}`)
+    await emitOpsAlert({
+      alertKind: "staff_offline_payment_error",
+      severity: "page",
+      path: "admin/grillers/customers/offline-payment",
+      title: "Staff offline-payment terms update failed",
+      fingerprint: "staff_offline_payment:update_500",
+      meta: {
+        customer_id: customerId,
+        staff_actor_id: actorId,
+        staff_actor_email: actorEmail || undefined,
+        error_name: err instanceof Error ? err.name : undefined,
+        error_message: message.slice(0, 300),
+      },
+      logger: logger as any,
+    })
     return res.status(500).json({
       type: "server_error",
       message: "Could not update the account's payment terms.",

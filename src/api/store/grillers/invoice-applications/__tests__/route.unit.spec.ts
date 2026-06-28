@@ -1,5 +1,10 @@
 import { Modules } from "@medusajs/framework/utils"
 import { POST } from "../route"
+import { emitOpsAlert } from "../../../../../lib/ops-alert"
+
+jest.mock("../../../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
 
 function makeRes() {
   const res: any = {
@@ -38,6 +43,10 @@ const okCustomer = (metadata: Record<string, unknown> = {}) => ({
 })
 
 describe("self-serve invoice-application intake (#291)", () => {
+  beforeEach(() => {
+    ;(emitOpsAlert as jest.Mock).mockClear()
+  })
+
   it("401s when not signed in", async () => {
     const res = makeRes()
     await POST(
@@ -102,5 +111,40 @@ describe("self-serve invoice-application intake (#291)", () => {
     )
     expect(res.statusCode).toBe(409)
     expect(customerModule.updateCustomers).not.toHaveBeenCalled()
+  })
+
+  it("emits a page alert when submission storage fails", async () => {
+    const customerModule = {
+      retrieveCustomer: jest.fn(async () => ({ id: "cus_b2b", metadata: {} })),
+      updateCustomers: jest.fn(async () => {
+        throw new Error("metadata write failed")
+      }),
+    }
+    const res = makeRes()
+    await POST(
+      makeReq({
+        customerModule,
+        body: {
+          business_name: "Knesset Israel",
+          contact_name: "Dov",
+          contact_email: "dov@cki.org",
+          requested_credit_limit: "3500",
+        },
+      }),
+      res
+    )
+
+    expect(res.statusCode).toBe(500)
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "b2b_invoice_application_error",
+        severity: "page",
+        fingerprint: "b2b_invoice_application:submit_500",
+        meta: expect.objectContaining({
+          customer_id: "cus_b2b",
+          error_message: "metadata write failed",
+        }),
+      })
+    )
   })
 })

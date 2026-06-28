@@ -1,5 +1,10 @@
 import { Modules } from "@medusajs/framework/utils"
 import { POST } from "../route"
+import { emitOpsAlert } from "../../../../../lib/ops-alert"
+
+jest.mock("../../../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
 
 function makeRes() {
   const res: any = {
@@ -31,6 +36,10 @@ function makeReq(body: any, customerModule: any) {
 }
 
 describe("staff create-customer route (#277)", () => {
+  beforeEach(() => {
+    ;(emitOpsAlert as jest.Mock).mockClear()
+  })
+
   const validBody = {
     first_name: "Peter",
     last_name: "Swerdlow",
@@ -136,5 +145,18 @@ describe("staff create-customer route (#277)", () => {
     await POST(makeReq(validBody, customerModule), res)
     expect(res.statusCode).toBe(500)
     expect(res.body.message).toContain("Could not create the customer")
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "staff_customer_create_error",
+        severity: "page",
+        fingerprint: "staff_customer_create:500",
+        meta: expect.objectContaining({
+          email_domain: "example.com",
+          has_company_name: false,
+          has_address: false,
+          error_message: "db constraint violated",
+        }),
+      })
+    )
   })
 })

@@ -1,5 +1,10 @@
 import { Modules } from "@medusajs/framework/utils"
 import { POST } from "../route"
+import { emitOpsAlert } from "../../../../../../../lib/ops-alert"
+
+jest.mock("../../../../../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
 
 function makeRes() {
   const res: any = {
@@ -43,6 +48,10 @@ const APPROVERS = "peter@gp.com,avi@gp.com,julie@gp.com"
 
 describe("offline-payment approval route (#279/#282)", () => {
   const prev = process.env.GP_OFFLINE_PAYMENT_APPROVER_EMAILS
+  beforeEach(() => {
+    ;(emitOpsAlert as jest.Mock).mockClear()
+  })
+
   afterEach(() => {
     process.env.GP_OFFLINE_PAYMENT_APPROVER_EMAILS = prev
   })
@@ -287,5 +296,44 @@ describe("offline-payment approval route (#279/#282)", () => {
     expect(update.metadata.gp_invoice_application_status).toBeUndefined()
     const audit = JSON.parse(update.metadata.staff_audit_log)
     expect(audit[audit.length - 1].action).toBe("offline_payment_terms_updated")
+  })
+
+  it("emits a page alert when an approved terms update fails", async () => {
+    process.env.GP_OFFLINE_PAYMENT_APPROVER_EMAILS = APPROVERS
+    const customerModule = {
+      retrieveCustomer: jest.fn(async () => ({ id: "cus_1", metadata: {} })),
+      updateCustomers: jest.fn(async () => {
+        throw new Error("customer metadata write failed")
+      }),
+    }
+    const res = makeRes()
+    await POST(
+      makeReq({
+        userModule: userModuleFor("avi@gp.com"),
+        customerModule,
+        body: {
+          approved: true,
+          methods: ["zelle"],
+          credit_limit: 1000,
+          payment_terms: "Net 10",
+        },
+      }),
+      res
+    )
+
+    expect(res.statusCode).toBe(500)
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "staff_offline_payment_error",
+        severity: "page",
+        fingerprint: "staff_offline_payment:update_500",
+        meta: expect.objectContaining({
+          customer_id: "cus_1",
+          staff_actor_id: "user_avi",
+          staff_actor_email: "avi@gp.com",
+          error_message: "customer metadata write failed",
+        }),
+      })
+    )
   })
 })

@@ -6,6 +6,7 @@ import {
   customerMetadataFromNormalized,
   type CreateCustomerInput,
 } from "../../../../lib/gp-customer-create"
+import { emitOpsAlert } from "../../../../lib/ops-alert"
 
 /**
  * #277 — staff "Create a customer account".
@@ -93,6 +94,21 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     const message = err instanceof Error ? err.message : String(err)
     // Keep the full detail server-side only; do not echo DB/ORM internals to the browser.
     logger?.error?.(`[create-customer] failed: ${message}`)
+    await emitOpsAlert({
+      alertKind: "staff_customer_create_error",
+      severity: "page",
+      path: "admin/grillers/customers",
+      title: "Staff customer creation failed",
+      fingerprint: "staff_customer_create:500",
+      meta: {
+        email_domain: normalized.email.split("@")[1] || "",
+        has_company_name: Boolean(normalized.company_name),
+        has_address: Boolean(normalized.address),
+        error_name: err instanceof Error ? err.name : undefined,
+        error_message: message.slice(0, 300),
+      },
+      logger: logger as any,
+    })
     // Never let this fall through to the dashboard's generic error toast.
     return res.status(500).json({
       type: "server_error",
