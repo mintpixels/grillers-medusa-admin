@@ -3,9 +3,12 @@ import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import {
   FINALIZATION_CHARGED_READY_TO_SHIP,
-  metadataObject,
 } from "../../../../lib/catch-weight-finalization"
-import { emitChargeFailedPostShipAlert } from "../../../../lib/final-charge-ops-alerts"
+import {
+  emitChargeFailedPostShipAlert,
+  emitStripePaymentFailedWebhookInvalidSignatureAlert,
+  emitStripePaymentFailedWebhookProcessingFailedAlert,
+} from "../../../../lib/final-charge-ops-alerts"
 
 // Stripe signs webhooks as: t=<unix>,v1=<hex hmac-sha256(`${t}.${rawBody}`, secret)>
 // Tolerance window (seconds) to reject very old/replayed timestamps.
@@ -104,6 +107,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const rawBody = rawBodyString(req)
 
   if (!verifyStripeSignature(req, rawBody, logger)) {
+    void emitStripePaymentFailedWebhookInvalidSignatureAlert({
+      logger,
+      hasSignatureHeader: Boolean(header(req, "stripe-signature")),
+    }).catch(() => {
+      // Alerting must not change webhook response semantics.
+    })
     res.status(400).json({ ok: false, error: "invalid_signature" })
     return
   }
@@ -125,49 +134,58 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
 
-  const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+  try {
+    const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
 
-  // Find the finalization row this PaymentIntent belongs to. Only the
-  // final-charge flow stores stripe_payment_intent_id here.
-  const finalizationRows = await db("gp_order_finalization")
-    .select(["id", "order_id", "status"])
-    .where({ stripe_payment_intent_id: paymentIntentId })
-    .orderBy("updated_at", "desc")
-    .limit(1)
-  const finalization = (finalizationRows?.[0] || null) as {
-    id?: string
-    order_id?: string
-    status?: string
-  } | null
+    // Find the finalization row this PaymentIntent belongs to. Only the
+    // final-charge flow stores stripe_payment_intent_id here.
+    const finalizationRows = await db("gp_order_finalization")
+      .select(["id", "order_id", "status"])
+      .where({ stripe_payment_intent_id: paymentIntentId })
+      .orderBy("updated_at", "desc")
+      .limit(1)
+    const finalization = (finalizationRows?.[0] || null) as {
+      id?: string
+      order_id?: string
+      status?: string
+    } | null
 
-  const markedReady =
-    finalization?.status === FINALIZATION_CHARGED_READY_TO_SHIP
+    const markedReady =
+      finalization?.status === FINALIZATION_CHARGED_READY_TO_SHIP
 
-  if (!finalization?.order_id || !markedReady) {
-    // PI not tied to a ready-to-ship order — nothing to page about. (A normal
-    // charge-attempt failure is already handled by charge_failed_hold.)
-    res.status(200).json({ ok: true, acted: false })
-    return
+    if (!finalization?.order_id || !markedReady) {
+      // PI not tied to a ready-to-ship order — nothing to page about. (A normal
+      // charge-attempt failure is already handled by charge_failed_hold.)
+      res.status(200).json({ ok: true, acted: false })
+      return
+    }
+
+    const lastError = (paymentIntent.last_payment_error || {}) as Record<
+      string,
+      any
+    >
+    const failureCode =
+      lastError.code || lastError.decline_code || paymentIntent.status || null
+    const failureMessage =
+      lastError.message || "PaymentIntent failed after order marked ready to ship."
+
+    await emitChargeFailedPostShipAlert({
+      logger,
+      orderId: finalization.order_id,
+      finalizationId: finalization.id || null,
+      paymentIntentId,
+      paymentIntentStatus: paymentIntent.status || null,
+      failureCode,
+      failureMessage,
+    })
+
+    res.status(200).json({ ok: true, acted: true })
+  } catch (error) {
+    await emitStripePaymentFailedWebhookProcessingFailedAlert({
+      logger,
+      paymentIntentId,
+      error,
+    })
+    res.status(500).json({ ok: false, error: "processing_failed" })
   }
-
-  const lastError = (paymentIntent.last_payment_error || {}) as Record<
-    string,
-    any
-  >
-  const failureCode =
-    lastError.code || lastError.decline_code || paymentIntent.status || null
-  const failureMessage =
-    lastError.message || "PaymentIntent failed after order marked ready to ship."
-
-  await emitChargeFailedPostShipAlert({
-    logger,
-    orderId: finalization.order_id,
-    finalizationId: finalization.id || null,
-    paymentIntentId,
-    paymentIntentStatus: paymentIntent.status || null,
-    failureCode,
-    failureMessage,
-  })
-
-  res.status(200).json({ ok: true, acted: true })
 }

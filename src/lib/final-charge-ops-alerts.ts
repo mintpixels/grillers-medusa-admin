@@ -2,6 +2,16 @@ import { emitOpsAlert } from "./ops-alert"
 
 type LoggerLike = Parameters<typeof emitOpsAlert>[0]["logger"]
 
+function errorName(error: unknown) {
+  return error instanceof Error ? error.name : "Error"
+}
+
+function errorMessage(error: unknown) {
+  return (error instanceof Error ? error.message : String(error || "Unknown error"))
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .slice(0, 500)
+}
+
 /**
  * MONEY-CRITICAL guard alert. Fires when the final charge flow is about to
  * transition an order to `charged_ready_to_ship` — which lifts the fulfillment
@@ -88,6 +98,50 @@ export async function emitChargeFailedPostShipAlert({
       payment_intent_status: paymentIntentStatus || null,
       failure_code: failureCode || null,
       failure_message: failureMessage ? String(failureMessage).slice(0, 300) : null,
+    },
+  })
+}
+
+export async function emitStripePaymentFailedWebhookInvalidSignatureAlert({
+  logger,
+  hasSignatureHeader,
+}: {
+  logger?: LoggerLike
+  hasSignatureHeader: boolean
+}) {
+  return emitOpsAlert({
+    alertKind: "stripe_payment_failed_webhook_invalid_signature",
+    title: "Stripe payment-failed webhook rejected an invalid signature",
+    path: "src/api/webhooks/stripe/payment-failed/route.ts",
+    source: "medusa",
+    severity: "warn",
+    logger,
+    meta: {
+      has_signature_header: hasSignatureHeader,
+    },
+  })
+}
+
+export async function emitStripePaymentFailedWebhookProcessingFailedAlert({
+  logger,
+  paymentIntentId,
+  error,
+}: {
+  logger?: LoggerLike
+  paymentIntentId?: string | null
+  error: unknown
+}) {
+  return emitOpsAlert({
+    alertKind: "stripe_payment_failed_webhook_processing_failed",
+    title: "Stripe payment-failed webhook processing failed",
+    path: "src/api/webhooks/stripe/payment-failed/route.ts",
+    source: "medusa",
+    severity: "page",
+    logger,
+    meta: {
+      payment_intent_id: paymentIntentId || null,
+      error_name: errorName(error),
+      error_message: errorMessage(error),
     },
   })
 }

@@ -3,6 +3,8 @@ import {
   emitChargeFailedPostShipAlert,
   emitChargeMarkedReadyButPiNotSucceededAlert,
   emitFinalChargeNonSucceededAlert,
+  emitStripePaymentFailedWebhookInvalidSignatureAlert,
+  emitStripePaymentFailedWebhookProcessingFailedAlert,
 } from "../final-charge-ops-alerts"
 import { emitOpsAlert } from "../ops-alert"
 
@@ -118,6 +120,43 @@ describe("final charge ops alerts", () => {
           payment_intent_status: "requires_payment_method",
           failure_code: "card_declined",
           failure_message: "Your card was declined.",
+        }),
+      })
+    )
+  })
+
+  it("emits a warn alert when the Stripe payment-failed webhook rejects a signature", async () => {
+    await emitStripePaymentFailedWebhookInvalidSignatureAlert({
+      hasSignatureHeader: true,
+    })
+
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "stripe_payment_failed_webhook_invalid_signature",
+        path: "src/api/webhooks/stripe/payment-failed/route.ts",
+        severity: "warn",
+        meta: expect.objectContaining({
+          has_signature_header: true,
+        }),
+      })
+    )
+  })
+
+  it("emits a page alert when the Stripe payment-failed webhook cannot process an event", async () => {
+    await emitStripePaymentFailedWebhookProcessingFailedAlert({
+      paymentIntentId: "pi_123",
+      error: new Error("db unavailable for avi@example.com"),
+    })
+
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "stripe_payment_failed_webhook_processing_failed",
+        path: "src/api/webhooks/stripe/payment-failed/route.ts",
+        severity: "page",
+        meta: expect.objectContaining({
+          payment_intent_id: "pi_123",
+          error_name: "Error",
+          error_message: "db unavailable for [redacted-email]",
         }),
       })
     )
