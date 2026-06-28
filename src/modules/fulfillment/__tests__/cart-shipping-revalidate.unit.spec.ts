@@ -1,5 +1,10 @@
 import { Modules } from "@medusajs/framework/utils"
+import { emitOpsAlert } from "../../../lib/ops-alert"
 import cartShippingRevalidateHandler from "../../../subscribers/cart-shipping-revalidate"
+
+jest.mock("../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
 
 const logger = {
   info: jest.fn(),
@@ -154,5 +159,43 @@ describe("cart-shipping-revalidate subscriber", () => {
 
     await expect(run(container)).resolves.toBeUndefined()
     expect(logger.warn).toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "cart_shipping_revalidate_failed",
+        severity: "warn",
+        path: "src/subscribers/cart-shipping-revalidate.ts",
+        meta: expect.objectContaining({
+          cart_id: "cart_1",
+          error_message: "db down",
+        }),
+      })
+    )
+  })
+
+  it("alerts when the cart lookup fails while still failing open", async () => {
+    const query = {
+      graph: jest.fn().mockRejectedValue(new Error("query unavailable")),
+    }
+    const container = {
+      resolve: (key: string) => {
+        if (key === "logger") return logger
+        if (key === "query") return query
+        if (key === Modules.CART) {
+          return { deleteShippingMethods: jest.fn() }
+        }
+        throw new Error(`unexpected resolve(${key})`)
+      },
+    }
+
+    await expect(run(container, "cart_2")).resolves.toBeUndefined()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "cart_shipping_revalidate_failed",
+        meta: expect.objectContaining({
+          cart_id: "cart_2",
+          error_message: "query unavailable",
+        }),
+      })
+    )
   })
 })

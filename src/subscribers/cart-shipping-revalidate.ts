@@ -23,6 +23,9 @@ import {
   resolveServiceCodeFromMethod,
   ZIP_RESTRICTED_SERVICE_CODES,
 } from "../modules/fulfillment/serviceability"
+import { emitOpsAlert } from "../lib/ops-alert"
+
+const ALERT_PATH = "src/subscribers/cart-shipping-revalidate.ts"
 
 export default async function cartShippingRevalidateHandler({
   event: { data },
@@ -92,6 +95,17 @@ export default async function cartShippingRevalidateHandler({
     logger.warn(
       `[cart-shipping-revalidate] failed to revalidate shipping methods for cart ${data.id}: ${message}`
     )
+    void emitOpsAlert({
+      alertKind: "cart_shipping_revalidate_failed",
+      severity: "warn",
+      title: "cart.updated shipping revalidation failed",
+      path: ALERT_PATH,
+      logger,
+      meta: {
+        cart_id: data.id,
+        error_message: message.slice(0, 300),
+      },
+    })
   }
 }
 
