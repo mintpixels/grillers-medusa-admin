@@ -1,5 +1,6 @@
 import { Modules, generateEntityId } from "@medusajs/framework/utils"
 import { buildLegacyReorderRequestEmail } from "./emails/templates/legacy-reorder-request"
+import { emitOpsAlert } from "./ops-alert"
 import {
   listLegacyPurchaseHistoryForCustomer,
   normalizeEmail,
@@ -238,6 +239,23 @@ export async function submitLegacyReorderRequest({
     logger?.error?.(
       `[legacy-reorder-request] notification failed request=${requestId} customer=${customerId}: ${message}`
     )
+    await emitOpsAlert({
+      alertKind: "legacy_reorder_notification_failed",
+      severity: "page",
+      path: "src/lib/legacy-reorder-request.ts",
+      title: "Legacy reorder request notification failed",
+      fingerprint: "legacy_reorder_request:notification_failed",
+      meta: {
+        request_id: requestId,
+        customer_id: customerId,
+        source,
+        legacy_history_key: key,
+        legacy_item_id: item.legacyItemId || null,
+        sku: item.sku || null,
+        error_message: message.slice(0, 300),
+      },
+      logger: logger as any,
+    })
 
     await db("legacy_reorder_request")
       .where("id", requestId)

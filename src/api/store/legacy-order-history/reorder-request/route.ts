@@ -5,6 +5,7 @@ import {
   notificationModuleFromScope,
   submitLegacyReorderRequest,
 } from "../../../../lib/legacy-reorder-request"
+import { emitOpsAlert } from "../../../../lib/ops-alert"
 
 type ReorderRequestBody = {
   key?: string
@@ -53,6 +54,27 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return
     }
 
-    throw err
+    const message = err instanceof Error ? err.message : String(err)
+    logger?.error?.(
+      `[legacy-reorder-request] storefront submit failed customer=${customerId}: ${message}`
+    )
+    await emitOpsAlert({
+      alertKind: "legacy_reorder_request_failed",
+      severity: "page",
+      path: "src/api/store/legacy-order-history/reorder-request/route.ts",
+      title: "Storefront legacy reorder request failed",
+      fingerprint: "legacy_reorder_request:storefront:500",
+      meta: {
+        customer_id: customerId,
+        source: "storefront_reorder",
+        has_key: Boolean(key),
+        error_name: err instanceof Error ? err.name : undefined,
+        error_message: message.slice(0, 300),
+      },
+      logger,
+    })
+    res.status(500).json({
+      message: "Could not submit reorder request. Please try again or call the store.",
+    })
   }
 }
