@@ -41,3 +41,34 @@ export function emitProductStrapiSyncFailureAlert(input: {
     },
   })
 }
+
+export function emitProductStrapiDeleteSkippedAlert(input: {
+  medusaProductId: string
+  strapiDocumentId?: string | null
+  reason: "missing_strapi_entry" | "destructive_sync_disabled"
+  logger?: LoggerLike
+}) {
+  const title =
+    input.reason === "missing_strapi_entry"
+      ? "Medusa product delete skipped because Strapi entry was missing"
+      : "Medusa product delete skipped by Strapi destructive-sync guard"
+
+  return emitOpsAlert({
+    alertKind: "strapi_product_delete_skipped",
+    severity: "warn",
+    title,
+    path: "src/subscribers/product-deleted.ts",
+    source: "medusa-server",
+    fingerprint: `strapi_product_delete_skipped:${input.reason}`,
+    logger: input.logger,
+    meta: {
+      medusa_product_id: input.medusaProductId,
+      strapi_document_id: input.strapiDocumentId || null,
+      product_event: "product.deleted",
+      sync_target: "strapi",
+      skip_reason: input.reason,
+      destructive_sync_enabled: false,
+      backup_required_before_destructive_sync: true,
+    },
+  })
+}

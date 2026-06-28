@@ -116,4 +116,79 @@ describe("product Strapi sync subscriber alerts", () => {
       })
     )
   })
+
+  it("alerts when product.deleted has no matching Strapi entry", async () => {
+    const strapiService = {
+      findProductByMedusaId: jest.fn(async () => null),
+      deleteProduct: jest.fn(),
+    }
+    const { container, logger } = makeContainer({ strapi: strapiService })
+
+    await productDeletedHandler({
+      event: { data: { id: "prod_missing_strapi" } },
+      container,
+    })
+
+    expect(strapiService.deleteProduct).not.toHaveBeenCalled()
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Strapi entry not found for Medusa ID prod_missing_strapi, nothing to delete."
+    )
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "strapi_product_delete_skipped",
+        title: "Medusa product delete skipped because Strapi entry was missing",
+        path: "src/subscribers/product-deleted.ts",
+        severity: "warn",
+        fingerprint: "strapi_product_delete_skipped:missing_strapi_entry",
+        logger,
+        meta: expect.objectContaining({
+          medusa_product_id: "prod_missing_strapi",
+          strapi_document_id: null,
+          product_event: "product.deleted",
+          sync_target: "strapi",
+          skip_reason: "missing_strapi_entry",
+          destructive_sync_enabled: false,
+          backup_required_before_destructive_sync: true,
+        }),
+      })
+    )
+  })
+
+  it("alerts when product.deleted is skipped by the destructive sync guard", async () => {
+    const strapiService = {
+      findProductByMedusaId: jest.fn(async () => ({ documentId: "strapi_doc" })),
+      deleteProduct: jest.fn(async () => ({
+        data: null,
+        status: 202,
+        statusText: "Skipped by Strapi destructive-sync guard",
+      })),
+    }
+    const { container, logger } = makeContainer({ strapi: strapiService })
+
+    await productDeletedHandler({
+      event: { data: { id: "prod_guarded_delete" } },
+      container,
+    })
+
+    expect(strapiService.deleteProduct).toHaveBeenCalledWith("strapi_doc")
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "strapi_product_delete_skipped",
+        title: "Medusa product delete skipped by Strapi destructive-sync guard",
+        path: "src/subscribers/product-deleted.ts",
+        severity: "warn",
+        fingerprint: "strapi_product_delete_skipped:destructive_sync_disabled",
+        logger,
+        meta: expect.objectContaining({
+          medusa_product_id: "prod_guarded_delete",
+          strapi_document_id: "strapi_doc",
+          product_event: "product.deleted",
+          sync_target: "strapi",
+          skip_reason: "destructive_sync_disabled",
+          destructive_sync_enabled: false,
+          backup_required_before_destructive_sync: true,
+        }),
+      })
+    )
+  })
 })
