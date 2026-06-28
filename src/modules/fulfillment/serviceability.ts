@@ -12,6 +12,9 @@
 // outage must never hide a legitimate shipping method.
 
 import { FULFILLMENT_SERVICES, normalizeServiceCode } from "./service";
+import { emitOpsAlert } from "../../lib/ops-alert";
+
+const ALERT_PATH = "src/modules/fulfillment/serviceability.ts";
 
 export const ZIP_RESTRICTED_SERVICE_CODES = new Set<string>([
   "ATLANTA_DELIVERY",
@@ -100,6 +103,35 @@ function strapiRow<T extends Record<string, unknown>>(row: unknown): T | null {
   return ((value.attributes as T | undefined) || (value as T)) ?? null;
 }
 
+function emitServiceabilityFailOpenAlert(input: {
+  serviceCode: string;
+  lookup: string;
+  status?: number;
+  error?: unknown;
+}) {
+  const errorMessage =
+    input.error instanceof Error
+      ? input.error.message
+      : input.error
+        ? String(input.error)
+        : null;
+
+  void emitOpsAlert({
+    alertKind: "fulfillment_serviceability_failed_open",
+    severity: "warn",
+    title: `fulfillment serviceability ${input.lookup} failed open`,
+    path: ALERT_PATH,
+    source: "medusa-server",
+    meta: {
+      service_code: input.serviceCode,
+      lookup: input.lookup,
+      status: input.status ?? null,
+      error_message: errorMessage ? errorMessage.slice(0, 300) : null,
+      failed_open: true,
+    },
+  });
+}
+
 /**
  * True when `serviceCode` can deliver to `address`.
  *
@@ -161,6 +193,11 @@ export async function isDestinationServiceable(
         console.warn(
           `[serviceability] atlanta-delivery-zones lookup for ${zip} returned ${response.status}; failing open`
         );
+        emitServiceabilityFailOpenAlert({
+          serviceCode: normalized,
+          lookup: "atlanta_delivery_zones",
+          status: response.status,
+        });
         return true;
       }
       const body = (await response.json()) as { data?: unknown };
@@ -173,6 +210,11 @@ export async function isDestinationServiceable(
       console.warn(
         `[serviceability] atlanta-delivery-zones lookup for ${zip} threw (${message}); failing open`
       );
+      emitServiceabilityFailOpenAlert({
+        serviceCode: normalized,
+        lookup: "atlanta_delivery_zones",
+        error,
+      });
       return true;
     }
 
@@ -198,6 +240,11 @@ export async function isDestinationServiceable(
         console.warn(
           `[serviceability] shipping-zones fallback for ATLANTA_DELIVERY ${zip} returned ${response.status}; failing open`
         );
+        emitServiceabilityFailOpenAlert({
+          serviceCode: normalized,
+          lookup: "atlanta_delivery_shipping_zones_fallback",
+          status: response.status,
+        });
         return true;
       }
       const body = (await response.json()) as { data?: unknown };
@@ -214,6 +261,11 @@ export async function isDestinationServiceable(
       console.warn(
         `[serviceability] shipping-zones fallback for ATLANTA_DELIVERY ${zip} threw (${message}); failing open`
       );
+      emitServiceabilityFailOpenAlert({
+        serviceCode: normalized,
+        lookup: "atlanta_delivery_shipping_zones_fallback",
+        error,
+      });
       return true;
     }
   }
@@ -236,6 +288,11 @@ export async function isDestinationServiceable(
         console.warn(
           `[serviceability] shipping-zones lookup for SCHEDULED_DELIVERY ${city}/${province} returned ${response.status}; failing open`
         );
+        emitServiceabilityFailOpenAlert({
+          serviceCode: normalized,
+          lookup: "scheduled_delivery_shipping_zones",
+          status: response.status,
+        });
         return true;
       }
       const body = (await response.json()) as { data?: unknown };
@@ -252,6 +309,11 @@ export async function isDestinationServiceable(
       console.warn(
         `[serviceability] shipping-zones lookup for SCHEDULED_DELIVERY ${city}/${province} threw (${message}); failing open`
       );
+      emitServiceabilityFailOpenAlert({
+        serviceCode: normalized,
+        lookup: "scheduled_delivery_shipping_zones",
+        error,
+      });
       return true;
     }
   }

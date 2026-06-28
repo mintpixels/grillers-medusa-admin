@@ -1,8 +1,13 @@
+import { emitOpsAlert } from "../../../lib/ops-alert"
 import {
   isDestinationServiceable,
   resolveServiceCodeFromMethod,
   ZIP_RESTRICTED_SERVICE_CODES,
 } from "../serviceability"
+
+jest.mock("../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async (_input: any) => ({ ok: true, skipped: false })),
+}))
 
 function mockFetchOk(data: any) {
   global.fetch = jest.fn().mockResolvedValue({
@@ -37,6 +42,7 @@ function mockFetchOkSequence(...payloads: any[]) {
 describe("serviceability", () => {
   beforeEach(() => {
     jest.restoreAllMocks()
+    ;(emitOpsAlert as jest.Mock).mockClear()
     process.env.STRAPI_URL = "https://strapi.example.test"
     process.env.STRAPI_TOKEN = "strapi-token"
   })
@@ -112,6 +118,20 @@ describe("serviceability", () => {
         postal_code: "38120",
       })
       expect(ok).toBe(true)
+      expect(emitOpsAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          alertKind: "fulfillment_serviceability_failed_open",
+          severity: "warn",
+          path: "src/modules/fulfillment/serviceability.ts",
+          meta: expect.objectContaining({
+            service_code: "ATLANTA_DELIVERY",
+            lookup: "atlanta_delivery_zones",
+            status: null,
+            error_message: "network down",
+            failed_open: true,
+          }),
+        })
+      )
     })
 
     it("ATLANTA_DELIVERY fails open (true) when Strapi returns non-ok", async () => {
@@ -120,6 +140,18 @@ describe("serviceability", () => {
         postal_code: "38120",
       })
       expect(ok).toBe(true)
+      expect(emitOpsAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          alertKind: "fulfillment_serviceability_failed_open",
+          meta: expect.objectContaining({
+            service_code: "ATLANTA_DELIVERY",
+            lookup: "atlanta_delivery_zones",
+            status: 503,
+            error_message: null,
+            failed_open: true,
+          }),
+        })
+      )
     })
 
     it("ATLANTA_DELIVERY fails open (true) when there is no ZIP", async () => {
@@ -179,6 +211,17 @@ describe("serviceability", () => {
         province: "TN",
       })
       expect(ok).toBe(true)
+      expect(emitOpsAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          alertKind: "fulfillment_serviceability_failed_open",
+          meta: expect.objectContaining({
+            service_code: "SCHEDULED_DELIVERY",
+            lookup: "scheduled_delivery_shipping_zones",
+            error_message: "network down",
+            failed_open: true,
+          }),
+        })
+      )
     })
 
     it("SCHEDULED_DELIVERY fails open (true) when city or state is missing", async () => {
