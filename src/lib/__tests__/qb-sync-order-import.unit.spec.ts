@@ -3,6 +3,7 @@ import {
   buildQbSyncSignature,
   importOrderToQbSync,
   legacyQbdListIdFallbacksForOrder,
+  missingQbdLineIdentities,
   normalizeOrderForQbSync,
   postOrderToQbSync,
   config as orderImportConfig,
@@ -401,6 +402,138 @@ describe("qb-sync order import subscriber", () => {
       strapi_title: "Ground Beef",
       qbd_list_id: "800049D5-1779670076",
     })
+  })
+
+  it("detects normalized order lines that still lack QuickBooks ListIDs", () => {
+    const order = normalizeOrderForQbSync({
+      id: "order_missing_qbd_line_identity",
+      total: 42,
+      subtotal: 42,
+      shipping_total: 0,
+      tax_total: 0,
+      discount_total: 0,
+      items: [
+        {
+          id: "ordli_missing",
+          title: "Unknown Item",
+          quantity: 1,
+          unit_price: 42,
+          total: 42,
+          variant_id: "variant_missing",
+          variant_sku: "SKU-MISSING",
+          metadata: {},
+        },
+        {
+          id: "ordli_mapped",
+          title: "Mapped Item",
+          quantity: 1,
+          unit_price: 12,
+          total: 12,
+          metadata: { qbd_list_id: "QBD-MAPPED" },
+        },
+      ],
+    })
+
+    expect(missingQbdLineIdentities(order)).toEqual([
+      {
+        line_id: "ordli_missing",
+        variant_id: "variant_missing",
+        sku: "SKU-MISSING",
+        title: "Unknown Item",
+      },
+    ])
+  })
+
+  it("alerts when a QBD import payload contains lines without ListIDs", async () => {
+    const previousEndpoint = process.env.QB_SYNC_ORDER_IMPORT_URL
+    const previousToken = process.env.QB_SYNC_ORDER_IMPORT_TOKEN
+    const previousFetch = global.fetch
+    const fetchMock = jest.fn(async () => new Response("{}", { status: 200 }))
+    const logger = { warn: jest.fn(), info: jest.fn(), error: jest.fn() }
+    const query = {
+      graph: jest.fn(async () => ({
+        data: [
+          {
+            id: "order_missing_qbd_line_identity",
+            total: 42,
+            subtotal: 42,
+            shipping_total: 0,
+            tax_total: 0,
+            discount_total: 0,
+            metadata: {},
+            items: [
+              {
+                id: "ordli_missing",
+                title: "Unknown Item",
+                quantity: 1,
+                unit_price: 42,
+                total: 42,
+                variant_id: "variant_missing",
+                variant_sku: "SKU-MISSING",
+                metadata: {},
+              },
+            ],
+          },
+        ],
+      })),
+    }
+    const legacyMapQuery = {
+      select: jest.fn().mockReturnThis(),
+      whereNull: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      then: (resolve: any) => resolve([]),
+    }
+    const db: any = jest.fn(() => legacyMapQuery)
+    db.raw = (value: string) => value
+    const container = {
+      resolve: jest.fn((key: string) => {
+        if (key === "logger") return logger
+        if (key === "query") return query
+        return db
+      }),
+    }
+
+    process.env.QB_SYNC_ORDER_IMPORT_URL =
+      "https://sync.example.test/api/medusa/orders"
+    process.env.QB_SYNC_ORDER_IMPORT_TOKEN = "sync-token"
+    global.fetch = fetchMock as unknown as typeof fetch
+    ;(emitOpsAlert as jest.Mock).mockClear()
+
+    try {
+      await importOrderToQbSync({
+        orderId: "order_missing_qbd_line_identity",
+        container: container as any,
+        source: "order.placed",
+      })
+    } finally {
+      process.env.QB_SYNC_ORDER_IMPORT_URL = previousEndpoint
+      process.env.QB_SYNC_ORDER_IMPORT_TOKEN = previousToken
+      global.fetch = previousFetch
+    }
+
+    expect(fetchMock).toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "qbd_line_identity_missing",
+        severity: "page",
+        path: "src/subscribers/qb-sync-order-import.ts",
+        fingerprint: "qbd:line_identity_missing",
+        meta: expect.objectContaining({
+          order_id: "order_missing_qbd_line_identity",
+          source_event: "order.placed",
+          missing_line_count: 1,
+          missing_lines: [
+            expect.objectContaining({
+              line_id: "ordli_missing",
+              variant_id: "variant_missing",
+              sku: "SKU-MISSING",
+              title: "Unknown Item",
+            }),
+          ],
+        }),
+      })
+    )
   })
 
   it("normalizes finalized catch-weight lines for QuickBooks posting", () => {

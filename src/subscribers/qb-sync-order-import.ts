@@ -49,6 +49,12 @@ export const ORDER_FIELDS = [
 
 const IMPORT_TIMEOUT_MS = 15_000
 type QbdListIdFallbacks = Record<string, string>
+type MissingQbdLineIdentity = {
+  line_id: string | null
+  variant_id: string | null
+  sku: string | null
+  title: string | null
+}
 
 function numeric(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -295,6 +301,73 @@ function fallbackQbdListId(
   }
 
   return null
+}
+
+function normalizedItemQbdListId(item: Record<string, unknown>): string | null {
+  return metadataListId(item.metadata)
+}
+
+export function missingQbdLineIdentities(
+  order: Record<string, unknown>
+): MissingQbdLineIdentity[] {
+  if (!Array.isArray(order.items)) {
+    return []
+  }
+
+  return order.items
+    .filter((item): item is Record<string, unknown> => {
+      return !!item && typeof item === "object" && !normalizedItemQbdListId(item)
+    })
+    .map((item) => {
+      const detail = objectRecord(item.detail)
+      const variant = objectRecord(item.variant)
+
+      return {
+        line_id: textValue(item.id),
+        variant_id:
+          textValue(item.variant_id) ||
+          textValue(detail.variant_id) ||
+          textValue(variant.id),
+        sku:
+          textValue(item.variant_sku) ||
+          textValue(item.sku) ||
+          textValue(detail.sku) ||
+          textValue(variant.sku),
+        title: textValue(item.title),
+      }
+    })
+}
+
+async function emitMissingQbdLineIdentityAlert({
+  orderId,
+  source,
+  missingLines,
+  logger,
+}: {
+  orderId: string
+  source: string
+  missingLines: MissingQbdLineIdentity[]
+  logger: Parameters<typeof emitOpsAlert>[0]["logger"]
+}) {
+  if (!missingLines.length) {
+    return
+  }
+
+  await emitOpsAlert({
+    alertKind: "qbd_line_identity_missing",
+    title: `QBD order import has ${missingLines.length} line(s) without ListID`,
+    path: "src/subscribers/qb-sync-order-import.ts",
+    source: "medusa",
+    severity: "page",
+    fingerprint: "qbd:line_identity_missing",
+    logger,
+    meta: {
+      order_id: orderId,
+      source_event: source,
+      missing_line_count: missingLines.length,
+      missing_lines: missingLines.slice(0, 10),
+    },
+  })
 }
 
 /**
@@ -730,14 +803,18 @@ export async function importOrderToQbSync({
       return
     }
 
-    const response = await postOrderToQbSync(
-      endpoint,
-      token,
-      normalizeOrderForQbSync(
-        order,
-        await legacyQbdListIdFallbacksForOrder(db, order)
-      )
+    const normalizedOrder = normalizeOrderForQbSync(
+      order,
+      await legacyQbdListIdFallbacksForOrder(db, order)
     )
+    await emitMissingQbdLineIdentityAlert({
+      orderId,
+      source,
+      missingLines: missingQbdLineIdentities(normalizedOrder),
+      logger,
+    })
+
+    const response = await postOrderToQbSync(endpoint, token, normalizedOrder)
 
     if (!response.ok) {
       const body = await response.text().catch(() => "")
