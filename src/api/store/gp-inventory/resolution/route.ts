@@ -5,7 +5,8 @@ import {
   updateCartWorkflowId,
   updateLineItemInCartWorkflowId,
 } from "@medusajs/core-flows"
-import { Modules } from "@medusajs/framework/utils"
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import { emitOpsAlert } from "../../../../lib/ops-alert"
 
 type ResolutionBody = {
   cart_id?: string
@@ -90,6 +91,58 @@ function positiveQuantity(value: unknown) {
   return Number.isFinite(quantity) && quantity > 0 ? Math.floor(quantity) : 0
 }
 
+const redactedErrorMessage = (error: unknown) =>
+  (error instanceof Error ? error.message : String(error || "Unknown error"))
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(/\b(?:cart|cali|line|variant)_[A-Za-z0-9_]+/g, "[redacted-id]")
+    .slice(0, 500)
+
+async function emitInventoryResolutionFailureAlert({
+  req,
+  error,
+  cartId,
+  stage,
+  mutationStarted,
+  resolutions,
+  requestedFulfillmentDate,
+}: {
+  req: MedusaRequest
+  error: unknown
+  cartId?: string | null
+  stage: string
+  mutationStarted: boolean
+  resolutions: Resolution[]
+  requestedFulfillmentDate?: string
+}) {
+  let logger: any
+  try {
+    logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
+  } catch {
+    logger = undefined
+  }
+
+  return emitOpsAlert({
+    alertKind: "inventory_resolution_route_failed",
+    title: `Inventory resolution failed during ${stage}`,
+    path: "src/api/store/gp-inventory/resolution/route.ts",
+    source: "medusa-server",
+    severity: "page",
+    logger,
+    meta: {
+      stage,
+      cart_id: cartId || null,
+      mutation_started: mutationStarted,
+      resolution_count: resolutions.length,
+      actions: resolutions
+        .map((resolution) => resolution.action)
+        .filter(Boolean)
+        .slice(0, 10),
+      has_requested_fulfillment_date: Boolean(requestedFulfillmentDate),
+      error_message: redactedErrorMessage(error),
+    },
+  })
+}
+
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const body = (req.body || {}) as ResolutionBody
   const resolutions = body.resolutions || []
@@ -129,132 +182,166 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
 
-  const cart = await fetchCart(req, body.cart_id)
-  if (!cart) {
-    res.status(404).json({ ok: false, message: "Cart not found." })
-    return
-  }
+  let stage = "fetch_cart"
+  let mutationStarted = false
 
-  const workflowEngine = req.scope.resolve(Modules.WORKFLOW_ENGINE)
-  const applied: Array<Resolution & { line_item_id?: string }> = []
-  let cartMetadata: Record<string, unknown> = {
-    ...(cart.metadata || {}),
-    inventory_resolution_last_submitted_at: new Date().toISOString(),
-    inventory_resolution_requested_fulfillment_date:
-      body.requested_fulfillment_date || null,
-  }
-
-  for (const [index, resolution] of resolutions.entries()) {
-    const line = findLine(cart, resolution.original_variant_id!)
-    const metadata = resolutionMetadata(
-      resolution,
-      body.requested_fulfillment_date
-    )
-
-    if (resolution.action === "move_order_date") {
-      cartMetadata = {
-        ...cartMetadata,
-        requested_fulfillment_date: body.requested_fulfillment_date || null,
-        scheduledDate: body.requested_fulfillment_date || null,
-        ...metadata,
-      }
-      applied.push(resolution)
-      continue
-    }
-
-    if (!line) {
-      res.status(404).json({
-        ok: false,
-        message: `Cart line for variant ${resolution.original_variant_id} was not found.`,
-      })
+  try {
+    const cart = await fetchCart(req, body.cart_id)
+    if (!cart) {
+      res.status(404).json({ ok: false, message: "Cart not found." })
       return
     }
 
-    if (resolution.action === "substitute") {
-      await workflowEngine.run(addToCartWorkflowId, {
-        input: {
-          cart_id: body.cart_id,
-          items: [
-            {
-              variant_id: resolution.replacement_variant_id,
-              quantity: positiveQuantity(resolution.quantity) || line.quantity || 1,
-              metadata: {
-                ...metadata,
-                inventory_resolution_original_line_id: line.id,
-                inventory_resolution_original_sku: line.variant_sku || null,
-                inventory_resolution_original_title: line.title || null,
-              },
-            },
-          ],
-        },
-        transactionId: `inventory-resolution-substitute-${body.cart_id}-${index}`,
-      })
-
-      await workflowEngine.run(deleteLineItemsWorkflowId, {
-        input: {
-          cart_id: body.cart_id,
-          ids: [line.id],
-        },
-        transactionId: `inventory-resolution-remove-original-${body.cart_id}-${index}`,
-      })
+    const workflowEngine = req.scope.resolve(Modules.WORKFLOW_ENGINE)
+    const applied: Array<Resolution & { line_item_id?: string }> = []
+    let cartMetadata: Record<string, unknown> = {
+      ...(cart.metadata || {}),
+      inventory_resolution_last_submitted_at: new Date().toISOString(),
+      inventory_resolution_requested_fulfillment_date:
+        body.requested_fulfillment_date || null,
     }
 
-    if (resolution.action === "complete_available_only") {
-      await workflowEngine.run(updateLineItemInCartWorkflowId, {
-        input: {
-          cart_id: body.cart_id,
-          item_id: line.id,
-          update: {
-            quantity: positiveQuantity(resolution.quantity),
-            metadata: {
-              ...(line.metadata || {}),
-              ...metadata,
-            },
-          },
-        },
-        transactionId: `inventory-resolution-quantity-${body.cart_id}-${index}`,
-      })
-    }
+    for (const [index, resolution] of resolutions.entries()) {
+      const line = findLine(cart, resolution.original_variant_id!)
+      const metadata = resolutionMetadata(
+        resolution,
+        body.requested_fulfillment_date
+      )
 
-    if (resolution.action === "remove" || resolution.action === "waitlist") {
-      cartMetadata = {
-        ...cartMetadata,
-        [`inventory_resolution_${line.id}`]: metadata,
-        ...(resolution.action === "waitlist"
-          ? {
-              inventory_resolution_waitlist_email:
-                resolution.email || cart.email || null,
-            }
-          : {}),
+      if (resolution.action === "move_order_date") {
+        cartMetadata = {
+          ...cartMetadata,
+          requested_fulfillment_date: body.requested_fulfillment_date || null,
+          scheduledDate: body.requested_fulfillment_date || null,
+          ...metadata,
+        }
+        applied.push(resolution)
+        continue
       }
 
-      await workflowEngine.run(deleteLineItemsWorkflowId, {
-        input: {
-          cart_id: body.cart_id,
-          ids: [line.id],
-        },
-        transactionId: `inventory-resolution-delete-${body.cart_id}-${index}`,
-      })
+      if (!line) {
+        res.status(404).json({
+          ok: false,
+          message: `Cart line for variant ${resolution.original_variant_id} was not found.`,
+        })
+        return
+      }
+
+      if (resolution.action === "substitute") {
+        stage = "substitute_add"
+        await workflowEngine.run(addToCartWorkflowId, {
+          input: {
+            cart_id: body.cart_id,
+            items: [
+              {
+                variant_id: resolution.replacement_variant_id,
+                quantity:
+                  positiveQuantity(resolution.quantity) || line.quantity || 1,
+                metadata: {
+                  ...metadata,
+                  inventory_resolution_original_line_id: line.id,
+                  inventory_resolution_original_sku: line.variant_sku || null,
+                  inventory_resolution_original_title: line.title || null,
+                },
+              },
+            ],
+          },
+          transactionId: `inventory-resolution-substitute-${body.cart_id}-${index}`,
+        })
+        mutationStarted = true
+
+        stage = "substitute_remove_original"
+        await workflowEngine.run(deleteLineItemsWorkflowId, {
+          input: {
+            cart_id: body.cart_id,
+            ids: [line.id],
+          },
+          transactionId: `inventory-resolution-remove-original-${body.cart_id}-${index}`,
+        })
+      }
+
+      if (resolution.action === "complete_available_only") {
+        stage = "update_line_quantity"
+        await workflowEngine.run(updateLineItemInCartWorkflowId, {
+          input: {
+            cart_id: body.cart_id,
+            item_id: line.id,
+            update: {
+              quantity: positiveQuantity(resolution.quantity),
+              metadata: {
+                ...(line.metadata || {}),
+                ...metadata,
+              },
+            },
+          },
+          transactionId: `inventory-resolution-quantity-${body.cart_id}-${index}`,
+        })
+        mutationStarted = true
+      }
+
+      if (resolution.action === "remove" || resolution.action === "waitlist") {
+        cartMetadata = {
+          ...cartMetadata,
+          [`inventory_resolution_${line.id}`]: metadata,
+          ...(resolution.action === "waitlist"
+            ? {
+                inventory_resolution_waitlist_email:
+                  resolution.email || cart.email || null,
+              }
+            : {}),
+        }
+
+        stage =
+          resolution.action === "waitlist" ? "waitlist_delete" : "remove_line"
+        await workflowEngine.run(deleteLineItemsWorkflowId, {
+          input: {
+            cart_id: body.cart_id,
+            ids: [line.id],
+          },
+          transactionId: `inventory-resolution-delete-${body.cart_id}-${index}`,
+        })
+        mutationStarted = true
+      }
+
+      applied.push({ ...resolution, line_item_id: line.id })
     }
 
-    applied.push({ ...resolution, line_item_id: line.id })
+    stage = "update_cart"
+    await workflowEngine.run(updateCartWorkflowId, {
+      input: {
+        id: body.cart_id,
+        metadata: cartMetadata,
+      },
+      transactionId: `inventory-resolution-cart-${body.cart_id}`,
+    })
+    mutationStarted = true
+
+    stage = "fetch_updated_cart"
+    const updatedCart = await fetchCart(req, body.cart_id)
+
+    res.status(200).json({
+      ok: true,
+      cart_id: body.cart_id,
+      requested_fulfillment_date: body.requested_fulfillment_date || null,
+      resolutions: applied,
+      cart: updatedCart || null,
+    })
+  } catch (error) {
+    await emitInventoryResolutionFailureAlert({
+      req,
+      error,
+      cartId: body.cart_id,
+      stage,
+      mutationStarted,
+      resolutions,
+      requestedFulfillmentDate: body.requested_fulfillment_date,
+    })
+
+    res.status(500).json({
+      ok: false,
+      message: mutationStarted
+        ? "Some cart changes may have been applied. Refresh your cart before retrying."
+        : "Inventory resolution could not be completed. Refresh your cart before retrying.",
+    })
   }
-
-  await workflowEngine.run(updateCartWorkflowId, {
-    input: {
-      id: body.cart_id,
-      metadata: cartMetadata,
-    },
-    transactionId: `inventory-resolution-cart-${body.cart_id}`,
-  })
-
-  const updatedCart = await fetchCart(req, body.cart_id)
-
-  res.status(200).json({
-    ok: true,
-    cart_id: body.cart_id,
-    requested_fulfillment_date: body.requested_fulfillment_date || null,
-    resolutions: applied,
-    cart: updatedCart || null,
-  })
 }

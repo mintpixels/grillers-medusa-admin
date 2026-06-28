@@ -4,8 +4,13 @@ import {
   updateCartWorkflowId,
   updateLineItemInCartWorkflowId,
 } from "@medusajs/core-flows"
-import { Modules } from "@medusajs/framework/utils"
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import { emitOpsAlert } from "../../../../../lib/ops-alert"
 import { POST } from "../route"
+
+jest.mock("../../../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
 
 function makeRes() {
   return {
@@ -45,6 +50,9 @@ function makeReq(body: Record<string, unknown>, cartOverrides = {}) {
       resolve: (key: string) => {
         if (key === Modules.WORKFLOW_ENGINE) return workflowEngine
         if (key === "query") return query
+        if (key === ContainerRegistrationKeys.LOGGER) {
+          return { warn: jest.fn(), error: jest.fn() }
+        }
         throw new Error(`Unknown dependency ${key}`)
       },
     },
@@ -182,5 +190,58 @@ describe("store inventory resolution route", () => {
       })
     )
     expect(res.status).toHaveBeenCalledWith(200)
+  })
+
+  it("alerts when a cart update fails after a resolution mutation", async () => {
+    const { req, workflowEngine } = makeReq({
+      cart_id: "cart_123",
+      requested_fulfillment_date: "2026-06-10",
+      resolutions: [
+        {
+          original_variant_id: "variant_original",
+          action: "waitlist",
+          email: "customer@example.com",
+        },
+      ],
+    })
+    ;(workflowEngine.run as jest.Mock).mockImplementation(
+      async (workflowId: string) => {
+        if (workflowId === updateCartWorkflowId) {
+          throw new Error("workflow failed for customer@example.com cart_123")
+        }
+        return undefined
+      }
+    )
+    const res = makeRes()
+    ;(emitOpsAlert as jest.Mock).mockClear()
+
+    await POST(req, res)
+
+    expect(res.status).toHaveBeenCalledWith(500)
+    expect(res.json).toHaveBeenCalledWith({
+      ok: false,
+      message:
+        "Some cart changes may have been applied. Refresh your cart before retrying.",
+    })
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "inventory_resolution_route_failed",
+        severity: "page",
+        title: "Inventory resolution failed during update_cart",
+        path: "src/api/store/gp-inventory/resolution/route.ts",
+        meta: expect.objectContaining({
+          stage: "update_cart",
+          cart_id: "cart_123",
+          mutation_started: true,
+          resolution_count: 1,
+          actions: ["waitlist"],
+          has_requested_fulfillment_date: true,
+          error_message:
+            "workflow failed for [redacted-email] [redacted-id]",
+        }),
+      })
+    )
+    const meta = (emitOpsAlert as jest.Mock).mock.calls[0][0].meta
+    expect(JSON.stringify(meta)).not.toContain("customer@example.com")
   })
 })
