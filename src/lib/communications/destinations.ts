@@ -1,9 +1,26 @@
 import crypto from "crypto"
 import { createClient } from "@clickhouse/client"
+import { emitOpsAlert } from "../ops-alert"
 
 type KnexLike = any
 
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID()}`
+const ALERT_PATH = "src/lib/communications/destinations.ts"
+const ALERTED_EVENT_NAMES = new Set([
+  "checkout_started",
+  "shipping_info_submitted",
+  "payment_info_submitted",
+  "product_added_to_cart",
+  "order_received",
+  "order_completed",
+  "order_refunded",
+  "email_signup",
+  "email_sent",
+  "email_failed",
+  "email_clicked",
+  "gp_abandon_email_sent",
+  "flow_step_failed",
+])
 
 function hasClickHouseConfig() {
   return Boolean(process.env.CLICKHOUSE_URL)
@@ -25,6 +42,57 @@ function json(value: unknown) {
   } catch {
     return "{}"
   }
+}
+
+function redactedErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || "")
+  return message
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .slice(0, 500)
+}
+
+function shouldAlertDestinationFailure(event: Record<string, any>): boolean {
+  const eventName = String(event.event_name || "")
+  return Boolean(
+    ALERTED_EVENT_NAMES.has(eventName) ||
+      event.order_id ||
+      event.cart_id ||
+      event.campaign_id ||
+      event.flow_id ||
+      event.template_key
+  )
+}
+
+function emitDestinationDeliveryFailureAlert(
+  target: string,
+  event: Record<string, any>,
+  error: unknown
+) {
+  if (!shouldAlertDestinationFailure(event)) return
+
+  const eventName = String(event.event_name || "unknown")
+  void emitOpsAlert({
+    alertKind: "communications_destination_delivery_failed",
+    severity: "warn",
+    title: `Communications ${target} delivery failed for ${eventName}`,
+    path: ALERT_PATH,
+    source: "medusa-server",
+    meta: {
+      destination: target,
+      event_id: event.event_id || null,
+      event_name: eventName,
+      event_source: event.source || null,
+      order_id: event.order_id || null,
+      cart_id: event.cart_id || null,
+      campaign_id: event.campaign_id || null,
+      flow_id: event.flow_id || null,
+      template_key: event.template_key || null,
+      message_id: event.message_id || null,
+      has_profile_id: Boolean(event.profile_id),
+      has_medusa_customer_id: Boolean(event.medusa_customer_id),
+      error: redactedErrorMessage(error),
+    },
+  })
 }
 
 async function delivery(
@@ -178,14 +246,16 @@ export async function writeEventToClickHouse(
     await delivery(db, event, "clickhouse", "delivered")
     return true
   } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
     await delivery(
       db,
       event,
       "clickhouse",
       "failed",
       {},
-      err instanceof Error ? err.message : String(err)
+      error
     )
+    emitDestinationDeliveryFailureAlert("clickhouse", event, error)
     return false
   }
 }
@@ -264,14 +334,16 @@ export async function writeEventToGa4(
     await delivery(db, event, "ga4", "delivered")
     return true
   } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
     await delivery(
       db,
       event,
       "ga4",
       "failed",
       {},
-      err instanceof Error ? err.message : String(err)
+      error
     )
+    emitDestinationDeliveryFailureAlert("ga4", event, error)
     return false
   }
 }
