@@ -9,6 +9,9 @@ import {
   finalChargeSucceeded,
   metadataObject,
 } from "../lib/catch-weight-finalization"
+import { emitOpsAlert } from "../lib/ops-alert"
+
+const ALERT_PATH = "src/subscribers/communications-commerce-events.ts"
 
 type EventData = {
   id: string
@@ -18,6 +21,45 @@ type EventData = {
   email?: string
   amount?: number | string
   reason?: string
+}
+
+function redactedErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || "")
+  return message
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .slice(0, 300)
+}
+
+function orderIdFromEvent(name: string | undefined, data: EventData) {
+  if (data.order_id) return data.order_id
+  if (name === "order.placed" || name === "order.canceled") return data.id
+  if (name === "order.final_charge_succeeded") return data.order_id || data.id
+  return null
+}
+
+function emitCommerceEventRecordFailureAlert(input: {
+  logger: Parameters<typeof emitOpsAlert>[0]["logger"]
+  name?: string
+  data: EventData
+  error: unknown
+}) {
+  void emitOpsAlert({
+    alertKind: "communications_commerce_event_record_failed",
+    severity: "warn",
+    title: `Communications commerce event failed for ${input.name || "unknown"}`,
+    path: ALERT_PATH,
+    source: "medusa-server",
+    logger: input.logger,
+    meta: {
+      medusa_event_name: input.name || null,
+      source_event_id: input.data.id || null,
+      order_id: orderIdFromEvent(input.name, input.data),
+      cart_id: input.data.cart_id || null,
+      medusa_customer_id: input.data.customer_id || null,
+      has_email: Boolean(input.data.email),
+      error: redactedErrorMessage(input.error),
+    },
+  })
 }
 
 async function fetchOrderContext(container: any, orderId?: string) {
@@ -225,9 +267,15 @@ export default async function communicationsCommerceEvents({
   } catch (err) {
     logger.warn(
       `[communications] failed to record commerce event ${name}: ${
-        err instanceof Error ? err.message : String(err)
+        redactedErrorMessage(err)
       }`
     )
+    emitCommerceEventRecordFailureAlert({
+      logger,
+      name,
+      data,
+      error: err,
+    })
   }
 }
 
