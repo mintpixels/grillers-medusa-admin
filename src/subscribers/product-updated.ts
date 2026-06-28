@@ -1,6 +1,6 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework";
 import { syncProductWorkflow } from "../workflows/sync-product-to-strapi";
-import { emitProductStrapiSyncFailureAlert } from "./product-strapi-sync-alert";
+import { emitProductStrapiSyncFailureAlert } from "../lib/product-strapi-sync-alert";
 
 export default async function productUpdatedHandler({
   event: { data },

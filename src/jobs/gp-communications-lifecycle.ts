@@ -6,7 +6,7 @@ import {
 import {
   emitCommunicationsFlowStepErrorsAlert,
   emitCommunicationsScheduledJobFailureAlert,
-} from "./communications-job-alerts"
+} from "../lib/communications-job-alerts"
 
 export default async function gpCommunicationsLifecycle(
   container: MedusaContainer

@@ -1,4 +1,4 @@
-import { emitOpsAlert } from "../lib/ops-alert"
+import { emitOpsAlert } from "./ops-alert"
 
 type LoggerLike = Parameters<typeof emitOpsAlert>[0]["logger"]
 

@@ -1,7 +1,7 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework";
 import StrapiModuleService from "../modules/strapi/service";
 import { STRAPI_MODULE } from "../modules/strapi";
-import { emitProductStrapiSyncFailureAlert } from "./product-strapi-sync-alert";
+import { emitProductStrapiSyncFailureAlert } from "../lib/product-strapi-sync-alert";
 
 export default async function productDeletedHandler(args: SubscriberArgs<{ id: string }>) {
   const {

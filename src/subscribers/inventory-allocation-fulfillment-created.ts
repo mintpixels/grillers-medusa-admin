@@ -1,7 +1,7 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { fulfillAllocationsForFulfillment } from "../lib/inventory-allocation"
-import { emitInventoryAllocationSubscriberFailureAlert } from "./inventory-allocation-alerts"
+import { emitInventoryAllocationSubscriberFailureAlert } from "../lib/inventory-allocation-subscriber-alerts"
 
 export default async function inventoryAllocationFulfillmentCreatedHandler({
   event: { data },

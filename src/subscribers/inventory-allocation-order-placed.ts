@@ -2,7 +2,7 @@ import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { createAllocationsForOrder } from "../lib/inventory-allocation"
 import { emitOpsAlert } from "../lib/ops-alert"
-import { emitInventoryAllocationSubscriberFailureAlert } from "./inventory-allocation-alerts"
+import { emitInventoryAllocationSubscriberFailureAlert } from "../lib/inventory-allocation-subscriber-alerts"
 
 export default async function inventoryAllocationOrderPlacedHandler({
   event: { data },
