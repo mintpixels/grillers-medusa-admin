@@ -16,6 +16,15 @@ type StaleQbdPostingAlertInput = {
   staleAfterMinutes?: number
 }
 
+type StaleQbdPostingDbScanInput = {
+  db: any
+  logger?: LoggerLike
+  path?: string
+  now?: Date
+  staleAfterMinutes?: number
+  limit?: number
+}
+
 type StaleQbdPostingOrder = {
   order_id: string | null
   display_id: string | null
@@ -27,6 +36,7 @@ type StaleQbdPostingOrder = {
 }
 
 const DEFAULT_STALE_AFTER_MINUTES = 120
+const DEFAULT_SCAN_LIMIT = 250
 const MAX_SAMPLE_ORDERS = 10
 const DEFAULT_PATH = "src/api/admin/grillers/finalization/queue/route.ts"
 
@@ -67,6 +77,18 @@ function staleAfterMinutes(value: unknown): number {
 
 function configuredStaleAfterMinutes() {
   return staleAfterMinutes(process.env.QBD_PENDING_POSTING_STALE_MINUTES)
+}
+
+function scanLimit(value: unknown): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_SCAN_LIMIT
+  }
+  return Math.min(Math.max(Math.round(parsed), 25), 1_000)
+}
+
+function configuredScanLimit() {
+  return scanLimit(process.env.QBD_PENDING_POSTING_SCAN_LIMIT)
 }
 
 function ageMinutes(requestedAt: string, now: Date): number | null {
@@ -150,6 +172,26 @@ export function buildStaleQbdPostingAlert({
   }
 }
 
+export async function findPendingQbdPostingOrders(
+  db: any,
+  limit = configuredScanLimit()
+): Promise<QbdPendingPostingOrder[]> {
+  const rows = await db("order")
+    .select(["id", "display_id", "metadata"])
+    .whereNull("deleted_at")
+    .whereRaw("lower(coalesce(metadata->>'qbd_posting_required', '')) = 'true'")
+    .whereRaw("lower(coalesce(metadata->>'qbd_posting_status', '')) like 'pending%'")
+    .whereRaw("coalesce(metadata->>'qbd_posting_requested_at', '') <> ''")
+    .orderByRaw("metadata->>'qbd_posting_requested_at' asc")
+    .limit(scanLimit(limit))
+
+  return (rows || []).map((row: Record<string, unknown>) => ({
+    id: textValue(row.id) || null,
+    display_id: textValue(row.display_id) || null,
+    metadata: metadataObject(row.metadata),
+  }))
+}
+
 export async function emitStaleQbdPostingAlertForOrders({
   orders,
   logger,
@@ -181,5 +223,31 @@ export async function emitStaleQbdPostingAlertForOrders({
   return {
     emitted: true,
     staleOrderCount: alert.meta.stale_order_count,
+  }
+}
+
+export async function emitStaleQbdPostingAlertFromDb({
+  db,
+  logger,
+  path,
+  now,
+  staleAfterMinutes,
+  limit,
+}: StaleQbdPostingDbScanInput) {
+  const orders = await findPendingQbdPostingOrders(
+    db,
+    limit === undefined ? configuredScanLimit() : limit
+  )
+  const result = await emitStaleQbdPostingAlertForOrders({
+    orders,
+    logger,
+    path,
+    now,
+    staleAfterMinutes,
+  })
+
+  return {
+    ...result,
+    candidateCount: orders.length,
   }
 }

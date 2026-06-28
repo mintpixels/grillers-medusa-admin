@@ -1,6 +1,8 @@
 import {
   buildStaleQbdPostingAlert,
+  emitStaleQbdPostingAlertFromDb,
   emitStaleQbdPostingAlertForOrders,
+  findPendingQbdPostingOrders,
 } from "../qbd-pending-posting-alerts"
 import { emitOpsAlert } from "../ops-alert"
 
@@ -113,6 +115,83 @@ describe("QBD pending posting alerts", () => {
         source: "medusa-server",
         fingerprint: "qbd:pending_posting_stale",
         logger,
+      })
+    )
+  })
+
+  it("finds pending QBD posting candidates from the order table", async () => {
+    const builder: Record<string, jest.Mock> = {}
+    builder.select = jest.fn(() => builder)
+    builder.whereNull = jest.fn(() => builder)
+    builder.whereRaw = jest.fn(() => builder)
+    builder.orderByRaw = jest.fn(() => builder)
+    builder.limit = jest.fn(async () => [
+      {
+        id: "order_123",
+        display_id: 1001,
+        metadata: JSON.stringify({
+          qbd_posting_required: true,
+          qbd_posting_status: "pending_manual",
+          qbd_posting_requested_at: "2026-06-28T08:00:00.000Z",
+        }),
+      },
+    ])
+    const db = jest.fn(() => builder)
+
+    const orders = await findPendingQbdPostingOrders(db, 500)
+
+    expect(db).toHaveBeenCalledWith("order")
+    expect(builder.whereNull).toHaveBeenCalledWith("deleted_at")
+    expect(builder.limit).toHaveBeenCalledWith(500)
+    expect(orders).toEqual([
+      {
+        id: "order_123",
+        display_id: "1001",
+        metadata: {
+          qbd_posting_required: true,
+          qbd_posting_status: "pending_manual",
+          qbd_posting_requested_at: "2026-06-28T08:00:00.000Z",
+        },
+      },
+    ])
+  })
+
+  it("emits stale pending-posting alerts from a DB scan", async () => {
+    const builder: Record<string, jest.Mock> = {}
+    builder.select = jest.fn(() => builder)
+    builder.whereNull = jest.fn(() => builder)
+    builder.whereRaw = jest.fn(() => builder)
+    builder.orderByRaw = jest.fn(() => builder)
+    builder.limit = jest.fn(async () => [
+      {
+        id: "order_123",
+        display_id: 1001,
+        metadata: {
+          qbd_posting_required: true,
+          qbd_posting_status: "pending_manual",
+          qbd_posting_requested_at: "2026-06-28T08:00:00.000Z",
+        },
+      },
+    ])
+    const db = jest.fn(() => builder)
+
+    const result = await emitStaleQbdPostingAlertFromDb({
+      db,
+      now: new Date("2026-06-28T12:00:00.000Z"),
+      staleAfterMinutes: 120,
+      limit: 100,
+      path: "src/jobs/qbd-pending-posting-monitor.ts",
+    })
+
+    expect(result).toEqual({
+      emitted: true,
+      staleOrderCount: 1,
+      candidateCount: 1,
+    })
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "qbd_pending_posting_stale",
+        path: "src/jobs/qbd-pending-posting-monitor.ts",
       })
     )
   })
