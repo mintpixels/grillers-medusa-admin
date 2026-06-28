@@ -259,6 +259,12 @@ function pendingQbdPosting(metadata: Record<string, any>) {
   return String(metadata.qbd_posting_status || "").startsWith("pending")
 }
 
+const redactedErrorMessage = (error: unknown) =>
+  (error instanceof Error ? error.message : String(error || "Unknown error"))
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(/\b(?:pi|pm|py|pay|refund|re)_[A-Za-z0-9_]+/g, "[redacted-id]")
+    .slice(0, 500)
+
 function requestHeader(req: MedusaRequest, name: string): string | undefined {
   const headers = (req as any).headers || {}
   return (
@@ -274,6 +280,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const orderModule = req.scope.resolve(Modules.ORDER)
   const eventBus = req.scope.resolve(Modules.EVENT_BUS)
   const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+  const actorId = (req as any).auth_context?.actor_id
+  let stage = "retrieve_order"
+  let paymentIntentId: string | null = null
   let logger: any
   try {
     logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
@@ -287,7 +296,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       select: ["id", "currency_code", "total", "metadata"],
     })
     const metadata = metadataObject(order.metadata)
-    const paymentIntentId = String(metadata.stripe_payment_intent_id || "")
+    paymentIntentId = String(metadata.stripe_payment_intent_id || "")
     if (!paymentIntentId || metadata.final_charge_status !== "succeeded") {
       return res.status(409).json({
         message: "Order does not have a succeeded Stripe final charge to refund.",
@@ -333,6 +342,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       })
     }
 
+    stage = "validate_allocation_releases"
     const allocation = normalizeAllocationReleases(
       body.allocation_releases,
       currencyCode
@@ -348,6 +358,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       })
     }
 
+    stage = "refund_stripe"
     const refund = await createStripeRefund({
       paymentIntentId,
       amount: refundAmount,
@@ -364,6 +375,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       existingEntries.some((entry) => entry.id === refund.id) ||
       metadata.stripe_refund_id === refund.id
 
+    stage = "list_refund_transactions"
     const existingTransactions = await orderModule.listOrderTransactions(
       {
         order_id: order.id,
@@ -376,6 +388,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       existingTransactions.length > 0 || refundRecordedInMetadata
 
     if (!refundAlreadyRecorded) {
+      stage = "record_order_transaction"
       await orderModule.addOrderTransactions({
         order_id: order.id,
         amount: -Math.abs(refundAmount),
@@ -420,12 +433,14 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         qbd_posting_amount: amountMinor,
         refund_id: refund.id,
         stripe_payment_intent_id: paymentIntentId,
-        staff_actor_id: (req as any).auth_context?.actor_id,
+        staff_actor_id: actorId,
         note: body.note || null,
       }
     )
+    stage = "update_order_metadata"
     await orderModule.updateOrders(order.id, { metadata: nextMetadata })
 
+    stage = "emit_refund_event"
     await eventBus.emit({
       name: "payment.refunded",
       data: {
@@ -440,13 +455,14 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     const allocationOrderId = allocation.orderId || order.id
     if (allocationOrderId && allocation.lines.length) {
+      stage = "release_inventory_allocation"
       await releaseAllocationLineQuantities({
         db,
         orderId: allocationOrderId,
         lines: allocation.lines,
         reason: "released_refund",
         actorType: "staff",
-        actorId: (req as any).auth_context?.actor_id,
+        actorId,
         note: body.note || null,
       })
     }
@@ -486,6 +502,26 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       return res.status(500).json({
         message: `Stripe refund ${stripeRefund.id} succeeded, but Medusa refund recording failed: ${message}`,
         stripe_refund_id: stripeRefund.id,
+      })
+    }
+
+    if (!(err instanceof RequestError)) {
+      await emitOpsAlert({
+        alertKind: "final_charge_refund_route_failed",
+        title: `Final-charge refund failed during ${stage}`,
+        path: "src/api/admin/grillers/orders/[id]/finalization/refund-final-charge/route.ts",
+        source: "medusa",
+        severity: "page",
+        logger,
+        meta: {
+          order_id: orderId,
+          stage,
+          stripe_payment_intent_id: paymentIntentId,
+          actor_id: actorId || null,
+          refund_completed: false,
+          error_name: err instanceof Error ? err.name : "Error",
+          error_message: redactedErrorMessage(err),
+        },
       })
     }
 

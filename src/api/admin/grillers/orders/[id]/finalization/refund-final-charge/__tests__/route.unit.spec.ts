@@ -273,6 +273,7 @@ describe("final-charge refund route", () => {
 
   it("rejects sub-cent refund amounts before calling Stripe", async () => {
     process.env.STRIPE_API_KEY = "sk_test_123"
+    ;(emitOpsAlert as jest.Mock).mockClear()
     const stripeFetch = jest.fn()
     global.fetch = stripeFetch as any
 
@@ -311,6 +312,82 @@ describe("final-charge refund route", () => {
     expect(res.json).toHaveBeenCalledWith({
       message: "Refund amount cannot include more than 2 decimal places for USD.",
     })
+    expect(emitOpsAlert).not.toHaveBeenCalled()
+  })
+
+  it("pages when Stripe rejects a final-charge refund before money moves", async () => {
+    process.env.STRIPE_API_KEY = "sk_test_123"
+    ;(emitOpsAlert as jest.Mock).mockClear()
+    const stripeFetch = jest.fn(async () => ({
+      ok: false,
+      json: async () => ({
+        error: {
+          message: "Stripe rejected pi_final_123 for avi@example.com",
+        },
+      }),
+    })) as any
+    global.fetch = stripeFetch
+
+    const orderModule = {
+      retrieveOrder: jest.fn(async () => ({
+        id: "order_123",
+        currency_code: "usd",
+        total: 100,
+        metadata: {
+          final_charge_status: "succeeded",
+          stripe_payment_intent_id: "pi_final_123",
+          final_total: 100,
+          final_charge_refunded_amount: 0,
+          staff_audit_log: "[]",
+        },
+      })),
+      listOrderTransactions: jest.fn(),
+      addOrderTransactions: jest.fn(),
+      updateOrders: jest.fn(),
+    }
+    const eventBus = { emit: jest.fn() }
+    const logger = { warn: jest.fn(), error: jest.fn() }
+    const { db } = makeAllocationDb()
+    const req = {
+      params: { id: "order_123" },
+      headers: { "idempotency-key": "refund-key-stripe-fail" },
+      body: { amount: 25 },
+      scope: {
+        resolve: (key: string) => {
+          if (key === Modules.ORDER) return orderModule
+          if (key === Modules.EVENT_BUS) return eventBus
+          if (key === ContainerRegistrationKeys.PG_CONNECTION) return db
+          if (key === ContainerRegistrationKeys.LOGGER) return logger
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+      auth_context: { actor_id: "user_123" },
+    } as any
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(stripeFetch).toHaveBeenCalled()
+    expect(orderModule.listOrderTransactions).not.toHaveBeenCalled()
+    expect(orderModule.updateOrders).not.toHaveBeenCalled()
+    expect(res.status).toHaveBeenCalledWith(402)
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "final_charge_refund_route_failed",
+        severity: "page",
+        title: "Final-charge refund failed during refund_stripe",
+        path: "src/api/admin/grillers/orders/[id]/finalization/refund-final-charge/route.ts",
+        logger,
+        meta: expect.objectContaining({
+          order_id: "order_123",
+          stage: "refund_stripe",
+          stripe_payment_intent_id: "pi_final_123",
+          actor_id: "user_123",
+          refund_completed: false,
+          error_message: "Stripe rejected [redacted-id] for [redacted-email]",
+        }),
+      })
+    )
   })
 
   it("pages refund_recorded_mismatch when Stripe refunded but Medusa recording throws", async () => {
