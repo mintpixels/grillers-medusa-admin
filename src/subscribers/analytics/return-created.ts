@@ -1,4 +1,5 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
+import { emitAnalyticsSubscriberFailureAlert } from "../../lib/analytics/subscriber-alerts"
 
 export default async function returnCreatedHandler({
   event: { data },
@@ -19,6 +20,14 @@ export default async function returnCreatedHandler({
       `Analytics: Failed to track return.created for ${data.id}`,
       err
     )
+    void emitAnalyticsSubscriberFailureAlert({
+      logger,
+      medusaEvent: "return.created",
+      analyticsEvent: "return_created",
+      entityId: data.id,
+      path: "src/subscribers/analytics/return-created.ts",
+      error: err,
+    }).catch(() => undefined)
   }
 }
 

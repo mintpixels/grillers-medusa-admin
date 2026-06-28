@@ -1,4 +1,5 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
+import { emitAnalyticsSubscriberFailureAlert } from "../../lib/analytics/subscriber-alerts"
 import {
   experimentContextFromItem,
   experimentContextFromItems,
@@ -531,6 +532,17 @@ export default async function orderPlacedHandler({
       `Analytics: Failed to track ${name} for ${orderId}`,
       err
     )
+    void emitAnalyticsSubscriberFailureAlert({
+      logger,
+      medusaEvent: name,
+      analyticsEvent:
+        name === "order.final_charge_succeeded"
+          ? "order_completed_or_finalized"
+          : "order_received_or_completed",
+      entityId: orderId,
+      path: "src/subscribers/analytics/order-placed.ts",
+      error: err,
+    }).catch(() => undefined)
   }
 }
 

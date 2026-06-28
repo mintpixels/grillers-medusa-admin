@@ -1,4 +1,5 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
+import { emitAnalyticsSubscriberFailureAlert } from "../../lib/analytics/subscriber-alerts"
 
 export default async function customerUpdatedHandler({
   event: { data },
@@ -44,6 +45,14 @@ export default async function customerUpdatedHandler({
       `Analytics: Failed to track customer.updated for ${data.id}`,
       err
     )
+    void emitAnalyticsSubscriberFailureAlert({
+      logger,
+      medusaEvent: "customer.updated",
+      analyticsEvent: "customer_updated_or_identify",
+      entityId: data.id,
+      path: "src/subscribers/analytics/customer-updated.ts",
+      error: err,
+    }).catch(() => undefined)
   }
 }
 

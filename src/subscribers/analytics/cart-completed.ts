@@ -1,4 +1,5 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
+import { emitAnalyticsSubscriberFailureAlert } from "../../lib/analytics/subscriber-alerts"
 
 export default async function cartCompletedHandler({
   event: { data },
@@ -46,6 +47,14 @@ export default async function cartCompletedHandler({
       `Analytics: Failed to track cart.completed for ${data.id}`,
       err
     )
+    void emitAnalyticsSubscriberFailureAlert({
+      logger,
+      medusaEvent: "cart.completed",
+      analyticsEvent: "checkout_completed",
+      entityId: data.id,
+      path: "src/subscribers/analytics/cart-completed.ts",
+      error: err,
+    }).catch(() => undefined)
   }
 }
 

@@ -1,4 +1,5 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
+import { emitAnalyticsSubscriberFailureAlert } from "../../lib/analytics/subscriber-alerts"
 
 export default async function orderCanceledHandler({
   event: { data },
@@ -34,6 +35,14 @@ export default async function orderCanceledHandler({
       `Analytics: Failed to track order.canceled for ${data.id}`,
       err
     )
+    void emitAnalyticsSubscriberFailureAlert({
+      logger,
+      medusaEvent: "order.canceled",
+      analyticsEvent: "order_canceled",
+      entityId: data.id,
+      path: "src/subscribers/analytics/order-canceled.ts",
+      error: err,
+    }).catch(() => undefined)
   }
 }
 

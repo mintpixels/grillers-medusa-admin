@@ -1,4 +1,5 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
+import { emitAnalyticsSubscriberFailureAlert } from "../../lib/analytics/subscriber-alerts"
 
 export default async function shipmentCreatedHandler({
   event: { data },
@@ -30,6 +31,14 @@ export default async function shipmentCreatedHandler({
       `Analytics: Failed to track fulfillment.shipment_created for ${data.id}`,
       err
     )
+    void emitAnalyticsSubscriberFailureAlert({
+      logger,
+      medusaEvent: "fulfillment.shipment_created",
+      analyticsEvent: "order_shipped",
+      entityId: data.id,
+      path: "src/subscribers/analytics/shipment-created.ts",
+      error: err,
+    }).catch(() => undefined)
   }
 }
 

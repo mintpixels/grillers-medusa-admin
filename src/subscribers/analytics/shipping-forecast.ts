@@ -1,4 +1,5 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
+import { emitAnalyticsSubscriberFailureAlert } from "../../lib/analytics/subscriber-alerts"
 import {
   estimatePackagingCost,
   packagingConfigFromEnv,
@@ -398,6 +399,14 @@ export default async function shippingForecastHandler({
         err instanceof Error ? err.message : String(err)
       }`
     )
+    void emitAnalyticsSubscriberFailureAlert({
+      logger,
+      medusaEvent: "order.placed",
+      analyticsEvent: "shipping_forecast",
+      entityId: orderId,
+      path: "src/subscribers/analytics/shipping-forecast.ts",
+      error: err,
+    }).catch(() => undefined)
   }
 }
 
