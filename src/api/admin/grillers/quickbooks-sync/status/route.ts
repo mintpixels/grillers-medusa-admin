@@ -1,4 +1,5 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
+import { emitQbSyncDashboardFailureAlert } from "../../../../../lib/qb-sync-dashboard-alerts"
 
 const DEFAULT_PER_PAGE = "25"
 const ALLOWED_QUERY_KEYS = [
@@ -61,6 +62,9 @@ function forwardedQuery(req: MedusaRequest) {
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   const baseUrl = syncBaseUrl()
   const token = syncToken()
+  const logger = req.scope.resolve("logger") as
+    | { warn?: (message: string) => void; error?: (message: string) => void }
+    | undefined
 
   if (!baseUrl || !token) {
     res.status(503).json({
@@ -93,9 +97,29 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       }
     }
 
+    if (!response.ok) {
+      await emitQbSyncDashboardFailureAlert({
+        req,
+        operation: "status",
+        reason: "upstream_error",
+        baseUrl,
+        status: response.status,
+        error: payload,
+        logger,
+      })
+    }
+
     res.status(response.ok ? 200 : response.status).json(payload)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
+    await emitQbSyncDashboardFailureAlert({
+      req,
+      operation: "status",
+      reason: "unreachable",
+      baseUrl,
+      error: err,
+      logger,
+    })
     res.status(502).json({
       error: "QuickBooks sync status could not be reached.",
       message,
