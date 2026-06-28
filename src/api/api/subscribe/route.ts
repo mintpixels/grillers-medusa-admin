@@ -4,6 +4,10 @@ import {
   subscribeProfile,
   verifyServiceApiKey,
 } from "../../../lib/communications/core"
+import {
+  communicationsApiLogger,
+  emitCommunicationsApiFailureAlert,
+} from "../_shared/alerts"
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -33,25 +37,38 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
 
-  const profile = await subscribeProfile(req.scope, {
-    email,
-    source: body.source || null,
-    source_url: body.source_url || header(req, "referer") || null,
-    consent_version: body.consent_version || "v1-2026-05",
-    preferences: body.preferences || null,
-    ip: header(req, "x-forwarded-for") || header(req, "x-real-ip") || null,
-    user_agent: header(req, "user-agent") || null,
-  })
+  const logger = communicationsApiLogger(req)
+  try {
+    const profile = await subscribeProfile(req.scope, {
+      email,
+      source: body.source || null,
+      source_url: body.source_url || header(req, "referer") || null,
+      consent_version: body.consent_version || "v1-2026-05",
+      preferences: body.preferences || null,
+      ip: header(req, "x-forwarded-for") || header(req, "x-real-ip") || null,
+      user_agent: header(req, "user-agent") || null,
+    })
 
-  res.status(200).json({
-    ok: true,
-    subscriber: profile
-      ? {
-          email: profile.email,
-          status: profile.email_consent ? "subscribed" : "unsubscribed",
-          preferences: profile.preferences || {},
-          preferences_url: preferenceUrl(profile.preference_token),
-        }
-      : null,
-  })
+    res.status(200).json({
+      ok: true,
+      subscriber: profile
+        ? {
+            email: profile.email,
+            status: profile.email_consent ? "subscribed" : "unsubscribed",
+            preferences: profile.preferences || {},
+            preferences_url: preferenceUrl(profile.preference_token),
+          }
+        : null,
+    })
+  } catch (error) {
+    await emitCommunicationsApiFailureAlert({
+      operation: "subscribe",
+      path: "src/api/api/subscribe/route.ts",
+      eventName: "email_signup",
+      hasEmail: true,
+      error,
+      logger,
+    })
+    res.status(500).json({ ok: false, error: "subscribe_failed" })
+  }
 }

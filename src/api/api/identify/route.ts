@@ -6,6 +6,10 @@ import {
   upsertCustomerProfile,
   verifyServiceApiKey,
 } from "../../../lib/communications/core"
+import {
+  communicationsApiLogger,
+  emitCommunicationsApiFailureAlert,
+} from "../_shared/alerts"
 
 function headerMap(req: MedusaRequest): Record<string, string> {
   const headers = req.headers as any
@@ -23,41 +27,55 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
   const body = (req.body || {}) as Record<string, any>
   const traits = body.traits || body.properties || {}
-  const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
-  const profile = await upsertCustomerProfile(db, {
-    medusa_customer_id: body.user_id || body.customer_id,
-    email: traits.email || body.email,
-    phone: traits.phone || body.phone,
-    first_name: traits.first_name,
-    last_name: traits.last_name,
-    customer_type: traits.customer_type,
-    route_market: traits.route_market,
-    sms_consent: traits.sms_consent,
-    sms_consent_at: traits.sms_consent_at,
-    metadata: traits,
-  })
+  const logger = communicationsApiLogger(req)
 
-  if (profile) {
-    await recordIdentity(db, profile.id, {
+  try {
+    const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+    const profile = await upsertCustomerProfile(db, {
+      medusa_customer_id: body.user_id || body.customer_id,
+      email: traits.email || body.email,
+      phone: traits.phone || body.phone,
+      first_name: traits.first_name,
+      last_name: traits.last_name,
+      customer_type: traits.customer_type,
+      route_market: traits.route_market,
+      sms_consent: traits.sms_consent,
+      sms_consent_at: traits.sms_consent_at,
+      metadata: traits,
+    })
+
+    if (profile) {
+      await recordIdentity(db, profile.id, {
+        anonymous_id: body.anonymous_id,
+        session_id: body.session_id,
+        cart_id: body.cart_id,
+        medusa_customer_id: body.user_id || body.customer_id,
+        email: traits.email || body.email,
+      })
+    }
+
+    await recordCommunicationEvent(db, {
+      event_name: "identify",
+      source: "storefront",
+      profile_id: profile?.id,
+      medusa_customer_id: body.user_id || body.customer_id,
       anonymous_id: body.anonymous_id,
       session_id: body.session_id,
       cart_id: body.cart_id,
-      medusa_customer_id: body.user_id || body.customer_id,
       email: traits.email || body.email,
+      properties: traits,
     })
+
+    res.status(202).json({ ok: true, profile_id: profile?.id || null })
+  } catch (error) {
+    await emitCommunicationsApiFailureAlert({
+      operation: "identify",
+      path: "src/api/api/identify/route.ts",
+      eventName: "identify",
+      hasEmail: Boolean(traits.email || body.email),
+      error,
+      logger,
+    })
+    res.status(500).json({ ok: false, error: "identify_failed" })
   }
-
-  await recordCommunicationEvent(db, {
-    event_name: "identify",
-    source: "storefront",
-    profile_id: profile?.id,
-    medusa_customer_id: body.user_id || body.customer_id,
-    anonymous_id: body.anonymous_id,
-    session_id: body.session_id,
-    cart_id: body.cart_id,
-    email: traits.email || body.email,
-    properties: traits,
-  })
-
-  res.status(202).json({ ok: true, profile_id: profile?.id || null })
 }

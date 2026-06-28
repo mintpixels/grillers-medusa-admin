@@ -7,6 +7,10 @@ import {
   recordSuppression,
   verifyServiceApiKey,
 } from "../../../../lib/communications/core"
+import {
+  communicationsApiLogger,
+  emitCommunicationsApiFailureAlert,
+} from "../../_shared/alerts"
 
 function headerMap(req: MedusaRequest): Record<string, string> {
   const headers = req.headers as any
@@ -67,59 +71,73 @@ export async function PATCH(req: MedusaRequest, res: MedusaResponse) {
         ? false
         : profile.email_consent
   const now = new Date()
-  await db("gp_customer_profile")
-    .where("id", profile.id)
-    .update({
-      preferences,
-      email_consent: nextEmailConsent,
-      email_consent_at:
-        nextEmailConsent && !profile.email_consent_at
-          ? now
-          : profile.email_consent_at,
-      updated_at: now,
-    })
-  if (nextEmailConsent) {
-    await db("gp_suppression_preference")
-      .whereNull("deleted_at")
-      .where("email_lower", profile.email_lower)
-      .whereIn("scope", MARKETING_SUPPRESSION_SCOPES)
-      .whereNull("topic")
-      .whereNull("resubscribed_at")
-      .update({ resubscribed_at: now, updated_at: now })
-  }
-  for (const [topic, enabled] of Object.entries(preferences)) {
-    if (enabled) {
+  const logger = communicationsApiLogger(req)
+  try {
+    await db("gp_customer_profile")
+      .where("id", profile.id)
+      .update({
+        preferences,
+        email_consent: nextEmailConsent,
+        email_consent_at:
+          nextEmailConsent && !profile.email_consent_at
+            ? now
+            : profile.email_consent_at,
+        updated_at: now,
+      })
+    if (nextEmailConsent) {
       await db("gp_suppression_preference")
         .whereNull("deleted_at")
         .where("email_lower", profile.email_lower)
         .whereIn("scope", MARKETING_SUPPRESSION_SCOPES)
-        .where("topic", topic)
+        .whereNull("topic")
         .whereNull("resubscribed_at")
         .update({ resubscribed_at: now, updated_at: now })
-    } else {
-      await recordSuppression(db, {
-        email: profile.email,
-        scope: "marketing",
-        topic,
-        reason: "customer_topic_preference",
-        source: "preferences_page",
-        metadata: { preferences },
-      })
     }
-  }
-  await recordCommunicationEvent(db, {
-    event_name: "email_preferences_updated",
-    profile_id: profile.id,
-    email: profile.email,
-    source: "storefront",
-    properties: {
-      preferences,
+    for (const [topic, enabled] of Object.entries(preferences)) {
+      if (enabled) {
+        await db("gp_suppression_preference")
+          .whereNull("deleted_at")
+          .where("email_lower", profile.email_lower)
+          .whereIn("scope", MARKETING_SUPPRESSION_SCOPES)
+          .where("topic", topic)
+          .whereNull("resubscribed_at")
+          .update({ resubscribed_at: now, updated_at: now })
+      } else {
+        await recordSuppression(db, {
+          email: profile.email,
+          scope: "marketing",
+          topic,
+          reason: "customer_topic_preference",
+          source: "preferences_page",
+          metadata: { preferences },
+        })
+      }
+    }
+    await recordCommunicationEvent(db, {
+      event_name: "email_preferences_updated",
+      profile_id: profile.id,
+      email: profile.email,
+      source: "storefront",
+      properties: {
+        preferences,
+        status: nextEmailConsent ? "subscribed" : "unsubscribed",
+      },
+    })
+    res.status(200).json({
+      email: profile.email,
       status: nextEmailConsent ? "subscribed" : "unsubscribed",
-    },
-  })
-  res.status(200).json({
-    email: profile.email,
-    status: nextEmailConsent ? "subscribed" : "unsubscribed",
-    preferences,
-  })
+      preferences,
+    })
+  } catch (error) {
+    await emitCommunicationsApiFailureAlert({
+      operation: "preferences_update",
+      path: "src/api/api/preferences/[token]/route.ts",
+      eventName: "email_preferences_updated",
+      hasEmail: Boolean(profile.email),
+      hasToken: Boolean(req.params.token),
+      error,
+      logger,
+    })
+    res.status(500).json({ ok: false, error: "preferences_update_failed" })
+  }
 }

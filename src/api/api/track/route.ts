@@ -4,6 +4,10 @@ import {
   recordCommunicationEvent,
   verifyServiceApiKey,
 } from "../../../lib/communications/core"
+import {
+  communicationsApiLogger,
+  emitCommunicationsApiFailureAlert,
+} from "../_shared/alerts"
 
 const DEFAULT_ALLOWED_ORIGINS = [
   "https://grillers-medusa-frontend.vercel.app",
@@ -150,7 +154,20 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
 
-  const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
-  const row = await recordCommunicationEvent(db, event)
-  res.status(202).json({ ok: true, event_id: row.event_id })
+  const logger = communicationsApiLogger(req)
+  try {
+    const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+    const row = await recordCommunicationEvent(db, event)
+    res.status(202).json({ ok: true, event_id: row.event_id })
+  } catch (error) {
+    await emitCommunicationsApiFailureAlert({
+      operation: "track",
+      path: "src/api/api/track/route.ts",
+      eventName: event.event_name,
+      hasEmail: Boolean(event.email),
+      error,
+      logger,
+    })
+    res.status(500).json({ ok: false, error: "event_record_failed" })
+  }
 }

@@ -5,6 +5,10 @@ import {
   recordSuppression,
   verifyServiceApiKey,
 } from "../../../../lib/communications/core"
+import {
+  communicationsApiLogger,
+  emitCommunicationsApiFailureAlert,
+} from "../../_shared/alerts"
 
 function headerMap(req: MedusaRequest): Record<string, string> {
   const headers = req.headers as any
@@ -34,21 +38,35 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
 
-  await db("gp_customer_profile")
-    .where("id", profile.id)
-    .update({ email_consent: false, updated_at: new Date() })
-  await recordSuppression(db, {
-    email: profile.email,
-    scope: "marketing",
-    reason: "customer_unsubscribe",
-    source: "preferences_page",
-  })
-  await recordCommunicationEvent(db, {
-    event_name: "email_unsubscribed",
-    profile_id: profile.id,
-    email: profile.email,
-    source: "storefront",
-    properties: { scope: "marketing" },
-  })
-  res.status(200).json({ ok: true })
+  const logger = communicationsApiLogger(req)
+  try {
+    await db("gp_customer_profile")
+      .where("id", profile.id)
+      .update({ email_consent: false, updated_at: new Date() })
+    await recordSuppression(db, {
+      email: profile.email,
+      scope: "marketing",
+      reason: "customer_unsubscribe",
+      source: "preferences_page",
+    })
+    await recordCommunicationEvent(db, {
+      event_name: "email_unsubscribed",
+      profile_id: profile.id,
+      email: profile.email,
+      source: "storefront",
+      properties: { scope: "marketing" },
+    })
+    res.status(200).json({ ok: true })
+  } catch (error) {
+    await emitCommunicationsApiFailureAlert({
+      operation: "unsubscribe",
+      path: "src/api/api/unsubscribe/[token]/route.ts",
+      eventName: "email_unsubscribed",
+      hasEmail: Boolean(profile.email),
+      hasToken: Boolean(token),
+      error,
+      logger,
+    })
+    res.status(500).json({ ok: false, error: "unsubscribe_failed" })
+  }
 }

@@ -1,0 +1,288 @@
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import {
+  recordCommunicationEvent,
+  recordIdentity,
+  recordSuppression,
+  subscribeProfile,
+  upsertCustomerProfile,
+  verifyServiceApiKey,
+} from "../../../lib/communications/core"
+import { emitOpsAlert } from "../../../lib/ops-alert"
+
+jest.mock("../../../lib/communications/core", () => ({
+  DEFAULT_NEWSLETTER_PREFERENCES: { marketing: true, recipes: true },
+  MARKETING_SUPPRESSION_SCOPES: ["marketing", "lifecycle", "broadcast"],
+  normalizeEmail: (value: unknown) =>
+    typeof value === "string" ? value.trim().toLowerCase() : "",
+  preferenceUrl: (token: string) => `https://example.com/preferences/${token}`,
+  recordCommunicationEvent: jest.fn(),
+  recordIdentity: jest.fn(),
+  recordSuppression: jest.fn(),
+  subscribeProfile: jest.fn(),
+  upsertCustomerProfile: jest.fn(),
+  verifyServiceApiKey: jest.fn(() => true),
+}))
+
+jest.mock("../../../lib/ops-alert", () => ({
+  emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
+
+// Import after mocks are registered.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const trackRoute = require("../track/route")
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const batchRoute = require("../batch/route")
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const identifyRoute = require("../identify/route")
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const subscribeRoute = require("../subscribe/route")
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const preferencesRoute = require("../preferences/[token]/route")
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const unsubscribeRoute = require("../unsubscribe/[token]/route")
+
+function makeRes() {
+  const res: any = {
+    statusCode: 0,
+    body: undefined,
+    headers: {} as Record<string, string>,
+    setHeader(name: string, value: string) {
+      this.headers[name] = value
+      return this
+    },
+    status(code: number) {
+      this.statusCode = code
+      return this
+    },
+    json(payload: unknown) {
+      this.body = payload
+      return this
+    },
+    send(payload: unknown) {
+      this.body = payload
+      return this
+    },
+  }
+  return res
+}
+
+function makeDb(profile: Record<string, any> | null = null) {
+  const chain: any = {
+    whereNull: jest.fn(() => chain),
+    where: jest.fn(() => chain),
+    whereIn: jest.fn(() => chain),
+    first: jest.fn(async () => profile),
+    update: jest.fn(async () => 1),
+  }
+  const db = jest.fn(() => chain)
+  return { db, chain }
+}
+
+function makeReq(options: {
+  body?: Record<string, any>
+  db?: unknown
+  params?: Record<string, string>
+  headers?: Record<string, string>
+} = {}) {
+  const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn() }
+  return {
+    req: {
+      body: options.body || {},
+      params: options.params || {},
+      headers: options.headers || { authorization: "Bearer service-key" },
+      scope: {
+        resolve: (key: string) => {
+          if (key === ContainerRegistrationKeys.PG_CONNECTION) {
+            return options.db || jest.fn()
+          }
+          if (key === ContainerRegistrationKeys.LOGGER) return logger
+          throw new Error(`Unexpected resolve(${key})`)
+        },
+      },
+    } as any,
+    logger,
+  }
+}
+
+function expectCommunicationsAlert(operation: string, extraMeta = {}) {
+  expect(emitOpsAlert).toHaveBeenCalledWith(
+    expect.objectContaining({
+      alertKind: "communications_api_request_failed",
+      severity: "warn",
+      fingerprint: `communications_api_request_failed:${operation}`,
+      meta: expect.objectContaining({
+        operation,
+        ...extraMeta,
+      }),
+    })
+  )
+}
+
+describe("communications public API route alerting", () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    ;(verifyServiceApiKey as jest.Mock).mockReturnValue(true)
+    ;(recordCommunicationEvent as jest.Mock).mockResolvedValue({
+      event_id: "evt_ok",
+    })
+    ;(upsertCustomerProfile as jest.Mock).mockResolvedValue({
+      id: "gpcprof_1",
+      email: "shopper@example.com",
+    })
+    ;(recordIdentity as jest.Mock).mockResolvedValue(undefined)
+    ;(subscribeProfile as jest.Mock).mockResolvedValue({
+      id: "gpcprof_1",
+      email: "shopper@example.com",
+      email_consent: true,
+      preferences: {},
+      preference_token: "pref-token",
+    })
+    ;(recordSuppression as jest.Mock).mockResolvedValue(undefined)
+  })
+
+  it("alerts when /api/track cannot persist an event", async () => {
+    ;(recordCommunicationEvent as jest.Mock).mockRejectedValueOnce(
+      new Error("insert failed for shopper@example.com")
+    )
+    const { req } = makeReq({
+      body: {
+        event: "product_viewed",
+        email: "shopper@example.com",
+      },
+    })
+    const res = makeRes()
+
+    await trackRoute.POST(req, res)
+
+    expect(res.statusCode).toBe(500)
+    expect(res.body).toEqual({ ok: false, error: "event_record_failed" })
+    expectCommunicationsAlert("track", {
+      event_name: "product_viewed",
+      has_email: true,
+      error_message: "insert failed for [redacted-email]",
+    })
+  })
+
+  it("alerts when /api/batch cannot persist a batched event", async () => {
+    ;(recordCommunicationEvent as jest.Mock).mockRejectedValueOnce(
+      new Error("batch insert failed")
+    )
+    const { req } = makeReq({
+      body: {
+        events: [
+          { event: "product_viewed" },
+          { event: "cart_viewed" },
+        ],
+      },
+    })
+    const res = makeRes()
+
+    await batchRoute.POST(req, res)
+
+    expect(res.statusCode).toBe(500)
+    expect(res.body).toEqual({ ok: false, error: "batch_record_failed" })
+    expectCommunicationsAlert("batch", { event_count: 2 })
+  })
+
+  it("alerts when /api/identify cannot write profile state", async () => {
+    ;(upsertCustomerProfile as jest.Mock).mockRejectedValueOnce(
+      new Error("identity upsert failed for shopper@example.com")
+    )
+    const { req } = makeReq({
+      body: {
+        user_id: "cus_1",
+        traits: { email: "shopper@example.com" },
+      },
+    })
+    const res = makeRes()
+
+    await identifyRoute.POST(req, res)
+
+    expect(res.statusCode).toBe(500)
+    expect(res.body).toEqual({ ok: false, error: "identify_failed" })
+    expectCommunicationsAlert("identify", {
+      event_name: "identify",
+      has_email: true,
+      error_message: "identity upsert failed for [redacted-email]",
+    })
+  })
+
+  it("alerts when /api/subscribe cannot persist signup state", async () => {
+    ;(subscribeProfile as jest.Mock).mockRejectedValueOnce(
+      new Error("signup failed for shopper@example.com")
+    )
+    const { req } = makeReq({
+      body: { email: "shopper@example.com" },
+    })
+    const res = makeRes()
+
+    await subscribeRoute.POST(req, res)
+
+    expect(res.statusCode).toBe(500)
+    expect(res.body).toEqual({ ok: false, error: "subscribe_failed" })
+    expectCommunicationsAlert("subscribe", {
+      event_name: "email_signup",
+      has_email: true,
+      error_message: "signup failed for [redacted-email]",
+    })
+  })
+
+  it("alerts when preferences token updates fail after profile lookup", async () => {
+    const { db } = makeDb({
+      id: "gpcprof_1",
+      email: "shopper@example.com",
+      email_lower: "shopper@example.com",
+      email_consent: true,
+      preferences: { marketing: true, recipes: true },
+    })
+    ;(recordSuppression as jest.Mock).mockRejectedValueOnce(
+      new Error("suppression failed for shopper@example.com")
+    )
+    const { req } = makeReq({
+      db,
+      params: { token: "pref-token" },
+      body: { preferences: { recipes: false } },
+    })
+    const res = makeRes()
+
+    await preferencesRoute.PATCH(req, res)
+
+    expect(res.statusCode).toBe(500)
+    expect(res.body).toEqual({
+      ok: false,
+      error: "preferences_update_failed",
+    })
+    expectCommunicationsAlert("preferences_update", {
+      event_name: "email_preferences_updated",
+      has_email: true,
+      has_token: true,
+      error_message: "suppression failed for [redacted-email]",
+    })
+  })
+
+  it("alerts when unsubscribe token persistence fails after profile lookup", async () => {
+    const { db, chain } = makeDb({
+      id: "gpcprof_1",
+      email: "shopper@example.com",
+    })
+    chain.update.mockRejectedValueOnce(
+      new Error("unsubscribe failed for shopper@example.com")
+    )
+    const { req } = makeReq({
+      db,
+      params: { token: "pref-token" },
+    })
+    const res = makeRes()
+
+    await unsubscribeRoute.POST(req, res)
+
+    expect(res.statusCode).toBe(500)
+    expect(res.body).toEqual({ ok: false, error: "unsubscribe_failed" })
+    expectCommunicationsAlert("unsubscribe", {
+      event_name: "email_unsubscribed",
+      has_email: true,
+      has_token: true,
+      error_message: "unsubscribe failed for [redacted-email]",
+    })
+  })
+})

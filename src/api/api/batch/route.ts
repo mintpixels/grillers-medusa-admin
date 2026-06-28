@@ -4,6 +4,10 @@ import {
   recordCommunicationEvent,
   verifyServiceApiKey,
 } from "../../../lib/communications/core"
+import {
+  communicationsApiLogger,
+  emitCommunicationsApiFailureAlert,
+} from "../_shared/alerts"
 
 function headerMap(req: MedusaRequest): Record<string, string> {
   const headers = req.headers as any
@@ -58,12 +62,24 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
 
-  const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
-  const rows: Array<Record<string, any>> = []
-  for (const raw of events) {
-    const event = normalizeEvent(raw)
-    if (!event.event_name) continue
-    rows.push(await recordCommunicationEvent(db, event))
+  const logger = communicationsApiLogger(req)
+  try {
+    const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+    const rows: Array<Record<string, any>> = []
+    for (const raw of events) {
+      const event = normalizeEvent(raw)
+      if (!event.event_name) continue
+      rows.push(await recordCommunicationEvent(db, event))
+    }
+    res.status(202).json({ ok: true, accepted: rows.length })
+  } catch (error) {
+    await emitCommunicationsApiFailureAlert({
+      operation: "batch",
+      path: "src/api/api/batch/route.ts",
+      eventCount: events.length,
+      error,
+      logger,
+    })
+    res.status(500).json({ ok: false, error: "batch_record_failed" })
   }
-  res.status(202).json({ ok: true, accepted: rows.length })
 }
