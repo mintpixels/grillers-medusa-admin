@@ -50,7 +50,7 @@ describe("finalization detail route alerts", () => {
 
   it("alerts when the finalization detail cannot be loaded", async () => {
     mockPreviewFinalization.mockRejectedValueOnce(
-      new Error("finalization preview load failed")
+      new Error("finalization preview load failed for pi_123 and avi@example.com")
     )
     const { logger, scope } = makeScope()
     const req = {
@@ -78,7 +78,8 @@ describe("finalization detail route alerts", () => {
           action: "load_finalization_detail",
           order_id: "order_123",
           route_status: 500,
-          error_message: "finalization preview load failed",
+          error_message:
+            "finalization preview load failed for [redacted-id] and [redacted-email]",
         }),
       })
     )

@@ -55,8 +55,15 @@ export function staffAuditActorId(fields: Record<string, any>) {
 }
 
 function routeErrorMessage(error: unknown) {
-  if (error instanceof Error) return error.message
-  return String(error || "Unknown error")
+  const message =
+    error instanceof Error ? error.message : String(error || "Unknown error")
+
+  return message
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(
+      /\b(?:order|cart|pi|pm|py|pay|refund|re|fin|attempt|prod|variant)_[A-Za-z0-9_]+/g,
+      "[redacted-id]"
+    )
 }
 
 export async function emitFinalizationRouteFailureAlert(input: {
