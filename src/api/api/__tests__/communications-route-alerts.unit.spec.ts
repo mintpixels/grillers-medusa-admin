@@ -37,6 +37,8 @@ const identifyRoute = require("../identify/route")
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const subscribeRoute = require("../subscribe/route")
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const lookupRoute = require("../lookup/route")
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const preferencesRoute = require("../preferences/[token]/route")
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const unsubscribeRoute = require("../unsubscribe/[token]/route")
@@ -300,6 +302,80 @@ describe("communications public API route alerting", () => {
     })
   })
 
+  it("alerts when subscriber lookup cannot query profile state", async () => {
+    const { db, chain } = makeDb()
+    chain.first.mockRejectedValueOnce(
+      new Error("lookup failed for shopper@example.com")
+    )
+    const { req } = makeReq({
+      db,
+      body: { email: "shopper@example.com" },
+    })
+    const res = makeRes()
+
+    await lookupRoute.POST(req, res)
+
+    expect(res.statusCode).toBe(500)
+    expect(res.body).toEqual({ ok: false, error: "lookup_failed" })
+    expectCommunicationsAlert("lookup", {
+      event_name: "subscriber_lookup",
+      has_email: true,
+      error_message: "lookup failed for [redacted-email]",
+    })
+  })
+
+  it("alerts when preferences token lookup fails", async () => {
+    const { db, chain } = makeDb()
+    chain.first.mockRejectedValueOnce(
+      new Error("preferences lookup failed for shopper@example.com")
+    )
+    const { req } = makeReq({
+      db,
+      params: { token: "pref-token" },
+    })
+    const res = makeRes()
+
+    await preferencesRoute.GET(req, res)
+
+    expect(res.statusCode).toBe(500)
+    expect(res.body).toEqual({
+      ok: false,
+      error: "preferences_lookup_failed",
+    })
+    expectCommunicationsAlert("preferences_lookup", {
+      event_name: "email_preferences_lookup",
+      has_token: true,
+      error_message: "preferences lookup failed for [redacted-email]",
+    })
+  })
+
+  it("alerts when preferences update cannot load profile state", async () => {
+    const { db, chain } = makeDb()
+    chain.first.mockRejectedValueOnce(
+      new Error("preferences update lookup failed")
+    )
+    const { req } = makeReq({
+      db,
+      params: { token: "pref-token" },
+      body: { preferences: { recipes: false } },
+    })
+    const res = makeRes()
+
+    await preferencesRoute.PATCH(req, res)
+
+    expect(res.statusCode).toBe(500)
+    expect(res.body).toEqual({
+      ok: false,
+      error: "preferences_update_failed",
+    })
+    expectCommunicationsAlert("preferences_update", {
+      event_name: "email_preferences_updated",
+      has_email: false,
+      has_token: true,
+      error_message: "preferences update lookup failed",
+    })
+  })
+
   it("alerts when preferences token updates fail after profile lookup", async () => {
     const { db } = makeDb({
       id: "gpcprof_1",
@@ -330,6 +406,27 @@ describe("communications public API route alerting", () => {
       has_email: true,
       has_token: true,
       error_message: "suppression failed for [redacted-email]",
+    })
+  })
+
+  it("alerts when unsubscribe cannot load profile state", async () => {
+    const { db, chain } = makeDb()
+    chain.first.mockRejectedValueOnce(new Error("unsubscribe lookup failed"))
+    const { req } = makeReq({
+      db,
+      params: { token: "pref-token" },
+    })
+    const res = makeRes()
+
+    await unsubscribeRoute.POST(req, res)
+
+    expect(res.statusCode).toBe(500)
+    expect(res.body).toEqual({ ok: false, error: "unsubscribe_failed" })
+    expectCommunicationsAlert("unsubscribe", {
+      event_name: "email_unsubscribed",
+      has_email: false,
+      has_token: true,
+      error_message: "unsubscribe lookup failed",
     })
   })
 

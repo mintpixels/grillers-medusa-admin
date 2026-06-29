@@ -35,16 +35,30 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     res.status(401).json({ error: "unauthorized" })
     return
   }
-  const profile = await findProfile(req)
-  if (!profile) {
-    res.status(404).json({ error: "not_found" })
-    return
+
+  const logger = communicationsApiLogger(req)
+  try {
+    const profile = await findProfile(req)
+    if (!profile) {
+      res.status(404).json({ error: "not_found" })
+      return
+    }
+    res.status(200).json({
+      email: profile.email,
+      status: profile.email_consent ? "subscribed" : "unsubscribed",
+      preferences: { ...DEFAULT_NEWSLETTER_PREFERENCES, ...(profile.preferences || {}) },
+    })
+  } catch (error) {
+    await emitCommunicationsApiFailureAlert({
+      operation: "preferences_lookup",
+      path: "src/api/api/preferences/[token]/route.ts",
+      eventName: "email_preferences_lookup",
+      hasToken: Boolean(req.params.token),
+      error,
+      logger,
+    })
+    res.status(500).json({ ok: false, error: "preferences_lookup_failed" })
   }
-  res.status(200).json({
-    email: profile.email,
-    status: profile.email_consent ? "subscribed" : "unsubscribed",
-    preferences: { ...DEFAULT_NEWSLETTER_PREFERENCES, ...(profile.preferences || {}) },
-  })
 }
 
 export async function PATCH(req: MedusaRequest, res: MedusaResponse) {
@@ -52,27 +66,29 @@ export async function PATCH(req: MedusaRequest, res: MedusaResponse) {
     res.status(401).json({ error: "unauthorized" })
     return
   }
-  const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
-  const profile = await findProfile(req)
-  if (!profile) {
-    res.status(404).json({ error: "not_found" })
-    return
-  }
-  const body = (req.body || {}) as Record<string, any>
-  const preferences = {
-    ...DEFAULT_NEWSLETTER_PREFERENCES,
-    ...(profile.preferences || {}),
-    ...(body.preferences || {}),
-  }
-  const nextEmailConsent =
-    body.status === "subscribed"
-      ? true
-      : body.status === "unsubscribed"
-        ? false
-        : profile.email_consent
-  const now = new Date()
+
   const logger = communicationsApiLogger(req)
+  let profile: Record<string, any> | null = null
   try {
+    const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+    profile = await findProfile(req)
+    if (!profile) {
+      res.status(404).json({ error: "not_found" })
+      return
+    }
+    const body = (req.body || {}) as Record<string, any>
+    const preferences = {
+      ...DEFAULT_NEWSLETTER_PREFERENCES,
+      ...(profile.preferences || {}),
+      ...(body.preferences || {}),
+    }
+    const nextEmailConsent =
+      body.status === "subscribed"
+        ? true
+        : body.status === "unsubscribed"
+          ? false
+          : profile.email_consent
+    const now = new Date()
     await db("gp_customer_profile")
       .where("id", profile.id)
       .update({
@@ -133,7 +149,7 @@ export async function PATCH(req: MedusaRequest, res: MedusaResponse) {
       operation: "preferences_update",
       path: "src/api/api/preferences/[token]/route.ts",
       eventName: "email_preferences_updated",
-      hasEmail: Boolean(profile.email),
+      hasEmail: Boolean(profile?.email),
       hasToken: Boolean(req.params.token),
       error,
       logger,

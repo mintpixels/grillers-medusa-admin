@@ -24,22 +24,23 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
 
-  const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
   const token = String(req.params.token || "")
-  const profile = token
-    ? await db("gp_customer_profile")
-        .whereNull("deleted_at")
-        .where("preference_token", token)
-        .first()
-    : null
-
-  if (!profile) {
-    res.status(404).json({ error: "not_found" })
-    return
-  }
-
   const logger = communicationsApiLogger(req)
+  let profile: Record<string, any> | null = null
   try {
+    const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+    profile = token
+      ? await db("gp_customer_profile")
+          .whereNull("deleted_at")
+          .where("preference_token", token)
+          .first()
+      : null
+
+    if (!profile) {
+      res.status(404).json({ error: "not_found" })
+      return
+    }
+
     await db("gp_customer_profile")
       .where("id", profile.id)
       .update({ email_consent: false, updated_at: new Date() })
@@ -62,7 +63,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       operation: "unsubscribe",
       path: "src/api/api/unsubscribe/[token]/route.ts",
       eventName: "email_unsubscribed",
-      hasEmail: Boolean(profile.email),
+      hasEmail: Boolean(profile?.email),
       hasToken: Boolean(token),
       error,
       logger,
