@@ -61,3 +61,38 @@ export async function emitCommunicationsApiFailureAlert(input: {
     logger: input.logger,
   })
 }
+
+export async function emitCommunicationsApiDroppedEventsAlert(input: {
+  operation: string
+  path: string
+  eventCount: number
+  acceptedCount: number
+  droppedCount: number
+  reason: string
+  sampleEventKeys?: string[]
+  logger?: AlertLogger
+}) {
+  const operation = slug(input.operation)
+  const reason = slug(input.reason, "invalid_event")
+
+  return emitOpsAlert({
+    alertKind: "communications_api_events_dropped",
+    title: `Communications API ${operation} dropped ${input.droppedCount} event(s)`,
+    path: input.path,
+    source: "medusa-server",
+    severity: "warn",
+    fingerprint: `communications_api_events_dropped:${operation}:${reason}`,
+    meta: {
+      operation,
+      reason,
+      event_count: input.eventCount,
+      accepted_count: input.acceptedCount,
+      dropped_count: input.droppedCount,
+      sample_event_keys: (input.sampleEventKeys || [])
+        .map((key) => slug(key))
+        .filter(Boolean)
+        .slice(0, 20),
+    },
+    logger: input.logger,
+  })
+}

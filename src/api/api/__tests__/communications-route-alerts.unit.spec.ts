@@ -184,6 +184,45 @@ describe("communications public API route alerting", () => {
     expectCommunicationsAlert("batch", { event_count: 2 })
   })
 
+  it("alerts when /api/batch drops malformed events without failing the request", async () => {
+    const { req } = makeReq({
+      body: {
+        events: [
+          {
+            email: "shopper@example.com",
+            properties: { sku: "10-01" },
+          },
+          null,
+        ],
+      },
+    })
+    const res = makeRes()
+
+    await batchRoute.POST(req, res)
+
+    expect(res.statusCode).toBe(202)
+    expect(res.body).toEqual({ ok: true, accepted: 0 })
+    expect(recordCommunicationEvent).not.toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "communications_api_events_dropped",
+        severity: "warn",
+        fingerprint:
+          "communications_api_events_dropped:batch:missing_event_name",
+        meta: expect.objectContaining({
+          operation: "batch",
+          reason: "missing_event_name",
+          event_count: 2,
+          accepted_count: 0,
+          dropped_count: 2,
+          sample_event_keys: ["email", "properties"],
+        }),
+      })
+    )
+    expect(JSON.stringify((emitOpsAlert as jest.Mock).mock.calls[0][0].meta))
+      .not.toContain("shopper@example.com")
+  })
+
   it("alerts when /api/identify cannot write profile state", async () => {
     ;(upsertCustomerProfile as jest.Mock).mockRejectedValueOnce(
       new Error("identity upsert failed for shopper@example.com")

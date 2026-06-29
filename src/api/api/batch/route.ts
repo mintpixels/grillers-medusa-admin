@@ -6,6 +6,7 @@ import {
 } from "../../../lib/communications/core"
 import {
   communicationsApiLogger,
+  emitCommunicationsApiDroppedEventsAlert,
   emitCommunicationsApiFailureAlert,
 } from "../_shared/alerts"
 
@@ -17,7 +18,11 @@ function headerMap(req: MedusaRequest): Record<string, string> {
   }
 }
 
-function normalizeEvent(body: Record<string, any>) {
+function normalizeEvent(input: unknown) {
+  const body =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, any>)
+      : {}
   const ctx = body.eventn_ctx || body.context || {}
   const occurredAt =
     body.occurred_at ||
@@ -66,10 +71,31 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
     const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
     const rows: Array<Record<string, any>> = []
+    let droppedCount = 0
+    let sampleEventKeys: string[] = []
+
     for (const raw of events) {
       const event = normalizeEvent(raw)
-      if (!event.event_name) continue
+      if (!event.event_name) {
+        droppedCount += 1
+        if (sampleEventKeys.length === 0 && raw && typeof raw === "object") {
+          sampleEventKeys = Object.keys(raw).slice(0, 20)
+        }
+        continue
+      }
       rows.push(await recordCommunicationEvent(db, event))
+    }
+    if (droppedCount > 0) {
+      await emitCommunicationsApiDroppedEventsAlert({
+        operation: "batch",
+        path: "src/api/api/batch/route.ts",
+        eventCount: events.length,
+        acceptedCount: rows.length,
+        droppedCount,
+        reason: "missing_event_name",
+        sampleEventKeys,
+        logger,
+      })
     }
     res.status(202).json({ ok: true, accepted: rows.length })
   } catch (error) {
