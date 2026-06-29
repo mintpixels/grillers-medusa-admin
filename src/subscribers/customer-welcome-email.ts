@@ -6,7 +6,10 @@ import {
   upsertCustomerProfile,
 } from "../lib/communications/core"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
-import { emitTransactionalEmailHandlerFailureAlert } from "../lib/emails/ops-alerts"
+import {
+  emitTransactionalEmailHandlerFailureAlert,
+  emitTransactionalEmailPreconditionAlert,
+} from "../lib/emails/ops-alerts"
 
 type CustomerCreatedEvent = {
   id: string
@@ -27,7 +30,33 @@ export default async function customerWelcomeEmailHandler({
       filters: { id: data.id },
     })
     const customer = customers?.[0]
-    if (!customer || !customer.email) return
+    if (!customer) {
+      logger.warn(`[customer-welcome-email] customer not found id=${data.id}`)
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "customer-welcome",
+        reason: "customer_not_found",
+        path: "src/subscribers/customer-welcome-email.ts",
+        eventName: "customer.created",
+        eventId: data.id,
+        customerId: data.id,
+      })
+      return
+    }
+
+    if (!customer.email) {
+      logger.warn(`[customer-welcome-email] customer ${customer.id} has no email`)
+      void emitTransactionalEmailPreconditionAlert({
+        logger,
+        templateKey: "customer-welcome",
+        reason: "customer_missing_email",
+        path: "src/subscribers/customer-welcome-email.ts",
+        eventName: "customer.created",
+        eventId: data.id,
+        customerId: customer.id,
+      })
+      return
+    }
 
     if (!customer.has_account) {
       logger.info(

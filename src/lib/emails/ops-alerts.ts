@@ -11,10 +11,13 @@ type TransactionalEmailPreconditionAlertInput = {
     | "order_missing_email"
     | "fulfillment_not_found"
     | "order_id_not_resolved"
+    | "customer_not_found"
+    | "customer_missing_email"
   path: string
   eventName?: string
   eventId?: string | null
   orderId?: string | null
+  customerId?: string | null
   displayId?: string | number | null
   fulfillmentId?: string | null
   paymentId?: string | null
@@ -51,6 +54,7 @@ export function emitTransactionalEmailPreconditionAlert({
   eventName,
   eventId,
   orderId,
+  customerId,
   displayId,
   fulfillmentId,
   paymentId,
@@ -69,6 +73,7 @@ export function emitTransactionalEmailPreconditionAlert({
       event_name: eventName || null,
       event_id: eventId || null,
       order_id: orderId || null,
+      customer_id: customerId || null,
       display_id: displayId ?? null,
       fulfillment_id: fulfillmentId || null,
       payment_id: paymentId || null,

@@ -41,6 +41,7 @@ describe("transactional email ops alerts", () => {
           event_name: "order.placed",
           event_id: "order_123",
           order_id: "order_123",
+          customer_id: null,
           display_id: 1001,
           fulfillment_id: null,
           payment_id: null,
@@ -75,6 +76,31 @@ describe("transactional email ops alerts", () => {
       })
     )
     expect(JSON.stringify(meta)).not.toContain("@")
+  })
+
+  it("includes customer context for account email preconditions", async () => {
+    await emitTransactionalEmailPreconditionAlert({
+      templateKey: "customer-welcome",
+      reason: "customer_missing_email",
+      path: "src/subscribers/customer-welcome-email.ts",
+      eventName: "customer.created",
+      eventId: "cus_123",
+      customerId: "cus_123",
+    })
+
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "transactional_email_precondition_failed",
+        title: "customer-welcome email skipped: customer_missing_email",
+        meta: expect.objectContaining({
+          template_key: "customer-welcome",
+          reason: "customer_missing_email",
+          event_name: "customer.created",
+          event_id: "cus_123",
+          customer_id: "cus_123",
+        }),
+      })
+    )
   })
 
   it("emits a redacted handler failure alert for unexpected subscriber errors", async () => {
