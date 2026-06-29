@@ -32,10 +32,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     const clientSecret = setupIntent?.data?.client_secret;
     if (!clientSecret) {
-      return jsonError(
-        res,
-        500,
-        "Could not start a card setup. Please try again.",
+      throw new Error(
+        "Payment module did not return a setup intent client secret.",
       );
     }
 
