@@ -1,4 +1,4 @@
-import type { MedusaRequest } from "@medusajs/framework/http"
+import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { emitOpsAlert } from "../../../../../lib/ops-alert"
 
@@ -37,4 +37,24 @@ export async function emitAdminCommunicationsRouteFailureAlert(input: {
       ...(input.meta || {}),
     },
   })
+}
+
+export async function respondAdminCommunicationsRouteFailure(input: {
+  req: MedusaRequest
+  res: MedusaResponse
+  action: string
+  error: unknown
+  errorCode: string
+  status?: number
+  meta?: Record<string, unknown>
+}) {
+  const status = input.status || 500
+  await emitAdminCommunicationsRouteFailureAlert({
+    req: input.req,
+    action: input.action,
+    error: input.error,
+    status,
+    meta: input.meta,
+  })
+  input.res.status(status).json({ ok: false, error: input.errorCode })
 }
