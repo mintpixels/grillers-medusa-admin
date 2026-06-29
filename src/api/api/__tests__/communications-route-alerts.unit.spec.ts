@@ -163,6 +163,40 @@ describe("communications public API route alerting", () => {
     })
   })
 
+  it("alerts when /api/track rejects a malformed event", async () => {
+    const { req } = makeReq({
+      body: {
+        email: "shopper@example.com",
+        properties: { sku: "10-01" },
+      },
+    })
+    const res = makeRes()
+
+    await trackRoute.POST(req, res)
+
+    expect(res.statusCode).toBe(400)
+    expect(res.body).toEqual({ ok: false, error: "event is required" })
+    expect(recordCommunicationEvent).not.toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "communications_api_events_dropped",
+        severity: "warn",
+        fingerprint:
+          "communications_api_events_dropped:track:missing_event_name",
+        meta: expect.objectContaining({
+          operation: "track",
+          reason: "missing_event_name",
+          event_count: 1,
+          accepted_count: 0,
+          dropped_count: 1,
+          sample_event_keys: ["email", "properties"],
+        }),
+      })
+    )
+    expect(JSON.stringify((emitOpsAlert as jest.Mock).mock.calls[0][0].meta))
+      .not.toContain("shopper@example.com")
+  })
+
   it("alerts when /api/batch cannot persist a batched event", async () => {
     ;(recordCommunicationEvent as jest.Mock).mockRejectedValueOnce(
       new Error("batch insert failed")

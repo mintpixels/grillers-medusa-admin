@@ -6,6 +6,7 @@ import {
 } from "../../../lib/communications/core"
 import {
   communicationsApiLogger,
+  emitCommunicationsApiDroppedEventsAlert,
   emitCommunicationsApiFailureAlert,
 } from "../_shared/alerts"
 
@@ -127,6 +128,12 @@ function normalizeEvent(body: Record<string, any>) {
   }
 }
 
+function sampleEventKeys(body: unknown) {
+  return body && typeof body === "object" && !Array.isArray(body)
+    ? Object.keys(body as Record<string, any>).slice(0, 20)
+    : []
+}
+
 export async function OPTIONS(req: MedusaRequest, res: MedusaResponse) {
   if (!setCorsHeaders(req, res)) {
     res.status(403).send("")
@@ -149,12 +156,22 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
   const body = (req.body || {}) as Record<string, any>
   const event = normalizeEvent(body)
+  const logger = communicationsApiLogger(req)
   if (!event.event_name) {
+    await emitCommunicationsApiDroppedEventsAlert({
+      operation: "track",
+      path: "src/api/api/track/route.ts",
+      eventCount: 1,
+      acceptedCount: 0,
+      droppedCount: 1,
+      reason: "missing_event_name",
+      sampleEventKeys: sampleEventKeys(body),
+      logger,
+    })
     res.status(400).json({ ok: false, error: "event is required" })
     return
   }
 
-  const logger = communicationsApiLogger(req)
   try {
     const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
     const row = await recordCommunicationEvent(db, event)
