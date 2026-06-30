@@ -67,10 +67,14 @@ describe("QBD pending posting alerts", () => {
         alertKind: "qbd_pending_posting_stale",
         severity: "warn",
         fingerprint: "qbd:pending_posting_stale",
+        title: expect.stringContaining("oldest 240m; sample #1001"),
         meta: expect.objectContaining({
           stale_after_minutes: 120,
           stale_order_count: 1,
           oldest_age_minutes: 240,
+          sample_order_display_ids: ["1001"],
+          sample_order_ids: ["order_123"],
+          remediation: expect.stringContaining("QuickBooks Web Connector"),
           stale_orders: [
             expect.objectContaining({
               order_id: "order_123",
@@ -111,6 +115,7 @@ describe("QBD pending posting alerts", () => {
       expect.objectContaining({
         alertKind: "qbd_pending_posting_stale",
         severity: "warn",
+        title: expect.stringContaining("check QBD sync/Web Connector"),
         path: "test/path.ts",
         source: "medusa-server",
         fingerprint: "qbd:pending_posting_stale",

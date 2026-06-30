@@ -13,6 +13,7 @@ import { expireInactiveCarts } from "./cart-lifecycle"
 import { communicationQueueHealth, enqueueCampaignSend } from "./queue"
 import { communicationReporting } from "./reporting"
 import { listEmailTemplates, seedEmailTemplates } from "./templates"
+import { resolvePostmarkMonthlyLimit } from "./postmark-usage"
 
 type KnexLike = any
 
@@ -38,7 +39,7 @@ async function postmarkUsageSummary(db: KnexLike) {
   const monthStart = new Date()
   monthStart.setUTCDate(1)
   monthStart.setUTCHours(0, 0, 0, 0)
-  const monthlyLimit = Number(process.env.POSTMARK_MONTHLY_LIMIT || 100)
+  const monthlyLimit = resolvePostmarkMonthlyLimit()
   const [monthlyMessages, byPurpose] = await Promise.all([
     db("gp_message_log")
       .whereNull("deleted_at")
@@ -53,13 +54,17 @@ async function postmarkUsageSummary(db: KnexLike) {
       .groupBy("message_purpose"),
   ])
   const sentThisMonth = Number(monthlyMessages?.count || 0)
-  const usageRatio = monthlyLimit > 0 ? sentThisMonth / monthlyLimit : null
+  const usageRatio =
+    monthlyLimit.configured && monthlyLimit.limit ? sentThisMonth / monthlyLimit.limit : null
   return {
     month_start: monthStart.toISOString(),
     sent_or_queued_this_month: sentThisMonth,
-    configured_monthly_limit: monthlyLimit,
+    configured_monthly_limit: monthlyLimit.limit,
+    monthly_limit_configured: monthlyLimit.configured,
+    configuration_warning: monthlyLimit.configuration_warning,
+    configuration_error: monthlyLimit.configuration_error,
     usage_ratio: usageRatio,
-    warning: usageRatio !== null && usageRatio >= 0.8,
+    warning: monthlyLimit.configured && usageRatio !== null && usageRatio >= 0.8,
     by_purpose: byPurpose,
   }
 }

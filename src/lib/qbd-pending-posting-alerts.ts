@@ -137,6 +137,36 @@ function pendingPostingOrder(
   }
 }
 
+function orderLabel(order: StaleQbdPostingOrder) {
+  if (order.display_id) {
+    return `#${order.display_id}`
+  }
+  return order.order_id ? order.order_id : null
+}
+
+function buildAlertTitle(
+  staleOrders: StaleQbdPostingOrder[],
+  thresholdMinutes: number
+) {
+  const sampleLabels = staleOrders
+    .slice(0, 3)
+    .map(orderLabel)
+    .filter((label): label is string => Boolean(label))
+  const sample =
+    sampleLabels.length > 0
+      ? `; sample ${sampleLabels.join(", ")}${
+          staleOrders.length > sampleLabels.length
+            ? ` +${staleOrders.length - sampleLabels.length} more`
+            : ""
+        }`
+      : ""
+
+  return [
+    `QBD posting pending for ${staleOrders.length} order(s) beyond ${thresholdMinutes}m`,
+    `(oldest ${staleOrders[0].age_minutes}m${sample}; check QBD sync/Web Connector)`,
+  ].join(" ")
+}
+
 export function buildStaleQbdPostingAlert({
   orders,
   now = new Date(),
@@ -160,13 +190,23 @@ export function buildStaleQbdPostingAlert({
 
   return {
     alertKind: "qbd_pending_posting_stale",
-    title: `QBD posting pending for ${staleOrders.length} order(s) beyond ${thresholdMinutes}m`,
+    title: buildAlertTitle(staleOrders, thresholdMinutes),
     severity: "warn" as const,
     fingerprint: "qbd:pending_posting_stale",
     meta: {
       stale_after_minutes: thresholdMinutes,
       stale_order_count: staleOrders.length,
       oldest_age_minutes: staleOrders[0].age_minutes,
+      sample_order_display_ids: staleOrders
+        .slice(0, MAX_SAMPLE_ORDERS)
+        .map((order) => order.display_id)
+        .filter(Boolean),
+      sample_order_ids: staleOrders
+        .slice(0, MAX_SAMPLE_ORDERS)
+        .map((order) => order.order_id)
+        .filter(Boolean),
+      remediation:
+        "Run/inspect the QuickBooks Web Connector and sync writer; pending orders should transition to posted or failed with qbd_txn_id or qbd_posting_error.",
       stale_orders: staleOrders.slice(0, MAX_SAMPLE_ORDERS),
     },
   }

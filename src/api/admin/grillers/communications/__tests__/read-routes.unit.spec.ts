@@ -34,6 +34,8 @@ import { GET as reportsGET } from "../reports/route"
 import { GET as overviewGET } from "../route"
 import { GET as templatesGET } from "../templates/route"
 
+const originalEnv = { ...process.env }
+
 function makeRes() {
   return {
     status: jest.fn(function status(this: any) {
@@ -47,6 +49,30 @@ function failingDb(message = "database unavailable for customer@example.com") {
   return jest.fn(() => {
     throw new Error(message)
   })
+}
+
+function queryResult(result: unknown, firstResult: unknown = result) {
+  const chain: any = {}
+  chain.whereNull = jest.fn(() => chain)
+  chain.where = jest.fn(() => chain)
+  chain.whereIn = jest.fn(() => chain)
+  chain.select = jest.fn(() => chain)
+  chain.count = jest.fn(() => chain)
+  chain.orderBy = jest.fn(() => chain)
+  chain.groupBy = jest.fn(() => Promise.resolve(result))
+  chain.limit = jest.fn(() => Promise.resolve(result))
+  chain.first = jest.fn(() => Promise.resolve(firstResult))
+  return chain
+}
+
+function healthyCommunicationsHealthDb(input: { sentThisMonth: number }) {
+  const queries = [
+    queryResult([]),
+    queryResult([]),
+    queryResult([], { count: String(input.sentThisMonth) }),
+    queryResult([{ message_purpose: "transactional", count: String(input.sentThisMonth) }]),
+  ]
+  return jest.fn(() => queries.shift() || queryResult([]))
 }
 
 function makeReq(input?: {
@@ -108,7 +134,12 @@ function expectFailedRoute({
 describe("admin communications read route alerts", () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    process.env = { ...originalEnv }
     ;(communicationQueueHealth as jest.Mock).mockResolvedValue({})
+  })
+
+  afterEach(() => {
+    process.env = { ...originalEnv }
   })
 
   it("alerts when the overview read fails", async () => {
@@ -176,6 +207,7 @@ describe("admin communications read route alerts", () => {
   })
 
   it("alerts when the communications health read fails", async () => {
+    process.env.POSTMARK_MONTHLY_LIMIT = "100"
     const { logger, req } = makeReq({ db: failingDb("health query failed") })
     const res = makeRes()
 
@@ -188,6 +220,56 @@ describe("admin communications read route alerts", () => {
       errorCode: "communications_health_failed",
       meta: { postmark_monthly_limit: 100 },
     })
+  })
+
+  it("reports a missing Postmark monthly limit as configuration state, not a fake 100-message quota", async () => {
+    delete process.env.POSTMARK_MONTHLY_LIMIT
+    const { req } = makeReq({
+      db: healthyCommunicationsHealthDb({ sentThisMonth: 80 }),
+    })
+    const res = makeRes()
+
+    await healthGET(req, res)
+
+    expect(res.status).toHaveBeenCalledWith(200)
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        postmark_usage: expect.objectContaining({
+          sent_or_queued_this_month: 80,
+          configured_monthly_limit: null,
+          monthly_limit_configured: false,
+          configuration_warning: true,
+          configuration_error: "missing_postmark_monthly_limit",
+          usage_ratio: null,
+          warning: false,
+        }),
+      })
+    )
+  })
+
+  it("warns on Postmark quota only when an explicit monthly limit is configured", async () => {
+    process.env.POSTMARK_MONTHLY_LIMIT = "100"
+    const { req } = makeReq({
+      db: healthyCommunicationsHealthDb({ sentThisMonth: 80 }),
+    })
+    const res = makeRes()
+
+    await healthGET(req, res)
+
+    expect(res.status).toHaveBeenCalledWith(200)
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        postmark_usage: expect.objectContaining({
+          sent_or_queued_this_month: 80,
+          configured_monthly_limit: 100,
+          monthly_limit_configured: true,
+          configuration_warning: false,
+          configuration_error: null,
+          usage_ratio: 0.8,
+          warning: true,
+        }),
+      })
+    )
   })
 
   it("alerts when reports cannot be read", async () => {

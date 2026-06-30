@@ -1,10 +1,11 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { communicationQueueHealth } from "../../../../../lib/communications/queue"
+import { resolvePostmarkMonthlyLimit } from "../../../../../lib/communications/postmark-usage"
 import { respondAdminCommunicationsRouteFailure } from "../_shared/alerts"
 
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
-  const postmarkMonthlyLimit = Number(process.env.POSTMARK_MONTHLY_LIMIT || 100)
+  const postmarkMonthlyLimit = resolvePostmarkMonthlyLimit()
   try {
     const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
     const monthStart = new Date()
@@ -39,7 +40,9 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
     const sentThisMonth = Number(monthlyMessages?.count || 0)
     const usageRatio =
-      postmarkMonthlyLimit > 0 ? sentThisMonth / postmarkMonthlyLimit : null
+      postmarkMonthlyLimit.configured && postmarkMonthlyLimit.limit
+        ? sentThisMonth / postmarkMonthlyLimit.limit
+        : null
 
     res.status(200).json({
       queue,
@@ -48,9 +51,15 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       postmark_usage: {
         month_start: monthStart.toISOString(),
         sent_or_queued_this_month: sentThisMonth,
-        configured_monthly_limit: postmarkMonthlyLimit,
+        configured_monthly_limit: postmarkMonthlyLimit.limit,
+        monthly_limit_configured: postmarkMonthlyLimit.configured,
+        configuration_warning: postmarkMonthlyLimit.configuration_warning,
+        configuration_error: postmarkMonthlyLimit.configuration_error,
         usage_ratio: usageRatio,
-        warning: usageRatio !== null && usageRatio >= 0.8,
+        warning:
+          postmarkMonthlyLimit.configured &&
+          usageRatio !== null &&
+          usageRatio >= 0.8,
         by_purpose: monthlyByPurpose,
       },
     })
@@ -62,9 +71,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       error,
       errorCode: "communications_health_failed",
       meta: {
-        postmark_monthly_limit: Number.isFinite(postmarkMonthlyLimit)
-          ? postmarkMonthlyLimit
-          : null,
+        postmark_monthly_limit: postmarkMonthlyLimit.limit,
+        postmark_monthly_limit_configured: postmarkMonthlyLimit.configured,
       },
     })
   }
