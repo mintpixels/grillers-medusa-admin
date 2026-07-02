@@ -1,12 +1,14 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import {
+  FINALIZATION_PACKED_PENDING_CHARGE,
   appendStaffAudit,
   approveFinalization,
   invoiceArOrderMetadata,
   isInvoiceOrder,
   metadataObject,
 } from "../../../../../../../lib/catch-weight-finalization"
+import { FINALIZATION_PACKED_PENDING_CHARGE_EVENT } from "../../../../../../../lib/auto-finalize-charge"
 import {
   emitFinalizationRouteFailureAlert,
   jsonError,
@@ -61,6 +63,33 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
           }
         )
     await orderModule.updateOrders(order.id, { metadata })
+
+    // #9/#235: signal the fixed-price auto-charge trigger. Only for card orders now awaiting
+    // the final charge (packed_pending_charge) — never invoice orders, which approve releases
+    // straight to fulfillment. Best-effort: a failed emit must NOT fail the human approve — the
+    // order simply waits for a manual charge. The subscriber is flag-gated (default OFF) and
+    // fails safe, so emitting is a harmless no-op when auto-charge is disabled.
+    if (approvedStatus === FINALIZATION_PACKED_PENDING_CHARGE) {
+      try {
+        const eventBus = req.scope.resolve(Modules.EVENT_BUS)
+        await eventBus.emit({
+          name: FINALIZATION_PACKED_PENDING_CHARGE_EVENT,
+          data: {
+            id: order.id,
+            order_id: order.id,
+            finalization_id: approved.finalization.id,
+          },
+        })
+      } catch (emitError) {
+        const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
+        logger.warn(
+          `[approve-finalization] could not emit ${FINALIZATION_PACKED_PENDING_CHARGE_EVENT} for order=${order.id}: ${
+            emitError instanceof Error ? emitError.message : String(emitError)
+          }`
+        )
+      }
+    }
+
     res.status(200).json({
       order,
       ...approved,
