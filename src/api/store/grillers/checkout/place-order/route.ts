@@ -26,6 +26,13 @@ import {
   ensurePaymentSetup,
   metadataObject,
 } from "../../../../../lib/catch-weight-finalization";
+import {
+  checkInventoryAvailability,
+  qbdListIdFromMetadata,
+  requestedFulfillmentDateFromMetadata,
+  type AllocationSource,
+  type AvailabilityLineInput,
+} from "../../../../../lib/inventory-allocation";
 import { emitOpsAlert } from "../../../../../lib/ops-alert";
 import { isOfflinePaymentApproved } from "../../../../../lib/gp-offline-payment";
 import {
@@ -34,6 +41,27 @@ import {
 } from "../../../../../lib/gp-credit-limit";
 
 const PLACE_ORDER_PATH = "store/grillers/checkout/place-order";
+
+const CART_INVENTORY_FIELDS = [
+  "id",
+  "email",
+  "customer_id",
+  "metadata",
+  "items.id",
+  "items.title",
+  "items.product_id",
+  "items.variant_id",
+  "items.variant_sku",
+  "items.quantity",
+  "items.raw_quantity",
+  "items.metadata",
+  "items.variant.id",
+  "items.variant.sku",
+  "items.variant.metadata",
+  "items.variant.product.id",
+  "items.variant.product.title",
+  "items.variant.product.metadata",
+];
 
 const redactedErrorMessage = (message?: string | null) =>
   String(message || "")
@@ -52,6 +80,75 @@ type PlaceOrderBody = {
   consent_text?: string | null;
   // #283: "invoice" routes an approved B2B account to the no-card A/R path.
   payment_method?: string;
+};
+
+type CheckoutCartLine = {
+  id?: string | null;
+  title?: string | null;
+  product_id?: string | null;
+  variant_id?: string | null;
+  variant_sku?: string | null;
+  quantity?: number | string | { value?: number | string } | null;
+  raw_quantity?: number | string | { value?: number | string } | null;
+  metadata?: Record<string, unknown> | null;
+  variant?: {
+    id?: string | null;
+    sku?: string | null;
+    metadata?: Record<string, unknown> | null;
+    product?: {
+      id?: string | null;
+      title?: string | null;
+      metadata?: Record<string, unknown> | null;
+    } | null;
+  } | null;
+};
+
+type CheckoutCartForInventory = {
+  id: string;
+  email?: string | null;
+  customer_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+  items?: CheckoutCartLine[];
+};
+
+const textValue = (value: unknown): string | undefined => {
+  if (typeof value === "string" && value.trim() !== "") return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
+};
+
+const numberValue = (value: unknown): number | undefined => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  if (value && typeof value === "object" && "value" in value) {
+    return numberValue((value as { value?: unknown }).value);
+  }
+  return undefined;
+};
+
+const positiveQuantity = (value: unknown) => {
+  const quantity = numberValue(value);
+  return quantity && quantity > 0 ? Math.max(1, Math.floor(quantity)) : 1;
+};
+
+const fulfillmentTypeFromMetadata = (metadata: unknown): string | undefined => {
+  const record = metadataObject(metadata);
+  return (
+    textValue(record.fulfillmentType) ||
+    textValue(record.fulfillment_type) ||
+    textValue(record.deliveryMethod)
+  );
+};
+
+const allocationSourceFromMetadata = (metadata: unknown): AllocationSource => {
+  const record = metadataObject(metadata);
+  if (record.staff_phone_order === true || record.source === "staff_phone_order") {
+    return "staff_phone_order";
+  }
+  return "customer_web";
 };
 
 const ORDER_FIELDS = [
@@ -107,6 +204,120 @@ const ORDER_FIELDS = [
   "items.variant.product.id",
   "items.variant.product.metadata",
 ];
+
+async function fetchCartForInventory(
+  req: MedusaRequest,
+  cartId: string,
+): Promise<CheckoutCartForInventory | null> {
+  const query = req.scope.resolve(ContainerRegistrationKeys.QUERY);
+  const { data } = await query.graph({
+    entity: "cart",
+    fields: CART_INVENTORY_FIELDS,
+    filters: { id: cartId },
+  });
+  return (data?.[0] as CheckoutCartForInventory | undefined) || null;
+}
+
+function cartInventoryLines(cart: CheckoutCartForInventory): AvailabilityLineInput[] {
+  return (cart.items || []).reduce<AvailabilityLineInput[]>((lines, item) => {
+    const metadata = metadataObject(item.metadata);
+    const variant = item.variant || {};
+    const product = variant.product || {};
+    const variantId = textValue(item.variant_id) || textValue(variant.id);
+    if (!variantId) return lines;
+
+    lines.push({
+      product_id: textValue(item.product_id) || textValue(product.id),
+      variant_id: variantId,
+      quantity: positiveQuantity(item.raw_quantity ?? item.quantity),
+      qbd_list_id: qbdListIdFromMetadata(
+        metadata,
+        variant.metadata,
+        product.metadata,
+      ),
+      sku:
+        textValue(metadata.sku) ||
+        textValue(item.variant_sku) ||
+        textValue(variant.sku),
+      title:
+        textValue(metadata.strapi_title) ||
+        textValue(metadata.customer_title) ||
+        textValue(product.title) ||
+        textValue(item.title),
+      metadata,
+    });
+    return lines;
+  }, []);
+}
+
+async function assertCartInventoryAvailable({
+  req,
+  res,
+  cartId,
+  customerId,
+}: {
+  req: MedusaRequest;
+  res: MedusaResponse;
+  cartId: string;
+  customerId?: string | null;
+}) {
+  const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION);
+  const query = req.scope.resolve(ContainerRegistrationKeys.QUERY);
+  const cart = await fetchCartForInventory(req, cartId);
+  if (!cart) {
+    jsonError(res, 404, "Cart not found.");
+    return false;
+  }
+
+  const lines = cartInventoryLines(cart);
+  if (!lines.length) {
+    jsonError(res, 400, "Cart has no purchasable items.");
+    return false;
+  }
+
+  const metadata = metadataObject(cart.metadata);
+  const availability = await checkInventoryAvailability({
+    db,
+    query,
+    lines,
+    cart_id: cartId,
+    customer_id: customerId || cart.customer_id || null,
+    fulfillment_type: fulfillmentTypeFromMetadata(metadata),
+    requested_fulfillment_date: requestedFulfillmentDateFromMetadata(metadata),
+    source: allocationSourceFromMetadata(metadata),
+    include_internal: false,
+    record_snapshots: true,
+  });
+  const unresolved = availability.filter(
+    (line) => line.decision !== "available" && line.decision !== "future_allowed",
+  );
+
+  if (unresolved.length) {
+    res.status(409).json({
+      type: "inventory",
+      error: {
+        code: "inventory_unavailable",
+        message:
+          "Some items in your cart need attention before checkout. Please update the cart and try again.",
+        lines: unresolved.map((line) => ({
+          variant_id: line.variant_id,
+          product_id: line.product_id,
+          title: line.title,
+          sku: line.sku,
+          requested_quantity: line.requested_quantity,
+          available_to_promise_quantity: line.available_to_promise_quantity,
+          decision: line.decision,
+          reason: line.reason,
+          earliest_available_date: line.earliest_available_date,
+          alternatives: line.alternatives,
+        })),
+      },
+    });
+    return false;
+  }
+
+  return true;
+}
 
 async function verifyStripeSetupIntent(input: {
   setupIntentId?: string | null;
@@ -273,6 +484,14 @@ async function placeInvoiceOrder(
       return jsonError(res, 403, "This customer context does not match the cart.");
     }
   }
+
+  const inventoryReady = await assertCartInventoryAvailable({
+    req,
+    res,
+    cartId,
+    customerId: customer.id,
+  });
+  if (!inventoryReady) return;
 
   const customerMeta = metadataObject(customer.metadata);
   const paymentTerms =
@@ -500,6 +719,14 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         );
       }
     }
+
+    const inventoryReady = await assertCartInventoryAvailable({
+      req,
+      res,
+      cartId,
+      customerId: customer.id,
+    });
+    if (!inventoryReady) return;
 
     const checkoutMetadata: Record<string, any> = appendStaffAudit(
       {

@@ -1,9 +1,26 @@
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { completeCartWorkflow, createPaymentSessionsWorkflow } from "@medusajs/core-flows"
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { emitOpsAlert } from "../../../../../../lib/ops-alert"
+import { checkInventoryAvailability } from "../../../../../../lib/inventory-allocation"
 import { getPaymentContextCustomer } from "../../../../payment-methods/utils"
+
+jest.mock("@medusajs/core-flows", () => ({
+  completeCartWorkflow: jest.fn(() => ({ run: jest.fn() })),
+  createPaymentCollectionForCartWorkflow: jest.fn(() => ({ run: jest.fn() })),
+  createPaymentSessionsWorkflow: jest.fn(() => ({ run: jest.fn() })),
+}))
 
 jest.mock("../../../../../../lib/ops-alert", () => ({
   emitOpsAlert: jest.fn(async () => ({ ok: true, skipped: false })),
+}))
+
+jest.mock("../../../../../../lib/inventory-allocation", () => ({
+  checkInventoryAvailability: jest.fn(),
+  qbdListIdFromMetadata: jest.fn(() => "80000001-123"),
+  requestedFulfillmentDateFromMetadata: jest.fn((metadata) => {
+    if (!metadata || typeof metadata !== "object") return undefined
+    return (metadata as Record<string, unknown>).scheduledDate as string | undefined
+  }),
 }))
 
 // Mock only getPaymentContextCustomer so we can drive the outer catch; keep
@@ -13,6 +30,9 @@ jest.mock("../../../../payment-methods/utils", () => {
   return {
     ...actual,
     getPaymentContextCustomer: jest.fn(),
+    assertPaymentMethodBelongsToCustomer: jest.fn(async () => true),
+    getStripeAccountHolder: jest.fn(() => ({ id: "acct_holder_123" })),
+    getStripeCustomerId: jest.fn(() => "cus_123"),
   }
 })
 
@@ -22,6 +42,41 @@ const { POST } = require("../route")
 
 function makeReqRes() {
   const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn() }
+  const cartModule = {
+    retrieveCart: jest.fn(async () => ({
+      id: "cart_test_123",
+      email: "avi@example.com",
+      customer_id: "cus_medusa_123",
+      metadata: {},
+    })),
+    updateCarts: jest.fn(),
+  }
+  const orderModule = { updateOrders: jest.fn() }
+  const query = {
+    graph: jest.fn(async () => ({
+      data: [
+        {
+          id: "cart_test_123",
+          customer_id: "cus_medusa_123",
+          metadata: {
+            scheduledDate: "2026-07-02",
+            fulfillmentType: "ups_ground",
+          },
+          items: [
+            {
+              id: "cali_123",
+              title: "Ground Beef 85/15 - 1 lb Pack",
+              product_id: "prod_123",
+              variant_id: "variant_123",
+              variant_sku: "1-00-12-1",
+              quantity: 3,
+              metadata: { customer_title: "Ground Beef 85/15 - 1 lb Pack" },
+            },
+          ],
+        },
+      ],
+    })),
+  }
   const req = {
     body: {
       cart_id: "cart_test_123",
@@ -32,6 +87,10 @@ function makeReqRes() {
     scope: {
       resolve: (key: string) => {
         if (key === ContainerRegistrationKeys.LOGGER) return logger
+        if (key === ContainerRegistrationKeys.PG_CONNECTION) return {}
+        if (key === ContainerRegistrationKeys.QUERY) return query
+        if (key === Modules.CART) return cartModule
+        if (key === Modules.ORDER) return orderModule
         throw new Error(`Unexpected resolve(${key})`)
       },
     },
@@ -42,12 +101,25 @@ function makeReqRes() {
     }),
     json: jest.fn(),
   } as any
-  return { req, res, logger }
+  return { req, res, logger, cartModule, orderModule, query }
 }
 
 describe("place-order route ops alerting", () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    ;(checkInventoryAvailability as jest.Mock).mockResolvedValue([
+      {
+        variant_id: "variant_123",
+        product_id: "prod_123",
+        title: "Ground Beef 85/15 - 1 lb Pack",
+        sku: "1-00-12-1",
+        requested_quantity: 3,
+        available_to_promise_quantity: 3,
+        decision: "available",
+        reason: "in_stock",
+        alternatives: [],
+      },
+    ])
   })
 
   it("emits a severity:page place_order_error alert and returns 500 when the handler throws", async () => {
@@ -87,5 +159,47 @@ describe("place-order route ops alerting", () => {
     expect(meta).not.toHaveProperty("setup_intent_id")
     expect(JSON.stringify(meta)).not.toContain("pm_test_123")
     expect(JSON.stringify(meta)).not.toContain("avi@example.com")
+  })
+
+  it("blocks checkout before payment session creation when server-side ATP is unresolved", async () => {
+    ;(getPaymentContextCustomer as jest.Mock).mockResolvedValueOnce({
+      customer: { id: "cus_medusa_123", email: "avi@example.com", metadata: {} },
+      staffTargetCustomerId: null,
+    })
+    ;(checkInventoryAvailability as jest.Mock).mockResolvedValueOnce([
+      {
+        variant_id: "variant_123",
+        product_id: "prod_123",
+        title: "Ground Beef 85/15 - 1 lb Pack",
+        sku: "1-00-12-1",
+        requested_quantity: 3,
+        available_to_promise_quantity: 1,
+        decision: "partial",
+        reason: "partial_atp",
+        alternatives: [],
+      },
+    ])
+
+    const { req, res, cartModule } = makeReqRes()
+    await POST(req, res)
+
+    expect(res.status).toHaveBeenCalledWith(409)
+    expect(res.json).toHaveBeenCalledWith({
+      type: "inventory",
+      error: expect.objectContaining({
+        code: "inventory_unavailable",
+        lines: [
+          expect.objectContaining({
+            variant_id: "variant_123",
+            requested_quantity: 3,
+            available_to_promise_quantity: 1,
+            decision: "partial",
+          }),
+        ],
+      }),
+    })
+    expect(cartModule.updateCarts).not.toHaveBeenCalled()
+    expect(createPaymentSessionsWorkflow).not.toHaveBeenCalled()
+    expect(completeCartWorkflow).not.toHaveBeenCalled()
   })
 })
