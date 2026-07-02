@@ -7,6 +7,9 @@ const mockEmitChargeFailedPostShipAlert = jest.fn(async (_input: any) => ({
 const mockEmitStripePaymentFailedWebhookInvalidSignatureAlert = jest.fn(
   async (_input: any) => ({ ok: true })
 )
+const mockEmitStripePaymentFailedWebhookMissingSecretAlert = jest.fn(
+  async (_input: any) => ({ ok: true })
+)
 const mockEmitStripePaymentFailedWebhookProcessingFailedAlert = jest.fn(
   async (_input: any) => ({ ok: true })
 )
@@ -16,6 +19,8 @@ jest.mock("../../../../../lib/final-charge-ops-alerts", () => ({
     mockEmitChargeFailedPostShipAlert(input),
   emitStripePaymentFailedWebhookInvalidSignatureAlert: (input: any) =>
     mockEmitStripePaymentFailedWebhookInvalidSignatureAlert(input),
+  emitStripePaymentFailedWebhookMissingSecretAlert: (input: any) =>
+    mockEmitStripePaymentFailedWebhookMissingSecretAlert(input),
   emitStripePaymentFailedWebhookProcessingFailedAlert: (input: any) =>
     mockEmitStripePaymentFailedWebhookProcessingFailedAlert(input),
 }))
@@ -108,6 +113,42 @@ describe("Stripe payment-failed webhook telemetry", () => {
         hasSignatureHeader: true,
       })
     )
+    expect(mockEmitChargeFailedPostShipAlert).not.toHaveBeenCalled()
+  })
+
+  it("fails closed and pages when the signing secret is missing", async () => {
+    delete process.env.STRIPE_WEBHOOK_SECRET
+    const body = {
+      type: "payment_intent.payment_failed",
+      data: { object: { id: "pi_123" } },
+    }
+    const logger = { error: jest.fn(), info: jest.fn(), warn: jest.fn() }
+    const req = {
+      body,
+      headers: {},
+      rawBody: JSON.stringify(body),
+      scope: {
+        resolve: (key: string) => {
+          if (key === ContainerRegistrationKeys.LOGGER) return logger
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+    } as any
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(res.status).toHaveBeenCalledWith(503)
+    expect(res.json).toHaveBeenCalledWith({
+      ok: false,
+      error: "webhook_secret_missing",
+    })
+    expect(
+      mockEmitStripePaymentFailedWebhookMissingSecretAlert
+    ).toHaveBeenCalledWith(expect.objectContaining({ logger }))
+    expect(
+      mockEmitStripePaymentFailedWebhookInvalidSignatureAlert
+    ).not.toHaveBeenCalled()
     expect(mockEmitChargeFailedPostShipAlert).not.toHaveBeenCalled()
   })
 

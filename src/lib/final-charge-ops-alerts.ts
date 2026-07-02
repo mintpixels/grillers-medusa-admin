@@ -122,6 +122,24 @@ export async function emitStripePaymentFailedWebhookInvalidSignatureAlert({
   })
 }
 
+export async function emitStripePaymentFailedWebhookMissingSecretAlert({
+  logger,
+}: {
+  logger?: LoggerLike
+}) {
+  return emitOpsAlert({
+    alertKind: "stripe_payment_failed_webhook_secret_missing",
+    title: "Stripe payment-failed webhook signing secret is missing",
+    path: "src/api/webhooks/stripe/payment-failed/route.ts",
+    source: "medusa",
+    severity: "page",
+    logger,
+    meta: {
+      reason: "STRIPE_WEBHOOK_SECRET is not configured",
+    },
+  })
+}
+
 export async function emitStripePaymentFailedWebhookProcessingFailedAlert({
   logger,
   paymentIntentId,

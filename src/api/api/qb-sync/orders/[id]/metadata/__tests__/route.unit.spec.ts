@@ -87,6 +87,120 @@ describe("QuickBooks sync order metadata callback", () => {
     expect(emitOpsAlert).not.toHaveBeenCalled()
   })
 
+  it("accepts QBD posting metadata when the request key matches the current order key", async () => {
+    process.env.QB_SYNC_ORDER_IMPORT_TOKEN = "sync-token"
+    const orderModule = {
+      retrieveOrder: jest.fn(async () => ({
+        id: "order_123",
+        metadata: {
+          qbd_posting_status: "pending_manual",
+          qbd_posting_request_key: "final_charge:pi_123",
+        },
+      })),
+      updateOrders: jest.fn(async () => undefined),
+    }
+    const req = {
+      params: { id: "order_123" },
+      body: {
+        metadata: {
+          qbd_posting_required: false,
+          qbd_posting_status: "posted",
+          qbd_posting_request_key: "final_charge:pi_123",
+          qbd_write_job_id: 42,
+        },
+      },
+      headers: {
+        "x-qb-sync-token": "sync-token",
+      },
+      scope: {
+        resolve: (key: string) => {
+          if (key === Modules.ORDER) return orderModule
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+    } as any
+    const res = {
+      status: jest.fn(function status() {
+        return this
+      }),
+      json: jest.fn(),
+    } as any
+
+    await POST(req, res)
+
+    expect(orderModule.updateOrders).toHaveBeenCalledWith("order_123", {
+      metadata: expect.objectContaining({
+        qbd_posting_required: false,
+        qbd_posting_status: "posted",
+        qbd_posting_request_key: "final_charge:pi_123",
+      }),
+    })
+    expect(res.status).toHaveBeenCalledWith(200)
+    expect(emitOpsAlert).not.toHaveBeenCalled()
+  })
+
+  it("rejects stale QBD posting callbacks when the request key does not match", async () => {
+    process.env.QB_SYNC_ORDER_IMPORT_TOKEN = "sync-token"
+    const orderModule = {
+      retrieveOrder: jest.fn(async () => ({
+        id: "order_123",
+        metadata: {
+          qbd_posting_status: "pending_manual",
+          qbd_posting_request_key: "final_charge:pi_current",
+        },
+      })),
+      updateOrders: jest.fn(async () => undefined),
+    }
+    const req = {
+      params: { id: "order_123" },
+      body: {
+        metadata: {
+          qbd_posting_required: false,
+          qbd_posting_status: "posted",
+          qbd_posting_request_key: "refund:re_stale",
+          qbd_write_job_id: 99,
+        },
+      },
+      headers: {
+        "x-qb-sync-token": "sync-token",
+      },
+      scope: {
+        resolve: (key: string) => {
+          if (key === Modules.ORDER) return orderModule
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+    } as any
+    const res = {
+      status: jest.fn(function status() {
+        return this
+      }),
+      json: jest.fn(),
+    } as any
+
+    await POST(req, res)
+
+    expect(orderModule.updateOrders).not.toHaveBeenCalled()
+    expect(res.status).toHaveBeenCalledWith(409)
+    expect(res.json).toHaveBeenCalledWith({
+      error: "QuickBooks metadata request key mismatch",
+    })
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "qbd_order_metadata_update_failed",
+        severity: "page",
+        fingerprint: "qbd_order_metadata_update:request_key_mismatch",
+        meta: expect.objectContaining({
+          reason: "request_key_mismatch",
+          has_existing_request_key: true,
+          has_incoming_request_key: true,
+          existing_posting_status: "pending_manual",
+          incoming_posting_status: "posted",
+        }),
+      })
+    )
+  })
+
   it("pages when the shared sync token is not configured", async () => {
     process.env.QB_SYNC_ORDER_IMPORT_TOKEN = ""
     const req = {

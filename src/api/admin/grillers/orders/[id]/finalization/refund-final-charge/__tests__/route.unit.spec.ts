@@ -216,9 +216,105 @@ describe("final-charge refund route", () => {
     expect(eventBus.emit).not.toHaveBeenCalled()
     expect(res.status).toHaveBeenCalledWith(200)
     expect(res.json).toHaveBeenCalledWith({
+      already_refunded: true,
       payment: expect.objectContaining({
         refunded_amount: 22.5,
         refunds: [expect.objectContaining({ id: "re_final_123", amount: 12.5 })],
+      }),
+    })
+  })
+
+  it("does not silently replay equal-amount refunds when no idempotency header is provided", async () => {
+    process.env.STRIPE_API_KEY = "sk_test_123"
+    const stripeFetch = jest.fn(async (_url: string, init: any) => {
+      expect(init.headers["Idempotency-Key"]).toMatch(
+        /^final-charge-refund:order_123:pi_final_123:12\.5:[0-9a-f-]{36}$/
+      )
+      expect(init.headers["Idempotency-Key"]).not.toBe(
+        "final-charge-refund:order_123:pi_final_123:12.5"
+      )
+
+      return {
+        ok: true,
+        json: async () => ({ id: "re_final_new", status: "succeeded" }),
+      } as any
+    })
+    global.fetch = stripeFetch as any
+
+    const orderModule = {
+      retrieveOrder: jest.fn(async () => ({
+        id: "order_123",
+        currency_code: "usd",
+        total: 100,
+        metadata: {
+          final_charge_status: "succeeded",
+          stripe_payment_intent_id: "pi_final_123",
+          final_total: 100,
+          final_charge_refunded_amount: 12.5,
+          final_charge_refunds: [
+            {
+              id: "re_final_old",
+              amount: 12.5,
+              amount_minor: 1250,
+              idempotency_key:
+                "final-charge-refund:order_123:pi_final_123:12.5",
+              qbd_posting_request_key: "refund:re_final_old",
+              created_at: "2026-06-12T15:00:00.000Z",
+            },
+          ],
+          staff_audit_log: "[]",
+        },
+      })),
+      listOrderTransactions: jest.fn(async () => []),
+      addOrderTransactions: jest.fn(async () => undefined),
+      updateOrders: jest.fn(async () => undefined),
+    }
+    const eventBus = { emit: jest.fn(async () => undefined) }
+    const { db } = makeAllocationDb()
+    const req = {
+      params: { id: "order_123" },
+      body: { amount: 12.5, note: "Second equal amount refund" },
+      scope: {
+        resolve: (key: string) => {
+          if (key === Modules.ORDER) return orderModule
+          if (key === Modules.EVENT_BUS) return eventBus
+          if (key === ContainerRegistrationKeys.PG_CONNECTION) return db
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+    } as any
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(stripeFetch).toHaveBeenCalled()
+    expect(orderModule.addOrderTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reference: "refund",
+        reference_id: "re_final_new",
+      })
+    )
+    expect(orderModule.updateOrders).toHaveBeenCalledWith("order_123", {
+      metadata: expect.objectContaining({
+        final_charge_refunded_amount: 25,
+        stripe_refund_id: "re_final_new",
+        qbd_posting_request_key: "refund:re_final_new",
+        final_charge_refunds: [
+          expect.objectContaining({ id: "re_final_old" }),
+          expect.objectContaining({
+            id: "re_final_new",
+            idempotency_key: expect.stringMatching(
+              /^final-charge-refund:order_123:pi_final_123:12\.5:[0-9a-f-]{36}$/
+            ),
+          }),
+        ],
+      }),
+    })
+    expect(res.status).toHaveBeenCalledWith(200)
+    expect(res.json).toHaveBeenCalledWith({
+      payment: expect.objectContaining({
+        refunded_amount: 25,
+        refunds: [expect.objectContaining({ id: "re_final_new", amount: 12.5 })],
       }),
     })
   })

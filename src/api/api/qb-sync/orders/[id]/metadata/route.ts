@@ -8,6 +8,19 @@ type MetadataBody = {
 }
 
 const ALERT_PATH = "src/api/api/qb-sync/orders/[id]/metadata/route.ts"
+const QBD_POSTING_METADATA_KEYS = [
+  "qbd_posting_required",
+  "qbd_posting_status",
+  "qbd_posting_action",
+  "qbd_posting_amount",
+  "qbd_posting_request_key",
+  "qbd_posting_requested_at",
+  "qbd_posted_at",
+  "qbd_write_job_id",
+  "qbd_txn_id",
+  "qbd_ref_number",
+  "qbd_error",
+]
 
 const header = (req: MedusaRequest, name: string): string => {
   const headers = req.headers as any
@@ -68,11 +81,26 @@ function routeLogger(req: MedusaRequest) {
   }
 }
 
+function textValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function postingRequestKey(metadata: Record<string, unknown>): string {
+  return textValue(metadata.qbd_posting_request_key)
+}
+
+function touchesQbdPosting(metadata: Record<string, unknown>): boolean {
+  return QBD_POSTING_METADATA_KEYS.some((key) =>
+    Object.prototype.hasOwnProperty.call(metadata, key)
+  )
+}
+
 async function emitQbMetadataRouteFailureAlert(input: {
   req: MedusaRequest
   orderId?: string | null
-  reason: "configuration" | "metadata_persist"
+  reason: "configuration" | "metadata_persist" | "request_key_mismatch"
   error?: unknown
+  meta?: Record<string, unknown>
 }) {
   await emitOpsAlert({
     alertKind: "qbd_order_metadata_update_failed",
@@ -80,6 +108,8 @@ async function emitQbMetadataRouteFailureAlert(input: {
     title:
       input.reason === "configuration"
         ? "QuickBooks metadata callback is not configured"
+        : input.reason === "request_key_mismatch"
+          ? "QuickBooks metadata callback rejected a stale request key"
         : "QuickBooks metadata callback failed",
     path: ALERT_PATH,
     source: "medusa-server",
@@ -90,6 +120,7 @@ async function emitQbMetadataRouteFailureAlert(input: {
       has_order_id: Boolean(input.orderId),
       order_id: input.orderId || null,
       error_message: input.error ? redactedErrorMessage(input.error) : null,
+      ...(input.meta || {}),
     },
   })
 }
@@ -126,8 +157,36 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       select: ["id", "metadata"],
     })
 
+    const existingMetadata = metadataObject(order?.metadata)
+    const existingRequestKey = postingRequestKey(existingMetadata)
+    const incomingRequestKey = postingRequestKey(incomingMetadata)
+
+    if (
+      touchesQbdPosting(incomingMetadata) &&
+      existingRequestKey &&
+      incomingRequestKey !== existingRequestKey
+    ) {
+      await emitQbMetadataRouteFailureAlert({
+        req,
+        orderId,
+        reason: "request_key_mismatch",
+        meta: {
+          has_existing_request_key: true,
+          has_incoming_request_key: Boolean(incomingRequestKey),
+          existing_posting_status:
+            textValue(existingMetadata.qbd_posting_status) || null,
+          incoming_posting_status:
+            textValue(incomingMetadata.qbd_posting_status) || null,
+        },
+      })
+      res.status(409).json({
+        error: "QuickBooks metadata request key mismatch",
+      })
+      return
+    }
+
     const metadata = {
-      ...metadataObject(order?.metadata),
+      ...existingMetadata,
       ...incomingMetadata,
     }
 

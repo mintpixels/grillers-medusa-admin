@@ -7,6 +7,7 @@ import {
 import {
   emitChargeFailedPostShipAlert,
   emitStripePaymentFailedWebhookInvalidSignatureAlert,
+  emitStripePaymentFailedWebhookMissingSecretAlert,
   emitStripePaymentFailedWebhookProcessingFailedAlert,
 } from "../../../../lib/final-charge-ops-alerts"
 
@@ -42,22 +43,13 @@ function constantTimeEquals(a: string, b: string): boolean {
 
 /**
  * Verify the Stripe-Signature header. Returns true when the signature is valid
- * for at least one v1 scheme entry within the tolerance window. If no secret is
- * configured we accept (dev/staging) but log a warning so it is visible.
+ * for at least one v1 scheme entry within the tolerance window.
  */
 function verifyStripeSignature(
   req: MedusaRequest,
   rawBody: string,
-  logger?: any
+  secret: string
 ): boolean {
-  const secret = process.env.STRIPE_WEBHOOK_SECRET || ""
-  if (!secret) {
-    logger?.warn?.(
-      "[stripe-webhook] STRIPE_WEBHOOK_SECRET not set — accepting unsigned webhook"
-    )
-    return true
-  }
-
   const sigHeader = header(req, "stripe-signature")
   if (!sigHeader) return false
 
@@ -105,8 +97,22 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   }
 
   const rawBody = rawBodyString(req)
+  const webhookSecret = (process.env.STRIPE_WEBHOOK_SECRET || "").trim()
 
-  if (!verifyStripeSignature(req, rawBody, logger)) {
+  if (!webhookSecret) {
+    logger?.error?.(
+      "[stripe-webhook] STRIPE_WEBHOOK_SECRET not set — rejecting unsigned webhook"
+    )
+    void emitStripePaymentFailedWebhookMissingSecretAlert({ logger }).catch(
+      () => {
+        // Alerting must not change webhook response semantics.
+      }
+    )
+    res.status(503).json({ ok: false, error: "webhook_secret_missing" })
+    return
+  }
+
+  if (!verifyStripeSignature(req, rawBody, webhookSecret)) {
     void emitStripePaymentFailedWebhookInvalidSignatureAlert({
       logger,
       hasSignatureHeader: Boolean(header(req, "stripe-signature")),

@@ -8,9 +8,11 @@ function header(req: MedusaRequest, name: string): string {
   return headers[name.toLowerCase()] || headers.get?.(name) || ""
 }
 
-function authorized(req: MedusaRequest): boolean {
-  const secret = process.env.POSTMARK_WEBHOOK_SECRET || ""
-  if (!secret) return true
+function webhookSecret(): string {
+  return (process.env.POSTMARK_WEBHOOK_SECRET || "").trim()
+}
+
+function authorized(req: MedusaRequest, secret: string): boolean {
   const querySecret =
     typeof req.query?.secret === "string" ? req.query.secret : undefined
   return (
@@ -39,18 +41,38 @@ function recordType(payload: Record<string, any>): string {
 }
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
-  if (!authorized(req)) {
-    res.status(401).json({ ok: false, error: "unauthorized" })
-    return
-  }
-
-  const payload = (req.body || {}) as Record<string, any>
   let logger: any
   try {
     logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
   } catch {
     logger = undefined
   }
+
+  const secret = webhookSecret()
+  if (!secret) {
+    logger?.error?.("[postmark-webhook] POSTMARK_WEBHOOK_SECRET is not configured")
+    await emitOpsAlert({
+      alertKind: "postmark_webhook_secret_missing",
+      title: "Postmark webhook secret is missing",
+      path: "src/api/postmark/webhook/route.ts",
+      source: "medusa-server",
+      severity: "page",
+      fingerprint: "postmark_webhook:secret_missing",
+      logger,
+      meta: {
+        reason: "POSTMARK_WEBHOOK_SECRET is not configured",
+      },
+    })
+    res.status(503).json({ ok: false, error: "webhook_secret_missing" })
+    return
+  }
+
+  if (!authorized(req, secret)) {
+    res.status(401).json({ ok: false, error: "unauthorized" })
+    return
+  }
+
+  const payload = (req.body || {}) as Record<string, any>
 
   try {
     const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)

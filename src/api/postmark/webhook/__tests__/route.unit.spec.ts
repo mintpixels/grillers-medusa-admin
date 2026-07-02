@@ -65,7 +65,7 @@ describe("postmark webhook route alerting", () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
-    process.env = { ...originalEnv, POSTMARK_WEBHOOK_SECRET: "" }
+    process.env = { ...originalEnv, POSTMARK_WEBHOOK_SECRET: "expected-secret" }
     ;(updatePostmarkMessageState as jest.Mock).mockResolvedValue(null)
   })
 
@@ -74,7 +74,7 @@ describe("postmark webhook route alerting", () => {
   })
 
   it("updates message state and returns 202 on a valid webhook", async () => {
-    const { req, db } = makeReq()
+    const { req, db } = makeReq(undefined, { headerSecret: "expected-secret" })
     const res = makeRes()
 
     await POST(req, res)
@@ -83,6 +83,31 @@ describe("postmark webhook route alerting", () => {
     expect(res.body).toEqual({ ok: true })
     expect(updatePostmarkMessageState).toHaveBeenCalledWith(db, req.body)
     expect(emitOpsAlert).not.toHaveBeenCalled()
+  })
+
+  it("fails closed and pages when the shared secret is missing", async () => {
+    process.env = { ...originalEnv, POSTMARK_WEBHOOK_SECRET: "" }
+    const { req, logger } = makeReq()
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(res.statusCode).toBe(503)
+    expect(res.body).toEqual({ ok: false, error: "webhook_secret_missing" })
+    expect(updatePostmarkMessageState).not.toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "postmark_webhook_secret_missing",
+        title: "Postmark webhook secret is missing",
+        path: "src/api/postmark/webhook/route.ts",
+        severity: "page",
+        fingerprint: "postmark_webhook:secret_missing",
+        logger,
+        meta: expect.objectContaining({
+          reason: "POSTMARK_WEBHOOK_SECRET is not configured",
+        }),
+      })
+    )
   })
 
   it("rejects an invalid shared secret without alerting", async () => {
@@ -105,7 +130,9 @@ describe("postmark webhook route alerting", () => {
     ;(updatePostmarkMessageState as jest.Mock).mockRejectedValue(
       new Error("insert failed for customer@example.com")
     )
-    const { req, logger } = makeReq()
+    const { req, logger } = makeReq(undefined, {
+      headerSecret: "expected-secret",
+    })
     const res = makeRes()
 
     await POST(req, res)

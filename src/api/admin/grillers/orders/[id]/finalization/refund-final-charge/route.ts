@@ -1,5 +1,6 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import { randomUUID } from "node:crypto"
 import {
   amountInMinorUnits,
   metadataObject,
@@ -193,6 +194,7 @@ function paymentResponse({
   currencyCode,
   refund,
   refundAmount,
+  alreadyRefunded = false,
 }: {
   paymentIntentId: string
   capturedAmount: number
@@ -200,6 +202,7 @@ function paymentResponse({
   currencyCode: string
   refund?: Record<string, any> | FinalChargeRefundEntry | null
   refundAmount?: number
+  alreadyRefunded?: boolean
 }) {
   const amount = refund
     ? Number(
@@ -211,6 +214,7 @@ function paymentResponse({
     : 0
 
   return {
+    ...(alreadyRefunded ? { already_refunded: true } : {}),
     payment: {
       id: `final_charge:${paymentIntentId}`,
       provider_id: "pp_stripe_final_charge",
@@ -316,9 +320,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     const refundAmount =
       normalizeCurrencyAmount(body.amount, currencyCode, "Refund amount") ??
       refundableAmount
+    const providedIdempotencyKey = requestHeader(req, "Idempotency-Key")
     const idempotencyKey =
-      requestHeader(req, "Idempotency-Key") ||
-      `final-charge-refund:${order.id}:${paymentIntentId}:${refundAmount}`
+      providedIdempotencyKey ||
+      `final-charge-refund:${order.id}:${paymentIntentId}:${refundAmount}:${randomUUID()}`
     const existingRefundEntry = finalChargeRefundEntries(metadata).find(
       (entry) => entry.idempotency_key === idempotencyKey
     )
@@ -332,6 +337,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
           currencyCode,
           refund: existingRefundEntry,
           refundAmount: existingRefundEntry.amount,
+          alreadyRefunded: true,
         })
       )
     }

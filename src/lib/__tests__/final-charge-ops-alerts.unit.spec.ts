@@ -4,6 +4,7 @@ import {
   emitChargeMarkedReadyButPiNotSucceededAlert,
   emitFinalChargeNonSucceededAlert,
   emitStripePaymentFailedWebhookInvalidSignatureAlert,
+  emitStripePaymentFailedWebhookMissingSecretAlert,
   emitStripePaymentFailedWebhookProcessingFailedAlert,
 } from "../final-charge-ops-alerts"
 import { emitOpsAlert } from "../ops-alert"
@@ -137,6 +138,21 @@ describe("final charge ops alerts", () => {
         severity: "warn",
         meta: expect.objectContaining({
           has_signature_header: true,
+        }),
+      })
+    )
+  })
+
+  it("emits a page alert when the Stripe payment-failed webhook secret is missing", async () => {
+    await emitStripePaymentFailedWebhookMissingSecretAlert({})
+
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "stripe_payment_failed_webhook_secret_missing",
+        path: "src/api/webhooks/stripe/payment-failed/route.ts",
+        severity: "page",
+        meta: expect.objectContaining({
+          reason: "STRIPE_WEBHOOK_SECRET is not configured",
         }),
       })
     )
