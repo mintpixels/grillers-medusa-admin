@@ -1,9 +1,9 @@
-import { randomUUID } from "crypto"
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import {
   FINALIZATION_CHARGE_ATTEMPTING,
   FINALIZATION_CHARGE_FAILED_HOLD,
+  FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED,
   FINALIZATION_CHARGED_READY_TO_SHIP,
   FINALIZATION_PACKED_PENDING_CHARGE,
   appendStaffAudit,
@@ -15,6 +15,7 @@ import {
   metadataObject,
   previewFinalization,
   recordFinalChargeAttempt,
+  retrieveStripeFinalPaymentIntent,
 } from "../../../../../../../lib/catch-weight-finalization"
 import {
   emitFinalizationRouteFailureAlert,
@@ -44,6 +45,11 @@ const stripeChargeId = (paymentIntent: {
   latest_charge?: string | null
   charges?: { data?: Array<{ id?: string }> }
 }) => paymentIntent.latest_charge || paymentIntent.charges?.data?.[0]?.id || null
+
+const stableFinalChargeIdempotencyKey = (
+  orderId: string,
+  finalizationId: string
+) => `final-charge:${orderId}:${finalizationId}`
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const order = await loadFinalizationOrderForRoute(req, res, {
@@ -82,6 +88,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   let effectiveTotals: Record<string, any>
   let finalOrderTotal: number
   let idempotencyKey: string
+  let paymentIntent: Awaited<ReturnType<typeof createStripeFinalPaymentIntent>> | null = null
+  let persistedPaymentIntentId: string | null = null
+  let persistedChargeId: string | null = null
+  let attempt: Awaited<ReturnType<typeof recordFinalChargeAttempt>> | null = null
 
   try {
     preview = await previewFinalization(db, order, { persist: true })
@@ -94,7 +104,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
     if (
       preview.finalization.status !== FINALIZATION_PACKED_PENDING_CHARGE &&
-      preview.finalization.status !== FINALIZATION_CHARGE_FAILED_HOLD
+      preview.finalization.status !== FINALIZATION_CHARGE_FAILED_HOLD &&
+      preview.finalization.status !== FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED
     ) {
       return jsonError(
         res,
@@ -128,9 +139,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       )
     }
 
-    idempotencyKey =
-      body.idempotency_key ||
-      `final-charge:${order.id}:${preview.finalization.id}:${randomUUID()}`
+    idempotencyKey = stableFinalChargeIdempotencyKey(
+      order.id,
+      preview.finalization.id
+    )
 
     await db("gp_order_finalization")
       .where({ id: preview.finalization.id })
@@ -160,16 +172,41 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   }
 
   try {
-    const paymentIntent = await createStripeFinalPaymentIntent({
-      amount: finalOrderTotal,
-      currencyCode: preview.finalization.currency_code || order.currency_code || "usd",
-      stripeCustomerId: preview.payment_setup.stripe_customer_id,
-      stripePaymentMethodId: preview.payment_setup.stripe_payment_method_id,
-      idempotencyKey,
-      orderId: order.id,
-      finalizationId: preview.finalization.id,
-      displayId: (order as any).display_id ? String((order as any).display_id) : null,
-    })
+    const orderMetadata = metadataObject(order.metadata)
+    const shouldAdoptExistingPaymentIntent =
+      preview.finalization.status ===
+        FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED ||
+      orderMetadata.final_charge_status === "succeeded_recording_failed"
+    const existingPaymentIntentId = shouldAdoptExistingPaymentIntent
+      ? String(
+          preview.finalization.stripe_payment_intent_id ||
+            orderMetadata.stripe_payment_intent_id ||
+            ""
+        ).trim()
+      : ""
+    paymentIntent = existingPaymentIntentId
+      ? await retrieveStripeFinalPaymentIntent(existingPaymentIntentId)
+      : await createStripeFinalPaymentIntent({
+          amount: finalOrderTotal,
+          currencyCode: preview.finalization.currency_code || order.currency_code || "usd",
+          stripeCustomerId: preview.payment_setup.stripe_customer_id,
+          stripePaymentMethodId: preview.payment_setup.stripe_payment_method_id,
+          idempotencyKey,
+          orderId: order.id,
+          finalizationId: preview.finalization.id,
+          displayId: (order as any).display_id ? String((order as any).display_id) : null,
+        })
+    persistedPaymentIntentId = paymentIntent.id
+    persistedChargeId = stripeChargeId(paymentIntent)
+    await db("gp_order_finalization")
+      .where({ id: preview.finalization.id })
+      .update({
+        stripe_payment_intent_id: persistedPaymentIntentId,
+        stripe_charge_id: persistedChargeId,
+        stripe_failure_code: null,
+        stripe_failure_message: null,
+        updated_at: new Date(),
+      })
     if (paymentIntent.status && paymentIntent.status !== "succeeded") {
       // #251: non-succeeded Stripe intents must be visible before the assert trips.
       await emitFinalChargeNonSucceededAlert({
@@ -208,7 +245,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     }
     assertStripeFinalPaymentIntentSucceeded(paymentIntent)
     const chargeId = stripeChargeId(paymentIntent)
-    const attempt = await recordFinalChargeAttempt(db, {
+    attempt = await recordFinalChargeAttempt(db, {
       orderId: order.id,
       finalizationId: preview.finalization.id,
       amount: finalOrderTotal,
@@ -355,41 +392,73 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     })
   } catch (error) {
     const stripeError = (error as any)?.stripe_error || {}
+    const succeededPaymentIntent =
+      paymentIntent?.status === "succeeded" ? paymentIntent : null
     const failureMessage =
       error instanceof Error ? error.message : "Stripe final charge failed."
-    const attempt = await recordFinalChargeAttempt(db, {
-      orderId: order.id,
-      finalizationId: preview.finalization.id,
-      amount: finalOrderTotal,
-      currencyCode: preview.finalization.currency_code || order.currency_code || "usd",
-      stripeCustomerId: preview.payment_setup.stripe_customer_id,
-      stripePaymentMethodId: preview.payment_setup.stripe_payment_method_id,
-      stripePaymentIntentId: stripeError.payment_intent?.id || null,
-      stripeStatus: stripeError.payment_intent?.status || null,
-      status: "failed",
-      failureCode: stripeError.code || null,
-      failureMessage,
-      idempotencyKey,
-      requestedBy: staffActor,
-    })
+    if (!attempt) {
+      attempt = await recordFinalChargeAttempt(db, {
+        orderId: order.id,
+        finalizationId: preview.finalization.id,
+        amount: finalOrderTotal,
+        currencyCode: preview.finalization.currency_code || order.currency_code || "usd",
+        stripeCustomerId: preview.payment_setup.stripe_customer_id,
+        stripePaymentMethodId: preview.payment_setup.stripe_payment_method_id,
+        stripePaymentIntentId:
+          persistedPaymentIntentId ||
+          stripeError.payment_intent?.id ||
+          null,
+        stripeChargeId: persistedChargeId || stripeChargeId(stripeError.payment_intent || {}),
+        stripeStatus:
+          paymentIntent?.status ||
+          stripeError.payment_intent?.status ||
+          null,
+        status: succeededPaymentIntent ? "succeeded" : "failed",
+        failureCode: succeededPaymentIntent ? null : stripeError.code || null,
+        failureMessage: succeededPaymentIntent ? null : failureMessage,
+        idempotencyKey,
+        requestedBy: staffActor,
+      })
+    }
+    const failedStatus = succeededPaymentIntent
+      ? FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED
+      : FINALIZATION_CHARGE_FAILED_HOLD
+    const failedChargeStatus = succeededPaymentIntent
+      ? "succeeded_recording_failed"
+      : "failed"
+    const failedGateStatus = succeededPaymentIntent
+      ? "blocked_charge_succeeded_recording_failed"
+      : "blocked_charge_failed"
+    const eventAt = new Date().toISOString()
     const metadata = appendStaffAudit(
       {
         ...metadataObject(order.metadata),
         finalization_id: preview.finalization.id,
-        finalization_status: FINALIZATION_CHARGE_FAILED_HOLD,
-        catch_weight_status: FINALIZATION_CHARGE_FAILED_HOLD,
-        final_charge_status: "failed",
-        final_charge_failed_at: new Date().toISOString(),
-        fulfillment_gate_status: "blocked_charge_failed",
-        stripe_failure_code: stripeError.code || null,
-        stripe_failure_message: failureMessage,
+        finalization_status: failedStatus,
+        catch_weight_status: failedStatus,
+        final_charge_status: failedChargeStatus,
+        ...(succeededPaymentIntent ? {} : { final_charge_failed_at: eventAt }),
+        ...(succeededPaymentIntent
+          ? { final_charge_recording_failed_at: eventAt }
+          : {}),
+        fulfillment_gate_status: failedGateStatus,
+        stripe_payment_intent_id: persistedPaymentIntentId || stripeError.payment_intent?.id || null,
+        stripe_charge_id: persistedChargeId || stripeChargeId(stripeError.payment_intent || {}),
+        stripe_failure_code: succeededPaymentIntent ? null : stripeError.code || null,
+        stripe_failure_message: succeededPaymentIntent ? null : failureMessage,
+        final_charge_recording_failure_message: succeededPaymentIntent
+          ? failureMessage
+          : undefined,
       },
       {
-        action: "final_charge_failed",
-        status: FINALIZATION_CHARGE_FAILED_HOLD,
+        action: succeededPaymentIntent
+          ? "final_charge_succeeded_recording_failed"
+          : "final_charge_failed",
+        status: failedStatus,
         charge_attempt_id: attempt.id,
         ...staffAudit,
-        failure_code: stripeError.code || null,
+        payment_intent_id: persistedPaymentIntentId || stripeError.payment_intent?.id || null,
+        failure_code: succeededPaymentIntent ? null : stripeError.code || null,
         failure_message: failureMessage,
       }
     )
@@ -397,11 +466,15 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     await db("gp_order_finalization")
       .where({ id: preview.finalization.id })
       .update({
-        status: FINALIZATION_CHARGE_FAILED_HOLD,
+        status: failedStatus,
         charge_attempt_id: attempt.id,
-        stripe_failure_code: stripeError.code || null,
-        stripe_failure_message: failureMessage,
-        blocked_reason: "stripe_final_charge_failed",
+        stripe_payment_intent_id: persistedPaymentIntentId || stripeError.payment_intent?.id || null,
+        stripe_charge_id: persistedChargeId || stripeChargeId(stripeError.payment_intent || {}),
+        stripe_failure_code: succeededPaymentIntent ? null : stripeError.code || null,
+        stripe_failure_message: succeededPaymentIntent ? null : failureMessage,
+        blocked_reason: succeededPaymentIntent
+          ? "stripe_final_charge_succeeded_recording_failed"
+          : "stripe_final_charge_failed",
         updated_at: new Date(),
       })
     await orderModule.updateOrders(order.id, { metadata })
@@ -411,15 +484,27 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       orderId: order.id,
       finalizationId: preview.finalization.id,
       chargeAttemptId: attempt.id,
-      paymentIntentId: stripeError.payment_intent?.id || null,
-      paymentIntentStatus: stripeError.payment_intent?.status || null,
-      failureCode: stripeError.code || null,
+      paymentIntentId: persistedPaymentIntentId || stripeError.payment_intent?.id || null,
+      paymentIntentStatus:
+        paymentIntent?.status || stripeError.payment_intent?.status || null,
+      failureCode: succeededPaymentIntent
+        ? "charge_succeeded_recording_failed"
+        : stripeError.code || null,
       failureMessage,
     })
 
-    res.status(402).json({
-      message: failureMessage,
-      finalization_status: FINALIZATION_CHARGE_FAILED_HOLD,
+    res.status(succeededPaymentIntent ? 500 : 402).json({
+      message: succeededPaymentIntent
+        ? "Stripe charge succeeded, but the order release could not be recorded. Do not retry the customer charge; reconcile this finalization."
+        : failureMessage,
+      finalization_status: failedStatus,
+      payment_intent: succeededPaymentIntent
+        ? {
+            id: succeededPaymentIntent.id,
+            status: succeededPaymentIntent.status,
+            latest_charge: persistedChargeId,
+          }
+        : undefined,
       charge_attempt: attempt,
     })
   }

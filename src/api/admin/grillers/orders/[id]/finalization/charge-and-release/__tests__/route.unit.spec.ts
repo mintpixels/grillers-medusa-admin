@@ -3,8 +3,11 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 // Keep the real assert + constants (the assert is the gate under test); mock
 // only the heavy IO helpers so we can drive paymentIntent.status directly.
 const mockCreateStripeFinalPaymentIntent = jest.fn()
+const mockRetrieveStripeFinalPaymentIntent = jest.fn()
 const mockPreviewFinalization = jest.fn()
 const mockRecordFinalChargeAttempt = jest.fn()
+const mockQuoteWwexFinalizationShipping = jest.fn(async () => null)
+const mockBookWwexFinalizationShipment = jest.fn(async () => ({ metadata: {} }))
 const mockEmitFinalizationRouteFailureAlert = jest.fn(async (_input: any) => ({
   ok: true,
 }))
@@ -17,6 +20,8 @@ jest.mock("../../../../../../../../lib/catch-weight-finalization", () => {
     ...actual,
     createStripeFinalPaymentIntent: (...args: any[]) =>
       mockCreateStripeFinalPaymentIntent(...args),
+    retrieveStripeFinalPaymentIntent: (...args: any[]) =>
+      mockRetrieveStripeFinalPaymentIntent(...args),
     previewFinalization: (...args: any[]) => mockPreviewFinalization(...args),
     recordFinalChargeAttempt: (...args: any[]) =>
       mockRecordFinalChargeAttempt(...args),
@@ -40,8 +45,10 @@ jest.mock("../../utils", () => ({
 const mockRetrieveFinalizationOrder = jest.fn()
 
 jest.mock("../../../../../../../../lib/wwex-finalization-shipment", () => ({
-  quoteWwexFinalizationShipping: jest.fn(async () => null),
-  bookWwexFinalizationShipment: jest.fn(async () => ({ metadata: {} })),
+  quoteWwexFinalizationShipping: (...args: any[]) =>
+    (mockQuoteWwexFinalizationShipping as (...args: any[]) => any)(...args),
+  bookWwexFinalizationShipment: (...args: any[]) =>
+    (mockBookWwexFinalizationShipment as (...args: any[]) => any)(...args),
 }))
 
 jest.mock("../../../../../../../../lib/final-charge-ops-alerts", () => ({
@@ -52,6 +59,7 @@ jest.mock("../../../../../../../../lib/final-charge-ops-alerts", () => ({
 
 import { POST } from "../route"
 import {
+  FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED,
   FINALIZATION_CHARGED_READY_TO_SHIP,
   FINALIZATION_PACKED_PENDING_CHARGE,
 } from "../../../../../../../../lib/catch-weight-finalization"
@@ -154,7 +162,93 @@ describe("charge-and-release PI gate", () => {
       )
     )
     expect(updatedToReady).toBe(true)
+    expect(mockCreateStripeFinalPaymentIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: "final-charge:order_123:fin_123",
+      })
+    )
     expect(res.status).toHaveBeenCalledWith(200)
+  })
+
+  it("does not create a second Stripe charge when retrying a succeeded-but-unrecorded finalization", async () => {
+    mockPreviewFinalization.mockResolvedValueOnce({
+      ...basePreview(),
+      finalization: {
+        ...basePreview().finalization,
+        status: FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED,
+        stripe_payment_intent_id: "pi_existing_123",
+      },
+    })
+    mockRetrieveStripeFinalPaymentIntent.mockResolvedValueOnce({
+      id: "pi_existing_123",
+      status: "succeeded",
+      latest_charge: "ch_existing_123",
+    })
+
+    const db = makeDb()
+    const { scope } = makeScope(db)
+    const req = { params: { id: "order_123" }, body: {}, scope } as any
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(mockCreateStripeFinalPaymentIntent).not.toHaveBeenCalled()
+    expect(mockRetrieveStripeFinalPaymentIntent).toHaveBeenCalledWith(
+      "pi_existing_123"
+    )
+    expect(res.status).toHaveBeenCalledWith(200)
+  })
+
+  it("holds fulfillment without marking the card failed when Stripe succeeds but local release recording fails", async () => {
+    mockCreateStripeFinalPaymentIntent.mockResolvedValue({
+      id: "pi_ok_recording_failure",
+      status: "succeeded",
+      latest_charge: "ch_recording_failure",
+    })
+    mockBookWwexFinalizationShipment.mockRejectedValueOnce(
+      new Error("WWEX booking write failed")
+    )
+
+    const db = makeDb()
+    const { scope } = makeScope(db)
+    const req = { params: { id: "order_123" }, body: {}, scope } as any
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(mockRecordFinalChargeAttempt).toHaveBeenCalledTimes(1)
+    expect(mockRecordFinalChargeAttempt).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        stripePaymentIntentId: "pi_ok_recording_failure",
+        stripeChargeId: "ch_recording_failure",
+        status: "succeeded",
+      })
+    )
+    const updates = db.mock.results.flatMap((r: any) => r.value.update.mock.calls)
+    expect(
+      updates.some(
+        (call: any[]) =>
+          call[0]?.stripe_payment_intent_id === "pi_ok_recording_failure"
+      )
+    ).toBe(true)
+    expect(
+      updates.some((call: any[]) =>
+        Object.values(call[0] || {}).includes(
+          FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED
+        )
+      )
+    ).toBe(true)
+    expect(res.status).toHaveBeenCalledWith(500)
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        finalization_status: FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED,
+        payment_intent: expect.objectContaining({
+          id: "pi_ok_recording_failure",
+          status: "succeeded",
+        }),
+      })
+    )
   })
 
   it("pages charge_marked_ready_but_pi_not_succeeded when status is processing, and the transition is blocked (response unchanged)", async () => {

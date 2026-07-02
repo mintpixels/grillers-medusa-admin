@@ -399,6 +399,22 @@ describe("GrillersFulfillmentProviderService", () => {
     // $0 point estimate => fall through to the conservative Strapi tier (75)
     expect(result.calculated_amount).toBe(75)
     expect(global.fetch).toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "shipping_forecast_fallthrough",
+        title:
+          "Shipping forecast outside confidence rails; checkout using WWEX/Strapi fallback",
+        path: "src/modules/fulfillment/service.ts",
+        source: "medusa",
+        severity: "warn",
+        meta: expect.objectContaining({
+          service_code: "GROUND",
+          point_estimate: 0,
+          fallback: "wwex_or_strapi",
+          reason: "outside_confidence_rails",
+        }),
+      })
+    )
   })
 
   it("does not crash and falls through to Strapi when the model file is corrupt", async () => {
@@ -422,6 +438,52 @@ describe("GrillersFulfillmentProviderService", () => {
     )
 
     expect(result.calculated_amount).toBe(75)
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "shipping_forecast_model_unavailable",
+        title:
+          "Shipping forecast model unavailable; checkout using WWEX/Strapi fallback",
+        path: "src/modules/fulfillment/service.ts",
+        source: "medusa",
+        severity: "page",
+        meta: expect.objectContaining({
+          fallback: "wwex_or_strapi",
+          error_message: expect.stringContaining("Expected property name"),
+        }),
+      })
+    )
+  })
+
+  it("applies a default max rail to the historical shipping forecast when env max is unset", async () => {
+    Object.assign(process.env, forecastEnv, {
+      GRILLERS_SHIPPING_FORECAST_MODEL_PATH: writeConstantForecastModel(300),
+    })
+    mockShippingZones([
+      {
+        ZoneCode: "FedexGround",
+        Description: "Ground Estimated Shipping Charge",
+        ShippingZoneBreakpoints: [{ BreakpointPrice: 0, ShippingRate: 75 }],
+      },
+    ])
+
+    const result = await service().calculatePrice(
+      { service_code: "GROUND" } as any,
+      forecastCart as any,
+      {} as any
+    )
+
+    expect(result.calculated_amount).toBe(75)
+    expect(global.fetch).toHaveBeenCalled()
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "shipping_forecast_fallthrough",
+        meta: expect.objectContaining({
+          point_estimate: 300,
+          max_usd: 250,
+          reason: "outside_confidence_rails",
+        }),
+      })
+    )
   })
 
   it("falls back to the conservative Overnight row for expedited UPS services without dedicated rows", async () => {

@@ -16,6 +16,8 @@ export const FINALIZATION_PACKED_PENDING_REVIEW = "packed_pending_review"
 export const FINALIZATION_PACKED_PENDING_CHARGE = "packed_pending_charge"
 export const FINALIZATION_CHARGE_ATTEMPTING = "charge_attempting"
 export const FINALIZATION_CHARGE_FAILED_HOLD = "charge_failed_hold"
+export const FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED =
+  "charge_succeeded_recording_failed"
 export const FINALIZATION_CHARGED_READY_TO_SHIP = "charged_ready_to_ship"
 export const FINALIZATION_RELEASED_TO_FULFILLMENT = "released_to_fulfillment"
 export const FINALIZATION_LINE_NEEDS_PICK = "needs_pick"
@@ -2485,6 +2487,36 @@ export async function createStripeFinalPaymentIntent(input: {
   if (!response.ok) {
     const error = new Error(
       json?.error?.message || "Stripe final charge failed."
+    ) as Error & { stripe_error?: Record<string, any> }
+    error.stripe_error = json?.error
+    throw error
+  }
+
+  return json as StripePaymentIntent
+}
+
+export async function retrieveStripeFinalPaymentIntent(
+  paymentIntentId: string
+): Promise<StripePaymentIntent> {
+  const apiKey = process.env.STRIPE_API_KEY
+  if (!apiKey) {
+    throw new Error("Stripe secret key is not configured.")
+  }
+
+  const response = await fetch(
+    `https://api.stripe.com/v1/payment_intents/${encodeURIComponent(paymentIntentId)}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+    }
+  )
+  const json = await response.json()
+
+  if (!response.ok) {
+    const error = new Error(
+      json?.error?.message || "Could not retrieve Stripe final charge."
     ) as Error & { stripe_error?: Record<string, any> }
     error.stripe_error = json?.error
     throw error

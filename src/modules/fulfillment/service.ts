@@ -207,6 +207,20 @@ function forecastShadowMode(env: Record<string, string | undefined>): boolean {
 // charge below it is treated as non-confident (degenerate / out-of-distribution)
 // and falls through to WWEX/Strapi. Operators can override or disable with 0.
 const DEFAULT_MIN_FORECAST_USD = 5;
+// The forecast sets real checkout prices. If an operator forgets to configure a
+// cap, keep a code-level rail so a bad model cannot quote an unbounded charge.
+// Set GRILLERS_SHIPPING_FORECAST_MAX_USD=0 to deliberately disable.
+const DEFAULT_MAX_FORECAST_USD = 250;
+
+function forecastMaxUsd(env: Record<string, string | undefined>): number {
+  return envNumber(env.GRILLERS_SHIPPING_FORECAST_MAX_USD) ?? DEFAULT_MAX_FORECAST_USD;
+}
+
+function shippingForecastEnabled(env: Record<string, string | undefined>): boolean {
+  return ["1", "true", "yes", "on"].includes(
+    String(env.GRILLERS_SHIPPING_FORECAST_ENABLED || "").toLowerCase().trim()
+  );
+}
 
 /**
  * Turns a model prediction (mean cost) into the dollar amount to charge at
@@ -242,7 +256,7 @@ function resolveForecastCharge(
         : forecast.confidence.residual_p75;
   const charge = Math.round((forecast.amount * markup + buffer + Number.EPSILON) * 100) / 100;
   const minUsd = envNumber(env.GRILLERS_SHIPPING_FORECAST_MIN_USD) ?? DEFAULT_MIN_FORECAST_USD;
-  const maxUsd = envNumber(env.GRILLERS_SHIPPING_FORECAST_MAX_USD);
+  const maxUsd = forecastMaxUsd(env);
   if (minUsd > 0 && charge < minUsd) return null;
   if (maxUsd != null && maxUsd > 0 && charge > maxUsd) return null;
   return charge;
@@ -682,6 +696,35 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
       this.logger_.warn(
         `[shipping-forecast] model unavailable (${result.error}); using WWEX/Strapi rates`
       );
+      void emitOpsAlert({
+        alertKind: "shipping_forecast_model_unavailable",
+        title: "Shipping forecast model unavailable; checkout using WWEX/Strapi fallback",
+        path: "src/modules/fulfillment/service.ts",
+        source: "medusa",
+        severity: "page",
+        logger: this.logger_,
+        meta: {
+          model_path: result.path,
+          error_message: result.error.slice(0, 500),
+          fallback: "wwex_or_strapi",
+        },
+      });
+    } else if (shippingForecastEnabled(process.env) && !result.model) {
+      this.logger_.warn(
+        "[shipping-forecast] enabled but no model path/model loaded; using WWEX/Strapi rates"
+      );
+      void emitOpsAlert({
+        alertKind: "shipping_forecast_model_missing",
+        title: "Shipping forecast is enabled without a loaded model",
+        path: "src/modules/fulfillment/service.ts",
+        source: "medusa",
+        severity: "page",
+        logger: this.logger_,
+        meta: {
+          model_path: result.path,
+          fallback: "wwex_or_strapi",
+        },
+      });
     } else if (result.model) {
       this.logger_.info(
         `[shipping-forecast] loaded ${result.model.schema_version} model from ${result.path}`
@@ -721,8 +764,46 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
 
     try {
       const forecast = forecastShippingCost(model, input);
-      if (!forecast) return null;
+      if (!forecast) {
+        void emitOpsAlert({
+          alertKind: "shipping_forecast_fallthrough",
+          title: "Shipping forecast returned no prediction; checkout using WWEX/Strapi fallback",
+          path: "src/modules/fulfillment/service.ts",
+          source: "medusa",
+          severity: "warn",
+          logger: this.logger_,
+          meta: {
+            service_code: serviceCode,
+            destination_postal_code: input.ship_postal_code,
+            destination_province: input.ship_state,
+            fallback: "wwex_or_strapi",
+            reason: "no_prediction",
+          },
+        });
+        return null;
+      }
       const freightCharge = resolveForecastCharge(forecast, process.env);
+      if (freightCharge === null) {
+        void emitOpsAlert({
+          alertKind: "shipping_forecast_fallthrough",
+          title: "Shipping forecast outside confidence rails; checkout using WWEX/Strapi fallback",
+          path: "src/modules/fulfillment/service.ts",
+          source: "medusa",
+          severity: "warn",
+          logger: this.logger_,
+          meta: {
+            service_code: forecast.metadata.service,
+            destination_postal_code: input.ship_postal_code,
+            destination_province: input.ship_state,
+            point_estimate: forecast.amount,
+            residual_p75: forecast.confidence.residual_p75,
+            min_usd: envNumber(process.env.GRILLERS_SHIPPING_FORECAST_MIN_USD) ?? DEFAULT_MIN_FORECAST_USD,
+            max_usd: forecastMaxUsd(process.env),
+            fallback: "wwex_or_strapi",
+            reason: "outside_confidence_rails",
+          },
+        });
+      }
 
       // Add dry-ice + shipper-box cost (Peter, 2026-06-16) as an additive
       // component on top of the freight forecast. Gated OFF by default — it
@@ -750,7 +831,7 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
         // not just the freight component — otherwise packaging could push the
         // charge past a cap the operator set as a hard sanity rail. Exceeding it
         // falls through to WWEX/Strapi, matching resolveForecastCharge's contract.
-        const maxUsd = envNumber(process.env.GRILLERS_SHIPPING_FORECAST_MAX_USD);
+        const maxUsd = forecastMaxUsd(process.env);
         charge =
           maxUsd != null && maxUsd > 0 && withPackaging > maxUsd ? null : withPackaging;
       }
@@ -790,6 +871,19 @@ export default class GrillersFulfillmentProviderService extends AbstractFulfillm
       this.logger_.warn(
         `[shipping-forecast] checkout shipping forecast failed; falling back to WWEX/Strapi rates: ${message}`
       );
+      void emitOpsAlert({
+        alertKind: "shipping_forecast_fallthrough",
+        title: "Shipping forecast threw during checkout; using WWEX/Strapi fallback",
+        path: "src/modules/fulfillment/service.ts",
+        source: "medusa",
+        severity: "page",
+        logger: this.logger_,
+        meta: {
+          error_message: message.slice(0, 500),
+          fallback: "wwex_or_strapi",
+          reason: "exception",
+        },
+      });
       return null;
     }
   }
