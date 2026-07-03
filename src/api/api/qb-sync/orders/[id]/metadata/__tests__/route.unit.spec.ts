@@ -87,6 +87,43 @@ describe("QuickBooks sync order metadata callback", () => {
     expect(emitOpsAlert).not.toHaveBeenCalled()
   })
 
+  it("authenticates when the stored token has a stray trailing newline", async () => {
+    // Regression: the secret was stored via the CLI with a trailing "\n" (65 bytes).
+    // HTTP strips trailing whitespace from header values, so the caller sends the
+    // clean 64-byte value; without trimming, secureCompare length-mismatches => 401.
+    process.env.QB_SYNC_ORDER_IMPORT_TOKEN = "sync-token\n"
+    const orderModule = {
+      retrieveOrder: jest.fn(async () => ({
+        id: "order_123",
+        metadata: { existing: true },
+      })),
+      updateOrders: jest.fn(async () => undefined),
+    }
+    const req = {
+      params: { id: "order_123" },
+      body: { metadata: { qbd_posting_status: "posted" } },
+      headers: { "x-qb-sync-token": "sync-token" },
+      scope: {
+        resolve: (key: string) => {
+          if (key === Modules.ORDER) return orderModule
+          throw new Error(`Unknown dependency ${key}`)
+        },
+      },
+    } as any
+    const res = {
+      status: jest.fn(function status() {
+        return this
+      }),
+      json: jest.fn(),
+    } as any
+
+    await POST(req, res)
+
+    expect(res.status).toHaveBeenCalledWith(200)
+    expect(orderModule.updateOrders).toHaveBeenCalled()
+    expect(emitOpsAlert).not.toHaveBeenCalled()
+  })
+
   it("accepts QBD posting metadata when the request key matches the current order key", async () => {
     process.env.QB_SYNC_ORDER_IMPORT_TOKEN = "sync-token"
     const orderModule = {
@@ -229,6 +266,35 @@ describe("QuickBooks sync order metadata callback", () => {
           has_order_id: true,
           order_id: "order_123",
         }),
+      })
+    )
+  })
+
+  it("pages (503, not a silent 401) when the secret is whitespace-only", async () => {
+    // A blank-after-trim secret must surface as a loud configuration page here,
+    // not trim to "" inside authorized() and silently 401 every callback.
+    process.env.QB_SYNC_ORDER_IMPORT_TOKEN = "\n"
+    const req = {
+      params: { id: "order_123" },
+      body: { metadata: { qbd_posting_status: "posted" } },
+      headers: { "x-qb-sync-token": "sync-token" },
+      scope: { resolve: jest.fn() },
+    } as any
+    const res = {
+      status: jest.fn(function status() {
+        return this
+      }),
+      json: jest.fn(),
+    } as any
+
+    await POST(req, res)
+
+    expect(res.status).toHaveBeenCalledWith(503)
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "qbd_order_metadata_update_failed",
+        severity: "page",
+        fingerprint: "qbd_order_metadata_update:configuration",
       })
     )
   })

@@ -55,12 +55,18 @@ const secureCompare = (left: string, right: string): boolean => {
 }
 
 const authorized = (req: MedusaRequest): boolean => {
-  const token = process.env.QB_SYNC_ORDER_IMPORT_TOKEN || ""
+  // Trim both sides. A stray trailing newline in the stored secret (e.g. from
+  // `echo … | railway variable set`) would otherwise never match the caller's
+  // token: HTTP strips trailing whitespace from header values, and secureCompare
+  // requires an exact byte-length match, so 65-byte-env vs 64-byte-header => 401
+  // on every callback. See ops runbook 2026-07-03 (silent writeback failure).
+  const token = (process.env.QB_SYNC_ORDER_IMPORT_TOKEN || "").trim()
   if (!token) return false
 
-  const provided =
+  const provided = (
     header(req, "x-qb-sync-token") ||
     header(req, "authorization").replace(/^Bearer\s+/i, "")
+  ).trim()
 
   return provided ? secureCompare(provided, token) : false
 }
@@ -126,7 +132,10 @@ async function emitQbMetadataRouteFailureAlert(input: {
 }
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
-  if (!process.env.QB_SYNC_ORDER_IMPORT_TOKEN) {
+  // Check the TRIMMED value so a blank-after-trim secret (e.g. env set to just
+  // "\n") surfaces as a loud 503 + configuration page-alert here, rather than
+  // trimming to "" inside authorized() and silently 401-ing every callback.
+  if (!(process.env.QB_SYNC_ORDER_IMPORT_TOKEN || "").trim()) {
     await emitQbMetadataRouteFailureAlert({
       req,
       orderId: String(req.params?.id || ""),
