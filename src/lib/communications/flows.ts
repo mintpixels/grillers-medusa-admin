@@ -32,6 +32,15 @@ type FlowStep =
       purpose?: CommunicationPurpose
     }
   | {
+      type: "sms"
+      template_key: string
+      /** Plain text; {{first_name}} interpolates from the profile. */
+      body: string
+      topic?: string
+      stream?: CommunicationStream
+      purpose?: CommunicationPurpose
+    }
+  | {
       type: "exit_if_event"
       event_name: string
       days_since_enrollment?: number
@@ -842,6 +851,67 @@ export async function runDueFlowEnrollments(
           })
           continue
         }
+      }
+
+      // SMS steps: consent/quiet-hours/caps enforced inside sendTrackedSms;
+      // deferred results (blackout or quiet hours) reschedule WITHOUT
+      // advancing, exactly like the email path.
+      if (step.type === "sms") {
+        const { sendTrackedSms } = await import("./sms.js")
+        const smsResult = await sendTrackedSms(container, {
+          to: profile.phone,
+          body: String(step.body || "").replace(
+            /\{\{\s*first_name\s*\}\}/g,
+            profile.first_name || "there"
+          ),
+          stream: step.stream || (flow.message_stream as CommunicationStream) || "lifecycle",
+          purpose: step.purpose,
+          template_key: step.template_key,
+          topic: step.topic || "promotions",
+          profile_id: profile.id,
+          medusa_customer_id: profile.medusa_customer_id,
+          flow_id: flow.id,
+          flow_key: flow.key,
+          flow_enrollment_id: enrollment.id,
+          idempotency_key: `sms:${flow.key}:${enrollment.id}:${enrollment.current_step_index}`,
+        })
+        if (smsResult.deferred) {
+          await db("gp_flow_enrollment").where("id", enrollment.id).update({
+            next_action_at:
+              smsResult.deferUntil || new Date(Date.now() + 60 * 60 * 1000),
+            updated_at: now(),
+          })
+          continue
+        }
+        if (smsResult.ok && !smsResult.skipped) summary.sent += 1
+        await db("gp_flow_enrollment").where("id", enrollment.id).update({
+          current_step_index: Number(enrollment.current_step_index || 0) + 1,
+          next_action_at:
+            Number(enrollment.current_step_index || 0) + 1 >= steps.length
+              ? null
+              : now(),
+          status:
+            Number(enrollment.current_step_index || 0) + 1 >= steps.length
+              ? "completed"
+              : "active",
+          completed_at:
+            Number(enrollment.current_step_index || 0) + 1 >= steps.length
+              ? now()
+              : null,
+          updated_at: now(),
+        })
+        continue
+      }
+
+      if (step.type !== "email") {
+        // Unknown step type (forward-compat): skip it rather than wedge
+        // the enrollment forever.
+        await db("gp_flow_enrollment").where("id", enrollment.id).update({
+          current_step_index: Number(enrollment.current_step_index || 0) + 1,
+          next_action_at: now(),
+          updated_at: now(),
+        })
+        continue
       }
 
       const email = buildSimpleMessageEmail({
