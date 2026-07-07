@@ -86,6 +86,32 @@ describe("shapeIncrementalFlows", () => {
     expect(flow.estimated_incremental_revenue).toBe(0)
   })
 
+  it("a flow with NO holdout group reports zero incremental and a no_holdout flag", () => {
+    const report = shapeIncrementalFlows(
+      [{ flow_key: "unmeasured", holdout: false, enrolled: 100 }],
+      [
+        {
+          flow_key: "unmeasured",
+          holdout: false,
+          converters: 20,
+          orders: 25,
+          revenue: 5000,
+        },
+      ],
+      90,
+      14
+    )
+    const flow = report.flows[0]
+    // Without a counterfactual the flow must NOT claim its full revenue
+    // as incremental (that would float it to the top of the list).
+    expect(flow.no_holdout).toBe(true)
+    expect(flow.estimated_incremental_revenue).toBe(0)
+    expect(flow.conversion_lift).toBe(0)
+    expect(flow.treated_revenue_per_enrolled).toBe(50) // raw RPE still shown
+    expect(report.total_estimated_incremental_revenue).toBe(0)
+    expect(report.total_is_upper_bound).toBe(true)
+  })
+
   it("sorts flows by estimated incremental revenue descending", () => {
     const report = shapeIncrementalFlows(
       [
@@ -118,6 +144,40 @@ describe("shapeDeliverability", () => {
     expect(broadcast.bounce_rate).toBe(0.06)
     expect(broadcast.health).toBe("at_risk") // > 5% bounce
     expect(report.streams.outbound.health).toBe("healthy")
+  })
+
+  it("unresolved sent/queued messages don't dilute bounce rate during warm-up", () => {
+    const report = shapeDeliverability(
+      [
+        // 900 still in flight, only 100 resolved: 6 bounces of 100
+        // resolved = 6%, NOT 6/1000 = 0.6%.
+        { message_stream: "broadcast", status: "sent", count: 900 },
+        { message_stream: "broadcast", status: "delivered", count: 94 },
+        { message_stream: "broadcast", status: "bounced", count: 6 },
+      ],
+      [],
+      [],
+      [],
+      30
+    )
+    expect(report.streams.broadcast.bounce_rate).toBe(0.06)
+    expect(report.streams.broadcast.health).toBe("at_risk")
+  })
+
+  it("unknown statuses land in other and don't dilute rates", () => {
+    const report = shapeDeliverability(
+      [
+        { message_stream: "broadcast", status: "delivered", count: 94 },
+        { message_stream: "broadcast", status: "bounced", count: 6 },
+        { message_stream: "broadcast", status: "deferred", count: 400 },
+      ],
+      [],
+      [],
+      [],
+      30
+    )
+    expect(report.streams.broadcast.other).toBe(400)
+    expect(report.streams.broadcast.bounce_rate).toBe(0.06)
   })
 
   it("flags watch between 2% and 5% bounce", () => {

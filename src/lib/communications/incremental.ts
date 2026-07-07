@@ -27,20 +27,25 @@ export async function flowIncrementalReport(
   const since = new Date(Date.now() - Math.max(1, days) * 24 * 60 * 60 * 1000)
   const windowDays = Math.max(1, Math.min(60, conversionWindowDays))
 
-  // Query 1: enrollment counts per flow × holdout bucket.
+  // Holdout flag without ::boolean — a malformed metadata value must not
+  // 500 the whole panel. Text comparison is throw-proof on any jsonb.
+  const HOLDOUT_SQL = `coalesce(metadata->>'holdout', 'false') in ('true', 't')`
+
+  // Query 1: enrolled PEOPLE per flow × holdout bucket. Distinct
+  // profile_id (not enrollment rows) so the denominator matches the
+  // converters numerator — re-enrollments don't deflate the rate.
   const enrollmentRows = await db("gp_flow_enrollment")
     .whereNull("deleted_at")
     .where("enrolled_at", ">=", since)
-    .select(
-      "flow_key",
-      db.raw(`coalesce((metadata->>'holdout')::boolean, false) as holdout`)
-    )
-    .countDistinct({ enrolled: "id" })
-    .groupBy("flow_key", db.raw(`coalesce((metadata->>'holdout')::boolean, false)`))
+    .select("flow_key", db.raw(`${HOLDOUT_SQL} as holdout`))
+    .countDistinct({ enrolled: "profile_id" })
+    .groupBy("flow_key", db.raw(HOLDOUT_SQL))
 
   // Query 2: conversions. The inner DISTINCT dedupes (flow, order) pairs so
   // a profile with two enrollments in the same flow can't double-count one
   // order, and a plain SUM over the deduped rows keeps same-valued orders.
+  // Revenue casts are regex-guarded: one "$12.00" or "N/A" in event
+  // properties must degrade to 0 for that order, not throw the report.
   const conversionResult = await db.raw(
     `
     select flow_key, holdout,
@@ -49,13 +54,16 @@ export async function flowIncrementalReport(
            coalesce(sum(revenue), 0) as revenue
     from (
       select distinct e.flow_key,
-             coalesce((e.metadata->>'holdout')::boolean, false) as holdout,
+             coalesce(e.metadata->>'holdout', 'false') in ('true', 't') as holdout,
              e.profile_id,
              ev.order_id,
              coalesce(
-               nullif(ev.properties->>'total', '')::numeric,
-               nullif(ev.properties->>'revenue', '')::numeric,
-               nullif(ev.properties->>'amount_total', '')::numeric,
+               case when ev.properties->>'total' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    then (ev.properties->>'total')::numeric end,
+               case when ev.properties->>'revenue' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    then (ev.properties->>'revenue')::numeric end,
+               case when ev.properties->>'amount_total' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    then (ev.properties->>'amount_total')::numeric end,
                0
              ) as revenue
       from gp_flow_enrollment e
@@ -117,17 +125,25 @@ export function shapeIncrementalFlows(
     const holdoutRate = rate(f.holdout.converters, f.holdout.enrolled)
     const treatedRpe = f.treated.enrolled ? f.treated.revenue / f.treated.enrolled : 0
     const holdoutRpe = f.holdout.enrolled ? f.holdout.revenue / f.holdout.enrolled : 0
-    const incrementalRpe = treatedRpe - holdoutRpe
+    // No holdout group → no counterfactual → the lift is unmeasurable.
+    // Claiming treatedRpe as "incremental" would credit the flow with ALL
+    // of its revenue and float it to the top of the list — report 0 and
+    // flag no_holdout instead.
+    const noHoldout = f.holdout.enrolled === 0
+    const incrementalRpe = noHoldout ? 0 : treatedRpe - holdoutRpe
     return {
       ...f,
       treated_conversion_rate: treatedRate,
       holdout_conversion_rate: holdoutRate,
-      conversion_lift: Math.round((treatedRate - holdoutRate) * 10000) / 10000,
+      conversion_lift: noHoldout
+        ? 0
+        : Math.round((treatedRate - holdoutRate) * 10000) / 10000,
       treated_revenue_per_enrolled: Math.round(treatedRpe * 100) / 100,
       holdout_revenue_per_enrolled: Math.round(holdoutRpe * 100) / 100,
       incremental_revenue_per_enrolled: Math.round(incrementalRpe * 100) / 100,
       estimated_incremental_revenue:
         Math.round(incrementalRpe * f.treated.enrolled * 100) / 100,
+      no_holdout: noHoldout,
       // With small holdout groups the read is noisy — surface the caveat
       // instead of letting an operator over-trust a 5-person holdout.
       low_confidence: f.holdout.enrolled < 50,
@@ -142,10 +158,14 @@ export function shapeIncrementalFlows(
     days,
     conversion_window_days: windowDays,
     flows,
+    // Sum of per-flow estimates. Customers enrolled in several flows can
+    // have one order counted in each flow's treated revenue, so treat
+    // this as an upper bound, not bankable revenue.
     total_estimated_incremental_revenue:
       Math.round(
         flows.reduce((sum, f) => sum + f.estimated_incremental_revenue, 0) * 100
       ) / 100,
+    total_is_upper_bound: true,
   }
 }
 
@@ -213,6 +233,7 @@ export function shapeDeliverability(
       bounced: 0,
       complained: 0,
       failed: 0,
+      other: 0,
       total: 0,
     })
     const count = num(row.count)
@@ -223,13 +244,20 @@ export function shapeDeliverability(
     else if (status === "bounced") bucket.bounced += count
     else if (status === "complained") bucket.complained += count
     else if (status === "failed") bucket.failed += count
+    // Unknown statuses tracked separately so they can't silently dilute
+    // the rates below (e.g. a provider adds "deferred" someday).
+    else bucket.other += count
   }
   for (const stream of Object.keys(streams)) {
     const s = streams[stream]
-    const attempted = s.total - s.failed
-    s.bounce_rate = rate(s.bounced, attempted)
-    s.complaint_rate = rate(s.complained, attempted)
-    s.delivery_rate = rate(s.delivered, attempted)
+    // Rates over RESOLVED outcomes only. Messages still in sent/queued
+    // haven't had a chance to bounce yet — counting them in the
+    // denominator understates bounce/complaint rate exactly during
+    // warm-up, when this signal gates whether we keep sending.
+    const resolved = s.delivered + s.bounced + s.complained
+    s.bounce_rate = rate(s.bounced, resolved)
+    s.complaint_rate = rate(s.complained, resolved)
+    s.delivery_rate = rate(s.delivered, resolved)
     // Postmark suspends around 10% bounce / 0.1% spam; alert well before.
     s.health =
       s.bounce_rate > 0.05 || s.complaint_rate > 0.001
