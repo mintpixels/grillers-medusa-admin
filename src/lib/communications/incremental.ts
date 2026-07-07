@@ -196,7 +196,9 @@ export async function deliverabilityReport(db: KnexLike, days = 30) {
         "status"
       )
       .count({ count: "*" })
-      .groupBy(db.raw(`date_trunc('day', created_at)`), "message_stream", "status")
+      // groupByRaw, not groupBy(raw, ...cols): knex drops the trailing
+      // columns after a raw first argument, which 500s on Postgres.
+      .groupByRaw(`date_trunc('day', created_at), message_stream, status`)
       .orderBy("day", "asc"),
     db("gp_suppression_preference")
       .whereNull("deleted_at")
