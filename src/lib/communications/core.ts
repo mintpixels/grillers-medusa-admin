@@ -74,6 +74,13 @@ export type SendTrackedEmailInput = {
   postmark_template_alias?: string | null
   template_model?: Record<string, any> | null
   metadata?: Record<string, any> | null
+  /**
+   * Staff-initiated test send to an explicitly typed address. Skips the
+   * marketing-consent gate and the weekly frequency cap (a designer
+   * iterating on a template sends themselves many tests), but still
+   * honors the suppression list and the Shabbat/Yom Tov blackout.
+   */
+  staff_test?: boolean
 }
 
 type CommunicationEmailFailureAlertInput = {
@@ -709,6 +716,7 @@ export async function sendTrackedEmail(
   }
 
   if (
+    !input.staff_test &&
     requiresMarketingConsent(purpose) &&
     (!profile?.email_consent || !profile?.email_consent_at)
   ) {
@@ -733,6 +741,7 @@ export async function sendTrackedEmail(
   }
 
   if (
+    !input.staff_test &&
     requiresMarketingConsent(purpose) &&
     !marketingPreferenceAllows(profile, input.topic)
   ) {
@@ -840,7 +849,12 @@ export async function sendTrackedEmail(
   // than COMMS_EMAIL_WEEKLY_CAP marketing/lifecycle emails in any rolling
   // 7 days, regardless of how many campaigns/flows target them.
   // Transactional receipts don't count against (or consume) the cap.
-  if (input.stream === "broadcast" || input.stream === "lifecycle") {
+  // Staff test sends are exempt — a designer iterating on a template
+  // sends themselves many tests in a day.
+  if (
+    !input.staff_test &&
+    (input.stream === "broadcast" || input.stream === "lifecycle")
+  ) {
     const cap = Number(process.env.COMMS_EMAIL_WEEKLY_CAP || 3)
     if (Number.isFinite(cap) && cap > 0) {
       const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)

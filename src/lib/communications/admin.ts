@@ -646,6 +646,9 @@ export async function sendCampaign(
       idempotency_key: opts.test_email
         ? `campaign-test:${campaign.id}:${normalizeEmail(profile.email)}:${Date.now()}`
         : `campaign:${campaign.id}:${normalizeEmail(profile.email)}`,
+      // Explicit staff test to a typed address: consent/cap exempt,
+      // suppression list + blackout still apply.
+      staff_test: Boolean(opts.test_email),
       template_model: {
         first_name: profile.first_name || "",
         email: profile.email,
