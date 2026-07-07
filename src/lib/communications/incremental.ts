@@ -161,14 +161,15 @@ export async function deliverabilityReport(db: KnexLike, days = 30) {
     db("gp_message_log")
       .whereNull("deleted_at")
       .where("created_at", ">=", since)
-      .where("channel", "email")
+      // Rows written before the channel column existed are email sends.
+      .whereRaw(`(channel = 'email' or channel is null)`)
       .select("message_stream", "status")
       .count({ count: "*" })
       .groupBy("message_stream", "status"),
     db("gp_message_log")
       .whereNull("deleted_at")
       .where("created_at", ">=", since)
-      .where("channel", "email")
+      .whereRaw(`(channel = 'email' or channel is null)`)
       .select(
         db.raw(`date_trunc('day', created_at) as day`),
         "message_stream",
