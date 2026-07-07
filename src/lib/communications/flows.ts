@@ -11,6 +11,7 @@ import {
 import {
   isInSendBlackout,
   nextAllowedSendTime,
+  resolveCalendarAnchor,
 } from "./hebrew-calendar"
 
 type KnexLike = any
@@ -526,6 +527,68 @@ export async function seedCommunicationDefaults(db: KnexLike) {
   }
 }
 
+/**
+ * Deterministic holdout assignment: sha1(profile:flow) % 100. Stable across
+ * re-enrollments (a customer is ALWAYS control or ALWAYS treated for a
+ * given flow — no contamination), independent across flows, and needs no
+ * stored coin-flips. Default 10%; per-flow override via
+ * flow.metadata.holdout_pct; COMMS_FLOW_HOLDOUT_PCT for the platform.
+ */
+export function isHoldout(profileId: string, flow: Record<string, any>): boolean {
+  const pct = Number(
+    flow?.metadata?.holdout_pct ?? process.env.COMMS_FLOW_HOLDOUT_PCT ?? 10
+  )
+  if (!Number.isFinite(pct) || pct <= 0) return false
+  const digest = crypto
+    .createHash("sha1")
+    .update(`${profileId}:${flow.key}`)
+    .digest()
+  const bucket = digest.readUInt16BE(0) % 100
+  return bucket < Math.min(pct, 100)
+}
+
+async function enrollProfileInFlow(
+  db: KnexLike,
+  flow: Record<string, any>,
+  profileId: string,
+  triggerEventId: string,
+  triggerContext: Record<string, any>
+): Promise<boolean> {
+  const existing = await db("gp_flow_enrollment")
+    .whereNull("deleted_at")
+    .where("flow_key", flow.key)
+    .where("profile_id", profileId)
+    .where("trigger_event_id", triggerEventId)
+    .first()
+  if (existing) return false
+
+  const holdout = isHoldout(profileId, flow)
+  await db("gp_flow_enrollment").insert({
+    id: id("gpenroll"),
+    flow_id: flow.id,
+    flow_key: flow.key,
+    profile_id: profileId,
+    trigger_event_id: triggerEventId,
+    trigger_context: triggerContext,
+    current_step_index: 0,
+    status: "active",
+    enrolled_at: now(),
+    next_action_at: now(),
+    metadata: holdout ? { holdout: true } : {},
+    created_at: now(),
+    updated_at: now(),
+  })
+  if (holdout) {
+    await recordCommunicationEvent(db, {
+      event_name: "flow_holdout_assigned",
+      profile_id: profileId,
+      flow_id: flow.id,
+      properties: { flow_key: flow.key, trigger_event_id: triggerEventId },
+    })
+  }
+  return true
+}
+
 export async function evaluateFlowsForEvent(
   db: KnexLike,
   event: Record<string, any>
@@ -547,31 +610,83 @@ export async function evaluateFlowsForEvent(
 
   for (const flow of flows) {
     if (!conditionMatches(flow.trigger_conditions, event, profile)) continue
-
-    const existing = await db("gp_flow_enrollment")
-      .whereNull("deleted_at")
-      .where("flow_key", flow.key)
-      .where("profile_id", event.profile_id)
-      .where("trigger_event_id", event.event_id)
-      .first()
-    if (existing) continue
-
-    await db("gp_flow_enrollment").insert({
-      id: id("gpenroll"),
-      flow_id: flow.id,
-      flow_key: flow.key,
-      profile_id: event.profile_id,
-      trigger_event_id: event.event_id,
-      trigger_context: event,
-      current_step_index: 0,
-      status: "active",
-      enrolled_at: now(),
-      next_action_at: now(),
-      metadata: {},
-      created_at: now(),
-      updated_at: now(),
-    })
+    await enrollProfileInFlow(db, flow, event.profile_id, event.event_id, event)
   }
+}
+
+/**
+ * Calendar-anchored enrollment: flows with trigger_event = "calendar_anchor"
+ * enroll an entire SEGMENT when the resolved date arrives ("6 weeks before
+ * seder" → everyone in pesach-buyers). Runs from the maintenance runner;
+ * the per-occurrence trigger id (flow key + hebrew year) makes each year's
+ * enrollment idempotent across runner ticks. A 3-day catch-up window covers
+ * runner downtime; holdouts apply exactly as with event triggers.
+ */
+export async function enrollCalendarAnchoredFlows(
+  db: KnexLike
+): Promise<{ evaluated: number; enrolled: number }> {
+  const flows = await db("gp_communication_flow")
+    .whereNull("deleted_at")
+    .where("status", "active")
+    .where("trigger_event", "calendar_anchor")
+
+  const summary = { evaluated: 0, enrolled: 0 }
+  for (const flow of flows) {
+    const cond = flow.trigger_conditions || {}
+    const anchorName = cond.anchor
+    const segmentKey = cond.segment_key
+    if (!anchorName || !segmentKey) continue
+    summary.evaluated += 1
+
+    let resolved
+    try {
+      resolved = resolveCalendarAnchor(
+        {
+          anchor: anchorName,
+          offsetDays: Number(cond.offset_days ?? cond.offsetDays ?? 0),
+          fromErev: Boolean(cond.from_erev ?? cond.fromErev),
+        },
+        new Date()
+      )
+    } catch {
+      continue
+    }
+
+    const today = new Date()
+    const windowEnd = new Date(resolved.fireAt)
+    windowEnd.setDate(windowEnd.getDate() + 3)
+    if (today < resolved.fireAt || today > windowEnd) continue
+
+    const occurrenceId = `${flow.key}:${resolved.holiday.hebrewYear}`
+    const segment = await db("gp_segment")
+      .whereNull("deleted_at")
+      .where("key", segmentKey)
+      .first()
+    if (!segment) continue
+
+    const members = await db("gp_segment_member")
+      .whereNull("deleted_at")
+      .whereNull("exited_at")
+      .where("segment_id", segment.id)
+      .select("profile_id")
+
+    for (const member of members) {
+      const enrolled = await enrollProfileInFlow(
+        db,
+        flow,
+        member.profile_id,
+        occurrenceId,
+        {
+          calendar_anchor: anchorName,
+          segment_key: segmentKey,
+          fire_at: resolved.fireAt.toISOString(),
+          hebrew_year: resolved.holiday.hebrewYear,
+        }
+      )
+      if (enrolled) summary.enrolled += 1
+    }
+  }
+  return summary
 }
 
 async function hasExitEvent(
@@ -675,6 +790,42 @@ export async function runDueFlowEnrollments(
           updated_at: now(),
         })
         if (shouldExit) summary.completed += 1
+        continue
+      }
+
+      // HOLDOUT (control group): advance through message steps with the
+      // exact same timing as the treated group but never send — the
+      // recorded would-have-sent event is what the incremental-revenue
+      // report divides against. Delay/exit steps ran identically above.
+      if (enrollment.metadata?.holdout) {
+        await recordCommunicationEvent(db, {
+          event_name: "flow_message_holdout",
+          profile_id: profile.id,
+          email: profile.email,
+          flow_id: flow.id,
+          template_key: step.template_key,
+          properties: {
+            flow_key: flow.key,
+            enrollment_id: enrollment.id,
+            step_index: Number(enrollment.current_step_index || 0),
+          },
+        })
+        await db("gp_flow_enrollment").where("id", enrollment.id).update({
+          current_step_index: Number(enrollment.current_step_index || 0) + 1,
+          next_action_at:
+            Number(enrollment.current_step_index || 0) + 1 >= steps.length
+              ? null
+              : now(),
+          status:
+            Number(enrollment.current_step_index || 0) + 1 >= steps.length
+              ? "completed"
+              : "active",
+          completed_at:
+            Number(enrollment.current_step_index || 0) + 1 >= steps.length
+              ? now()
+              : null,
+          updated_at: now(),
+        })
         continue
       }
 

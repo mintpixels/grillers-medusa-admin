@@ -14,7 +14,11 @@ import {
   isClickHouseSegmentDefinition,
   seedGpSegmentLibrary,
 } from "./segments"
-import { runDueFlowEnrollments, seedCommunicationDefaults } from "./flows"
+import {
+  enrollCalendarAnchoredFlows,
+  runDueFlowEnrollments,
+  seedCommunicationDefaults,
+} from "./flows"
 import { expireInactiveCarts } from "./cart-lifecycle"
 import { communicationQueueHealth, enqueueCampaignSend } from "./queue"
 import { communicationReporting } from "./reporting"
@@ -698,9 +702,12 @@ export async function runCommunicationMaintenance(container: MedusaContainer) {
   await seedEmailTemplates(db)
   const carts = await expireInactiveCarts(container)
   const segments = await refreshSegmentMembership(container)
+  // Calendar-anchored flows enroll AFTER segments refresh so a same-tick
+  // "6 weeks before seder" fire sees today's membership.
+  const calendarEnrollment = await enrollCalendarAnchoredFlows(db)
   const campaigns = await sendDueScheduledCampaigns(container)
   const result = await runDueFlowEnrollments(container, 100)
-  return { ...result, segments, carts, campaigns }
+  return { ...result, segments, carts, campaigns, calendarEnrollment }
 }
 
 export async function communicationReports(container: MedusaContainer, days = 30) {
