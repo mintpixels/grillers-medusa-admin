@@ -238,6 +238,31 @@ async function processCampaignJob(container: MedusaContainer, job: Job) {
   return result
 }
 
+let inprocWorkers: any[] | null = null
+
+/**
+ * Idempotent in-process worker bootstrap. Nothing on Railway runs the
+ * dedicated communications:worker script, so without this the BullMQ
+ * queues fill and never drain (observed: 2,415 waiting event jobs,
+ * 0 active). Called from a scheduled job every minute; starts once per
+ * process. Set COMMUNICATIONS_INPROC_WORKERS=false when a dedicated
+ * worker service exists.
+ */
+export function ensureCommunicationWorkers(container: MedusaContainer) {
+  if (process.env.COMMUNICATIONS_INPROC_WORKERS === "false") {
+    return { started: false, reason: "disabled" }
+  }
+  if (inprocWorkers) {
+    return { started: false, reason: "already_running", count: inprocWorkers.length }
+  }
+  const workers = startCommunicationWorkers(container)
+  if (!workers.length) {
+    return { started: false, reason: "no_redis" }
+  }
+  inprocWorkers = workers
+  return { started: true, count: workers.length }
+}
+
 export function startCommunicationWorkers(container: MedusaContainer) {
   const connection = redisConnection()
   if (!connection) return []
