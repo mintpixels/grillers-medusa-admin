@@ -5,6 +5,7 @@ import {
   Modules,
 } from "@medusajs/framework/utils"
 import { emitOpsAlert } from "../ops-alert"
+import { isInSendBlackout } from "./hebrew-calendar"
 
 type KnexLike = any
 
@@ -679,7 +680,15 @@ export async function recordSuppression(
 export async function sendTrackedEmail(
   container: MedusaContainer,
   input: SendTrackedEmailInput
-): Promise<{ ok: boolean; skipped?: boolean; messageId?: string; error?: string }> {
+): Promise<{
+  ok: boolean
+  skipped?: boolean
+  messageId?: string
+  error?: string
+  /** Shabbat/Yom Tov blackout: try again at deferUntil. NOT a failure. */
+  deferred?: boolean
+  deferUntil?: Date
+}> {
   const db = resolveDb(container)
   const logger = container.resolve("logger")
   const notification = container.resolve(Modules.NOTIFICATION)
@@ -787,6 +796,43 @@ export async function sendTrackedEmail(
       ok: true,
       skipped: true,
       messageId: existing.postmark_message_id || undefined,
+    }
+  }
+
+  // PLATFORM RULE — no operator override: marketing and lifecycle email
+  // never sends during Shabbat/Yom Tov (business clock, Atlanta).
+  // Transactional receipts are customer-triggered and stay unblocked.
+  // Deferred is NOT a failure: callers reschedule at deferUntil; nothing
+  // is logged to gp_message_log so the retry sends cleanly.
+  if (input.stream === "broadcast" || input.stream === "lifecycle") {
+    const blackout = isInSendBlackout(now)
+    if (blackout.blocked) {
+      await recordCommunicationEvent(db, {
+        event_name: "email_deferred_blackout",
+        email: input.to,
+        profile_id: profile?.id,
+        template_key: input.template_key,
+        order_id: input.order_id,
+        cart_id: input.cart_id,
+        campaign_id: input.campaign_id,
+        flow_id: input.flow_id,
+        properties: {
+          stream: input.stream,
+          purpose,
+          topic: input.topic,
+          reason: blackout.reason || "shabbat_blackout",
+          defer_until: blackout.until ? blackout.until.toISOString() : null,
+        },
+        context: experimentContext
+          ? { experiment_context: experimentContext }
+          : {},
+      })
+      return {
+        ok: false,
+        deferred: true,
+        deferUntil: blackout.until,
+        error: "shabbat_blackout",
+      }
     }
   }
 

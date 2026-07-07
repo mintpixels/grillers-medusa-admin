@@ -181,9 +181,14 @@ export async function enqueueCampaignSend(
     "campaign-send",
     { campaign_id: campaignId, ...input },
     {
-      jobId: input.test_email
-        ? `campaign-test:${campaignId}:${input.test_email}:${Date.now()}`
-        : `campaign:${campaignId}`,
+      // input.job_id lets blackout-resume jobs use a distinct id — BullMQ
+      // dedupes by jobId, so re-adding `campaign:<id>` after a completed
+      // (deferred) run would silently no-op and strand the campaign.
+      jobId:
+        input.job_id ||
+        (input.test_email
+          ? `campaign-test:${campaignId}:${input.test_email}:${Date.now()}`
+          : `campaign:${campaignId}`),
       delay: Number(input.delay_ms || 0),
     }
   )
@@ -211,7 +216,26 @@ async function processFlowJob(container: MedusaContainer) {
 
 async function processCampaignJob(container: MedusaContainer, job: Job) {
   const { sendCampaign } = await import("./admin.js")
-  return sendCampaign(container, job.data.campaign_id, job.data || {})
+  const result: any = await sendCampaign(
+    container,
+    job.data.campaign_id,
+    job.data || {}
+  )
+  // Shabbat/Yom Tov deferral: re-enqueue the same campaign for after
+  // havdalah under a fresh job id. Idempotency keys make the resumed run
+  // skip anything already sent.
+  if (result?.deferred && result?.resume_at) {
+    const delayMs = Math.max(
+      60_000,
+      new Date(result.resume_at).getTime() - Date.now()
+    )
+    await enqueueCampaignSend(job.data.campaign_id, {
+      ...(job.data || {}),
+      job_id: `campaign:${job.data.campaign_id}:resume:${Date.now()}`,
+      delay_ms: delayMs,
+    })
+  }
+  return result
 }
 
 export function startCommunicationWorkers(container: MedusaContainer) {

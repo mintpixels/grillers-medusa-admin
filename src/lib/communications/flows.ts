@@ -8,6 +8,10 @@ import {
   type CommunicationPurpose,
   type CommunicationStream,
 } from "./core"
+import {
+  isInSendBlackout,
+  nextAllowedSendTime,
+} from "./hebrew-calendar"
 
 type KnexLike = any
 
@@ -674,6 +678,21 @@ export async function runDueFlowEnrollments(
         continue
       }
 
+      // Shabbat/Yom Tov blackout (platform rule): message steps are
+      // RESCHEDULED — next_action_at moves past havdalah and the step
+      // index does NOT advance, so nothing is skipped or lost. Delay and
+      // exit steps above are state-only and process normally.
+      {
+        const blackout = isInSendBlackout(new Date())
+        if (blackout.blocked) {
+          await db("gp_flow_enrollment").where("id", enrollment.id).update({
+            next_action_at: nextAllowedSendTime(new Date()),
+            updated_at: now(),
+          })
+          continue
+        }
+      }
+
       const email = buildSimpleMessageEmail({
         subject: step.subject,
         heading: step.heading,
@@ -709,6 +728,17 @@ export async function runDueFlowEnrollments(
           email: profile.email,
         },
       })
+      // Defense in depth: if the send-level gate deferred (blackout began
+      // between our pre-check and the dispatch), reschedule without
+      // advancing — same semantics as the pre-check above.
+      if (send.deferred) {
+        await db("gp_flow_enrollment").where("id", enrollment.id).update({
+          next_action_at: send.deferUntil || nextAllowedSendTime(new Date()),
+          updated_at: now(),
+        })
+        continue
+      }
+
       if (send.ok && !send.skipped) summary.sent += 1
       if (send.ok && step.template_key.startsWith("cart-abandoned")) {
         const trigger = enrollment.trigger_context || {}

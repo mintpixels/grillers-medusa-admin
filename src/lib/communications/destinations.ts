@@ -26,7 +26,7 @@ function hasClickHouseConfig() {
   return Boolean(process.env.CLICKHOUSE_URL)
 }
 
-function clickHouseClient() {
+export function clickHouseClient() {
   if (!hasClickHouseConfig()) return null
   return createClient({
     url: process.env.CLICKHOUSE_URL,

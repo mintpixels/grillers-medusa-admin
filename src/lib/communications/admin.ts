@@ -8,6 +8,12 @@ import {
   sendTrackedEmail,
   type CommunicationStream,
 } from "./core"
+import { isInSendBlackout, nextAllowedSendTime } from "./hebrew-calendar"
+import {
+  clickHouseSegmentProfileIds,
+  isClickHouseSegmentDefinition,
+  seedGpSegmentLibrary,
+} from "./segments"
 import { runDueFlowEnrollments, seedCommunicationDefaults } from "./flows"
 import { expireInactiveCarts } from "./cart-lifecycle"
 import { communicationQueueHealth, enqueueCampaignSend } from "./queue"
@@ -365,6 +371,37 @@ async function profilesForDefinition(
       new Date(Date.now() - Number(definition.last_order_before_days) * 24 * 60 * 60 * 1000)
     )
   }
+  if (definition.last_order_within_days) {
+    query = query.where(
+      "last_order_at",
+      ">=",
+      new Date(Date.now() - Number(definition.last_order_within_days) * 24 * 60 * 60 * 1000)
+    )
+  }
+  if (definition.holiday_buyer === true) query = query.where("holiday_buyer", true)
+  if (definition.sms_consent === true) query = query.where("sms_consent", true)
+  if (definition.engagement_score_gte) {
+    query = query.where("engagement_score", ">=", Number(definition.engagement_score_gte))
+  }
+  if (definition.preferred_delivery_zone) {
+    query = query.where("preferred_delivery_zone", definition.preferred_delivery_zone)
+  }
+  // JSON-array membership predicates: preferred_cuts / preferred_kosher_types
+  // hold arrays like ["brisket","chicken"] populated by the import
+  // enrichment. Postgres jsonb `?|` = "contains any of these strings".
+  if (Array.isArray(definition.preferred_cuts_any) && definition.preferred_cuts_any.length) {
+    query = query.whereRaw("preferred_cuts::jsonb ?| ?::text[]", [
+      definition.preferred_cuts_any.map(String),
+    ])
+  }
+  if (
+    Array.isArray(definition.preferred_kosher_types_any) &&
+    definition.preferred_kosher_types_any.length
+  ) {
+    query = query.whereRaw("preferred_kosher_types::jsonb ?| ?::text[]", [
+      definition.preferred_kosher_types_any.map(String),
+    ])
+  }
   if (
     definition.event ||
     definition.holiday ||
@@ -389,6 +426,27 @@ async function audienceForSegment(db: KnexLike, segmentKey?: string | null) {
     .first()
 
   if (!segment) return []
+
+  // ClickHouse-sourced segments send to their MATERIALIZED membership
+  // (refreshed by the runner) joined against consent — never a live
+  // warehouse query at send time.
+  if (isClickHouseSegmentDefinition(segment.query_definition)) {
+    return db("gp_customer_profile")
+      .join(
+        "gp_segment_member",
+        "gp_segment_member.profile_id",
+        "gp_customer_profile.id"
+      )
+      .whereNull("gp_customer_profile.deleted_at")
+      .whereNull("gp_segment_member.deleted_at")
+      .whereNull("gp_segment_member.exited_at")
+      .where("gp_segment_member.segment_id", segment.id)
+      .where("gp_customer_profile.email_consent", true)
+      .whereNotNull("gp_customer_profile.email")
+      .select("gp_customer_profile.*")
+      .limit(1000)
+  }
+
   return profilesForDefinition(db, segment.query_definition || {}, {
     requireConsent: true,
     limit: 1000,
@@ -462,6 +520,35 @@ export async function sendCampaign(
     }
   }
 
+  // Shabbat/Yom Tov blackout (platform rule): the whole campaign defers.
+  // Returning `deferred` lets the queue worker re-enqueue at resume_at;
+  // per-recipient idempotency keys make the resumed run pick up exactly
+  // where a partially-sent run stopped.
+  {
+    const blackout = isInSendBlackout(new Date())
+    if (blackout.blocked) {
+      const resumeAt = blackout.until || nextAllowedSendTime(new Date())
+      await recordCommunicationEvent(db, {
+        event_name: "campaign_deferred_blackout",
+        campaign_id: campaign.id,
+        source: "admin",
+        properties: {
+          reason: blackout.reason || "shabbat_blackout",
+          resume_at: resumeAt.toISOString(),
+          test_email: opts.test_email || null,
+        },
+      })
+      return {
+        sent: 0,
+        skipped: 0,
+        failed: 0,
+        audience_count: 0,
+        deferred: true,
+        resume_at: resumeAt.toISOString(),
+      }
+    }
+  }
+
   const metadata = campaign.metadata || {}
   const audience = opts.test_email
     ? [{ email: opts.test_email, id: null, first_name: "" }]
@@ -508,6 +595,29 @@ export async function sendCampaign(
         email: profile.email,
       },
     })
+    if (result.deferred) {
+      // Blackout began mid-run: stop here. Already-sent recipients are
+      // protected by idempotency; the resumed run completes the rest.
+      const resumeAt = result.deferUntil || nextAllowedSendTime(new Date())
+      await recordCommunicationEvent(db, {
+        event_name: "campaign_deferred_blackout",
+        campaign_id: campaign.id,
+        source: "admin",
+        properties: {
+          reason: "shabbat_blackout_midrun",
+          resume_at: resumeAt.toISOString(),
+          sent_before_defer: sent,
+        },
+      })
+      return {
+        sent,
+        skipped,
+        failed,
+        audience_count: audience.length,
+        deferred: true,
+        resume_at: resumeAt.toISOString(),
+      }
+    }
     if (result.ok && result.skipped) skipped += 1
     else if (result.ok) sent += 1
     else failed += 1
@@ -679,6 +789,7 @@ export async function refreshProfileLifecycle(container: MedusaContainer) {
 export async function refreshSegmentMembership(container: MedusaContainer) {
   const db = dbFrom(container)
   await seedCommunicationDefaults(db)
+  await seedGpSegmentLibrary(db)
   const segments = await db("gp_segment")
     .whereNull("deleted_at")
     .where("status", "active")
@@ -688,14 +799,33 @@ export async function refreshSegmentMembership(container: MedusaContainer) {
   let activeMembers = 0
 
   for (const segment of segments) {
-    const profiles = await profilesForDefinition(
-      db,
-      segment.query_definition || {},
-      { requireConsent: false, limit: 10000 }
-    )
-    const profileIds = new Set(
-      profiles.map((profile: Record<string, any>) => profile.id).filter(Boolean)
-    )
+    let profileIds: Set<string>
+    if (isClickHouseSegmentDefinition(segment.query_definition)) {
+      // Warehouse-sourced: named registry query → email_lower → profiles.
+      // Fails soft per segment (a warehouse hiccup must not break the
+      // whole refresh loop) — the segment keeps its previous membership.
+      try {
+        const ids = await clickHouseSegmentProfileIds(
+          db,
+          segment.query_definition || {}
+        )
+        profileIds = new Set(ids)
+      } catch {
+        refreshed += 1
+        continue
+      }
+    } else {
+      const profiles = await profilesForDefinition(
+        db,
+        segment.query_definition || {},
+        { requireConsent: false, limit: 10000 }
+      )
+      profileIds = new Set(
+        profiles
+          .map((profile: Record<string, any>) => profile.id)
+          .filter(Boolean)
+      )
+    }
     activeMembers += profileIds.size
 
     const existingRows = await db("gp_segment_member")
