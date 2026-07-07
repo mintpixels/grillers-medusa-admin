@@ -58,11 +58,11 @@ export async function flowIncrementalReport(
              e.profile_id,
              ev.order_id,
              coalesce(
-               case when ev.properties->>'total' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+               case when ev.properties->>'total' ~ '^-{0,1}[0-9]+(\\.[0-9]+){0,1}$'
                     then (ev.properties->>'total')::numeric end,
-               case when ev.properties->>'revenue' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+               case when ev.properties->>'revenue' ~ '^-{0,1}[0-9]+(\\.[0-9]+){0,1}$'
                     then (ev.properties->>'revenue')::numeric end,
-               case when ev.properties->>'amount_total' ~ '^-?[0-9]+(\\.[0-9]+)?$'
+               case when ev.properties->>'amount_total' ~ '^-{0,1}[0-9]+(\\.[0-9]+){0,1}$'
                     then (ev.properties->>'amount_total')::numeric end,
                0
              ) as revenue

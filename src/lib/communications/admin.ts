@@ -395,7 +395,7 @@ async function profilesForDefinition(
   // hold arrays like ["brisket","chicken"] populated by the import
   // enrichment. Postgres jsonb `?|` = "contains any of these strings".
   if (Array.isArray(definition.preferred_cuts_any) && definition.preferred_cuts_any.length) {
-    query = query.whereRaw("preferred_cuts::jsonb ?| ?::text[]", [
+    query = query.whereRaw("preferred_cuts::jsonb \\?| ?::text[]", [
       definition.preferred_cuts_any.map(String),
     ])
   }
@@ -403,7 +403,7 @@ async function profilesForDefinition(
     Array.isArray(definition.preferred_kosher_types_any) &&
     definition.preferred_kosher_types_any.length
   ) {
-    query = query.whereRaw("preferred_kosher_types::jsonb ?| ?::text[]", [
+    query = query.whereRaw("preferred_kosher_types::jsonb \\?| ?::text[]", [
       definition.preferred_kosher_types_any.map(String),
     ])
   }
