@@ -472,6 +472,8 @@ export async function createCampaign(
     approved_by?: string | null
     /** A gp_email_template key (canvas-designed) to send instead of the simple builder. */
     template_key?: string | null
+    /** Audit: who created the campaign (NOT an approval). */
+    created_by?: string | null
   }
 ) {
   const db = dbFrom(container)
@@ -493,6 +495,7 @@ export async function createCampaign(
       body: input.body || "",
       cta_label: input.cta_label || "Shop now",
       cta_url: input.cta_url || "/us/store",
+      created_by: input.created_by || null,
     },
     created_at: now(),
     updated_at: now(),

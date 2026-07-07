@@ -45,7 +45,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       cta_label: body.cta_label,
       cta_url: body.cta_url,
       scheduled_at: body.scheduled_at,
-      approved_by: actor,
+      template_key: body.template_key,
+      // The creator is NOT an approver: passing the actor as approved_by
+      // would pre-approve every campaign and silently bypass the >500
+      // two-person Slack gate. Creator identity rides in created_by.
+      approved_by: null,
+      created_by: actor,
     })
     res.status(201).json({ campaign })
   } catch (error) {
