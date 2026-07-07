@@ -417,12 +417,25 @@ async function profilesForDefinition(
     query = query.whereIn("id", profileIds.length ? profileIds : ["__none__"])
   }
 
-  return query.limit(opts.limit || 1000)
+  return query.limit(opts.limit || audienceLimit() + 1)
+}
+
+/**
+ * Hard ceiling on a single campaign audience. Audience queries fetch
+ * limit+1 rows so sendCampaign can DETECT overflow and fail closed —
+ * silently sending to a truncated list would mean the Slack approver
+ * approves a number smaller than the real segment and the tail of the
+ * audience never hears from us, with no error anywhere.
+ */
+export function audienceLimit() {
+  const limit = Number(process.env.COMMS_MAX_AUDIENCE || 50000)
+  return Number.isFinite(limit) && limit > 0 ? limit : 50000
 }
 
 async function audienceForSegment(db: KnexLike, segmentKey?: string | null) {
+  const overfetch = audienceLimit() + 1
   if (!segmentKey) {
-    return profilesForDefinition(db, {}, { requireConsent: true, limit: 1000 })
+    return profilesForDefinition(db, {}, { requireConsent: true, limit: overfetch })
   }
 
   const segment = await db("gp_segment")
@@ -449,12 +462,12 @@ async function audienceForSegment(db: KnexLike, segmentKey?: string | null) {
       .where("gp_customer_profile.email_consent", true)
       .whereNotNull("gp_customer_profile.email")
       .select("gp_customer_profile.*")
-      .limit(1000)
+      .limit(overfetch)
   }
 
   return profilesForDefinition(db, segment.query_definition || {}, {
     requireConsent: true,
-    limit: 1000,
+    limit: overfetch,
   })
 }
 
@@ -563,6 +576,29 @@ export async function sendCampaign(
   const audience = opts.test_email
     ? [{ email: opts.test_email, id: null, first_name: "" }]
     : await audienceForSegment(db, campaign.segment_key)
+
+  // Fail CLOSED on audience overflow (queries overfetch limit+1 so this
+  // is detectable). Sending a silently truncated list would let the
+  // approver approve a smaller number than the real segment while the
+  // tail never receives the campaign.
+  if (audience.length > audienceLimit()) {
+    await recordCommunicationEvent(db, {
+      event_name: "campaign_audience_over_limit",
+      campaign_id: campaign.id,
+      source: "admin",
+      properties: {
+        segment_key: campaign.segment_key,
+        limit: audienceLimit(),
+      },
+    })
+    return {
+      sent: 0,
+      skipped: 0,
+      failed: 0,
+      audience_count: audience.length,
+      error: "audience_exceeds_max",
+    }
+  }
 
   // Two-person rule: audiences over the threshold need a Slack approval
   // (#decisions) before anything sends. The approve button re-enters this

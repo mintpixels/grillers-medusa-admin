@@ -244,6 +244,82 @@ describe("sendTrackedEmail gates", () => {
     expect(notification.createNotifications).not.toHaveBeenCalled()
   })
 
+  it("frequency cap applies to marketing_1to1 riding the transactional stream", async () => {
+    // Cart-recovery flows use the transactional Postmark stream for inbox
+    // placement but are still marketing — stream is a deliverability
+    // choice, not a semantic classification. The cap must apply.
+    const { db, state, countRows } = fakeDb()
+    state.gp_customer_profile = [
+      consentedProfile({
+        email_consent: true,
+        email_consent_at: new Date("2026-01-01"),
+      }),
+    ]
+    countRows.gp_message_log = [{ count: 3 }]
+    const container = fakeContainer(db, notification)
+
+    const result = await sendTrackedEmail(
+      container,
+      baseInput({
+        stream: "transactional",
+        purpose: "marketing_1to1",
+        template_key: "cart-abandoned-1",
+      })
+    )
+
+    expect(result).toEqual({ ok: true, skipped: true })
+    expect(notification.createNotifications).not.toHaveBeenCalled()
+  })
+
+  it("blackout applies to marketing_1to1 riding the transactional stream", async () => {
+    ;(isInSendBlackout as jest.Mock).mockReturnValue({
+      blocked: true,
+      reason: "shabbat",
+      until: new Date("2026-07-11T02:00:00Z"),
+    })
+    const { db, state } = fakeDb()
+    state.gp_customer_profile = [
+      consentedProfile({
+        email_consent: true,
+        email_consent_at: new Date("2026-01-01"),
+      }),
+    ]
+    const container = fakeContainer(db, notification)
+
+    const result = await sendTrackedEmail(
+      container,
+      baseInput({ stream: "transactional", purpose: "marketing_1to1" })
+    )
+
+    expect(result.deferred).toBe(true)
+    expect(notification.createNotifications).not.toHaveBeenCalled()
+  })
+
+  it("plain transactional receipts stay exempt from cap and blackout", async () => {
+    ;(isInSendBlackout as jest.Mock).mockReturnValue({
+      blocked: true,
+      reason: "shabbat",
+      until: new Date("2026-07-11T02:00:00Z"),
+    })
+    const { db, state, countRows } = fakeDb()
+    state.gp_customer_profile = [consentedProfile({ email_consent: false })]
+    countRows.gp_message_log = [{ count: 99 }]
+    const container = fakeContainer(db, notification)
+
+    const result = await sendTrackedEmail(
+      container,
+      baseInput({
+        stream: "transactional",
+        purpose: "transactional",
+        template_key: "order-placed",
+      })
+    )
+
+    expect(result.ok).toBe(true)
+    expect(result.skipped).toBeUndefined()
+    expect(notification.createNotifications).toHaveBeenCalledTimes(1)
+  })
+
   it("staff_test still defers during the send blackout", async () => {
     ;(isInSendBlackout as jest.Mock).mockReturnValue({
       blocked: true,

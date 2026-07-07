@@ -4,11 +4,15 @@ import { emitAdminCommunicationsRouteFailureAlert } from "../../../_shared/alert
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const body = (req.body || {}) as Record<string, any>
-  const actor = (req as any).auth_context?.actor_id || null
   try {
+    // NEVER pass the calling actor as approved_by: that would satisfy the
+    // >500 two-person gate with the sender's own identity and skip the
+    // Slack approval entirely (and record a fake approver in the audit
+    // trail). The ONLY legitimate approval signals are campaign.approved_by
+    // persisted by the Slack approve button (approveCampaignFromSlack,
+    // allowlist-checked) — test sends bypass the gate via test_email.
     const result = await sendCampaign(req.scope, String(req.params.id), {
       test_email: body.test_email || null,
-      approved_by: actor,
     })
     res.status(202).json({ ok: true, ...result })
   } catch (error) {

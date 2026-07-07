@@ -813,7 +813,15 @@ export async function sendTrackedEmail(
   // Transactional receipts are customer-triggered and stay unblocked.
   // Deferred is NOT a failure: callers reschedule at deferUntil; nothing
   // is logged to gp_message_log so the retry sends cleanly.
-  if (input.stream === "broadcast" || input.stream === "lifecycle") {
+  // Gated on PURPOSE as well as stream: cart-recovery flows ride the
+  // transactional Postmark stream for inbox placement but are still
+  // marketing (marketing_1to1) — stream is a deliverability choice, not
+  // a semantic classification.
+  if (
+    input.stream === "broadcast" ||
+    input.stream === "lifecycle" ||
+    requiresMarketingConsent(purpose)
+  ) {
     const blackout = isInSendBlackout(now)
     if (blackout.blocked) {
       await recordCommunicationEvent(db, {
@@ -851,9 +859,14 @@ export async function sendTrackedEmail(
   // Transactional receipts don't count against (or consume) the cap.
   // Staff test sends are exempt — a designer iterating on a template
   // sends themselves many tests in a day.
+  // Keyed on PURPOSE, not just stream: cart-recovery marketing rides the
+  // transactional stream for inbox placement and must still respect the
+  // cap ("regardless of how many campaigns/flows target them").
   if (
     !input.staff_test &&
-    (input.stream === "broadcast" || input.stream === "lifecycle")
+    (input.stream === "broadcast" ||
+      input.stream === "lifecycle" ||
+      requiresMarketingConsent(purpose))
   ) {
     const cap = Number(process.env.COMMS_EMAIL_WEEKLY_CAP || 3)
     if (Number.isFinite(cap) && cap > 0) {
@@ -861,7 +874,14 @@ export async function sendTrackedEmail(
       const recent = await db("gp_message_log")
         .whereNull("deleted_at")
         .where("email_lower", emailLower)
-        .whereIn("stream", ["broadcast", "lifecycle"])
+        // Column is message_stream (NOT "stream" — that column doesn't
+        // exist and threw on the first real marketing send). Count by
+        // purpose too so transactional-stream marketing consumes the cap.
+        .where((builder: any) =>
+          builder
+            .whereIn("message_stream", ["broadcast", "lifecycle"])
+            .orWhereIn("message_purpose", ["broadcast", "marketing_1to1"])
+        )
         .whereIn("status", ["queued", "sent", "delivered"])
         .where("created_at", ">=", since)
         .count("id as count")
