@@ -1,4 +1,5 @@
 import { attributionSummary } from "./attribution"
+import { deliverabilityReport, flowIncrementalReport } from "./incremental"
 
 type KnexLike = any
 
@@ -18,6 +19,8 @@ export async function communicationReporting(db: KnexLike, days = 30) {
     deliveryCounts,
     importRuns,
     attribution,
+    incremental,
+    deliverability,
   ] = await Promise.all([
     db("gp_communication_event")
       .whereNull("deleted_at")
@@ -61,6 +64,8 @@ export async function communicationReporting(db: KnexLike, days = 30) {
       .orderBy("created_at", "desc")
       .limit(10),
     attributionSummary(db, days),
+    flowIncrementalReport(db, Math.max(days, 90)).catch(() => null),
+    deliverabilityReport(db, days).catch(() => null),
   ])
 
   const sent = messagesByStatus.find((row: any) => row.status === "sent")
@@ -93,6 +98,8 @@ export async function communicationReporting(db: KnexLike, days = 30) {
     carts_by_status: cartCounts,
     delivery_by_target: deliveryCounts,
     attribution,
+    incremental,
+    deliverability,
     import_runs: importRuns,
   }
 }
