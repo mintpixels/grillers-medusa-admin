@@ -836,6 +836,49 @@ export async function sendTrackedEmail(
     }
   }
 
+  // FREQUENCY CAP (platform guardrail): a customer never receives more
+  // than COMMS_EMAIL_WEEKLY_CAP marketing/lifecycle emails in any rolling
+  // 7 days, regardless of how many campaigns/flows target them.
+  // Transactional receipts don't count against (or consume) the cap.
+  if (input.stream === "broadcast" || input.stream === "lifecycle") {
+    const cap = Number(process.env.COMMS_EMAIL_WEEKLY_CAP || 3)
+    if (Number.isFinite(cap) && cap > 0) {
+      const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+      const recent = await db("gp_message_log")
+        .whereNull("deleted_at")
+        .where("email_lower", emailLower)
+        .whereIn("stream", ["broadcast", "lifecycle"])
+        .whereIn("status", ["queued", "sent", "delivered"])
+        .where("created_at", ">=", since)
+        .count("id as count")
+      const sentThisWeek = Number(recent?.[0]?.count || 0)
+      if (sentThisWeek >= cap) {
+        await recordCommunicationEvent(db, {
+          event_name: "email_suppressed",
+          email: input.to,
+          profile_id: profile?.id,
+          template_key: input.template_key,
+          order_id: input.order_id,
+          cart_id: input.cart_id,
+          campaign_id: input.campaign_id,
+          flow_id: input.flow_id,
+          properties: {
+            stream: input.stream,
+            purpose,
+            topic: input.topic,
+            reason: "frequency_cap",
+            cap,
+            sent_this_week: sentThisWeek,
+          },
+          context: experimentContext
+            ? { experiment_context: experimentContext }
+            : {},
+        })
+        return { ok: true, skipped: true }
+      }
+    }
+  }
+
   const messageRow = {
     id: existing?.id || tableId("gpmsg"),
     idempotency_key: idempotencyKey,

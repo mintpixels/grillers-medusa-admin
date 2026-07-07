@@ -9,6 +9,7 @@ import {
   type CommunicationStream,
 } from "./core"
 import { isInSendBlackout, nextAllowedSendTime } from "./hebrew-calendar"
+import { campaignNeedsApproval, requestCampaignApproval } from "./approvals"
 import {
   clickHouseSegmentProfileIds,
   isClickHouseSegmentDefinition,
@@ -557,6 +558,26 @@ export async function sendCampaign(
   const audience = opts.test_email
     ? [{ email: opts.test_email, id: null, first_name: "" }]
     : await audienceForSegment(db, campaign.segment_key)
+
+  // Two-person rule: audiences over the threshold need a Slack approval
+  // (#decisions) before anything sends. The approve button re-enters this
+  // function with opts.approved_by set, which passes the gate.
+  if (
+    campaignNeedsApproval({
+      audienceCount: audience.length,
+      approvedBy: opts.approved_by || campaign.approved_by,
+      testEmail: opts.test_email,
+    })
+  ) {
+    await requestCampaignApproval(db, campaign, audience.length)
+    return {
+      sent: 0,
+      skipped: 0,
+      failed: 0,
+      audience_count: audience.length,
+      pending_approval: true,
+    }
+  }
 
   const snapshot = audience.map((profile: Record<string, any>) => ({
     profile_id: profile.id || null,

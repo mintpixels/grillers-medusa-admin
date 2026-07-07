@@ -8,6 +8,13 @@ import {
 import { emitOpsAlertAck } from "../_shared/emit-ack"
 import { emitOrderFulfillmentHold } from "../_shared/emit-order-hold"
 import { rawBodyString, verifySlackSignature } from "../_shared/verify"
+import {
+  CAMPAIGN_APPROVE_ACTION_ID,
+  CAMPAIGN_REJECT_ACTION_ID,
+  allowedApprovers,
+  approveCampaignFromSlack,
+  rejectCampaignFromSlack,
+} from "../../../../lib/communications/approvals"
 
 // The action_id Slack sends when the on-call "✅ Ack" button is clicked. The
 // ops-pager builds the button with this exact action_id; the button `value`
@@ -125,6 +132,48 @@ export function extractOrderAction(
   return {
     action: action.action_id === ORDER_HOLD_ACTION_ID ? "hold" : "release",
     orderId,
+    byUser: typeof user.id === "string" ? user.id : "",
+    byName:
+      (typeof user.username === "string" && user.username) ||
+      (typeof user.name === "string" && user.name) ||
+      undefined,
+  }
+}
+
+export type CampaignApprovalAction = {
+  decision: "approve" | "reject"
+  actionId: string
+  /** The campaign id carried in the button's `value`. */
+  campaignId: string
+  byUser: string
+  byName?: string
+}
+
+/**
+ * Find a campaign Approve/Reject click in a parsed payload. Returns null
+ * for any other interaction so the handler can route it elsewhere.
+ * Pure/deterministic.
+ */
+export function extractCampaignApprovalAction(
+  payload: SlackInteractivityPayload | null
+): CampaignApprovalAction | null {
+  if (!payload || !Array.isArray(payload.actions)) return null
+  const action = payload.actions.find(
+    (a) =>
+      a?.action_id === CAMPAIGN_APPROVE_ACTION_ID ||
+      a?.action_id === CAMPAIGN_REJECT_ACTION_ID
+  )
+  if (!action) return null
+
+  const campaignId = typeof action.value === "string" ? action.value.trim() : ""
+  if (!campaignId) return null
+
+  const user = payload.user || {}
+  return {
+    decision:
+      action.action_id === CAMPAIGN_APPROVE_ACTION_ID ? "approve" : "reject",
+    actionId: String(action.action_id),
+    campaignId,
     byUser: typeof user.id === "string" ? user.id : "",
     byName:
       (typeof user.username === "string" && user.username) ||
@@ -490,8 +539,57 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return
     }
 
-    // Not an ops-ack or approval-hold interaction (different button, no value,
-    // or a non-action payload like a url_verification). Ack with 200, do nothing.
+    const campaignAction = extractCampaignApprovalAction(payload)
+    if (campaignAction) {
+      actionForAlert = campaignAction.actionId
+
+      // Campaign approvals move real money to real inboxes: ONLY the
+      // allow-listed approvers (Avi/Peter) may click, unlike advisory
+      // order-holds. Anyone else gets a polite ephemeral no.
+      const approvers = allowedApprovers()
+      if (!approvers.has(campaignAction.byUser)) {
+        res.status(200).json({
+          response_type: "ephemeral",
+          replace_original: false,
+          text: "Only Avi or Peter can approve campaign sends.",
+        })
+        return
+      }
+
+      const decision =
+        campaignAction.decision === "approve"
+          ? await approveCampaignFromSlack(
+              req.scope,
+              campaignAction.campaignId,
+              campaignAction.byUser,
+              campaignAction.byName
+            )
+          : await rejectCampaignFromSlack(
+              req.scope,
+              campaignAction.campaignId,
+              campaignAction.byUser,
+              campaignAction.byName
+            )
+
+      const who = campaignAction.byUser ? `<@${campaignAction.byUser}>` : "someone"
+      const text = !decision.ok
+        ? `:warning: Could not ${campaignAction.decision} — ${decision.reason || "unknown"}.`
+        : campaignAction.decision === "approve"
+          ? `:white_check_mark: *Campaign approved by ${who}* — sending now (Shabbat blackout and frequency caps still apply).`
+          : `:no_entry_sign: *Campaign rejected by ${who}* — returned to draft.`
+      const message = {
+        replace_original: decision.ok,
+        response_type: "in_channel",
+        text,
+      }
+      res.status(200).json(message)
+      void postResponseUrl(payload?.response_url, message, logger)
+      return
+    }
+
+    // Not an ops-ack, approval-hold, or campaign-approval interaction
+    // (different button, no value, or a non-action payload like a
+    // url_verification). Ack with 200, do nothing.
     res.status(200).json({ ok: true, ignored: true })
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
