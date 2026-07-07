@@ -64,8 +64,18 @@ export async function communicationReporting(db: KnexLike, days = 30) {
       .orderBy("created_at", "desc")
       .limit(10),
     attributionSummary(db, days),
-    flowIncrementalReport(db, Math.max(days, 90)).catch(() => null),
-    deliverabilityReport(db, days).catch(() => null),
+    flowIncrementalReport(db, Math.max(days, 90)).catch((error: any) => {
+      console.error(
+        `[comms-reporting] incremental report failed: ${error?.message || error}`
+      )
+      return null
+    }),
+    deliverabilityReport(db, days).catch((error: any) => {
+      console.error(
+        `[comms-reporting] deliverability report failed: ${error?.message || error}`
+      )
+      return null
+    }),
   ])
 
   const sent = messagesByStatus.find((row: any) => row.status === "sent")
