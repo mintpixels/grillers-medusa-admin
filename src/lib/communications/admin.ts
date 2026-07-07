@@ -470,6 +470,8 @@ export async function createCampaign(
     cta_url?: string | null
     scheduled_at?: string | null
     approved_by?: string | null
+    /** A gp_email_template key (canvas-designed) to send instead of the simple builder. */
+    template_key?: string | null
   }
 ) {
   const db = dbFrom(container)
@@ -480,7 +482,7 @@ export async function createCampaign(
     name: input.name,
     subject: input.subject,
     segment_key: input.segment_key || null,
-    template_key: "campaign-simple",
+    template_key: input.template_key || "campaign-simple",
     status:
       scheduledAt && !Number.isNaN(scheduledAt.getTime()) ? "scheduled" : "draft",
     scheduled_at:
@@ -584,27 +586,53 @@ export async function sendCampaign(
     email: profile.email,
   }))
 
+  // Canvas-designed campaigns reference a gp_email_template whose
+  // html_body is the full compiled MJML document. Loaded ONCE per run;
+  // per-recipient merge fields are interpolated below. Falls back to the
+  // simple builder when no canvas template applies.
+  let canvasTemplate: Record<string, any> | null = null
+  if (campaign.template_key && campaign.template_key !== "campaign-simple") {
+    canvasTemplate = await db("gp_email_template")
+      .whereNull("deleted_at")
+      .where("key", campaign.template_key)
+      .whereNotNull("html_body")
+      .first()
+  }
+
+  const mergeFields = (value: string, profile: Record<string, any>) =>
+    value
+      .replace(/\{\{\s*first_name\s*\}\}/g, profile.first_name || "there")
+      .replace(/\{\{\s*email\s*\}\}/g, profile.email || "")
+
   let sent = 0
   let skipped = 0
   let failed = 0
   for (const profile of audience) {
-    const email = buildSimpleMessageEmail({
-      subject: campaign.subject,
-      eyebrow: "Griller's Pride",
-      heading: campaign.subject,
-      intro: metadata.intro || undefined,
-      paragraphs: String(metadata.body || "")
-        .split(/\n{2,}/)
-        .map((part) => part.trim())
-        .filter(Boolean),
-      ctaLabel: metadata.cta_label || "Shop now",
-      ctaUrl: metadata.cta_url || "/us/store",
-    })
+    const email = canvasTemplate
+      ? {
+          subject: mergeFields(campaign.subject, profile),
+          html: mergeFields(String(canvasTemplate.html_body), profile),
+          text:
+            mergeFields(String(canvasTemplate.text_body || ""), profile) ||
+            `${campaign.subject}\n\nView this email in a browser that supports HTML.`,
+        }
+      : buildSimpleMessageEmail({
+          subject: campaign.subject,
+          eyebrow: "Griller's Pride",
+          heading: campaign.subject,
+          intro: metadata.intro || undefined,
+          paragraphs: String(metadata.body || "")
+            .split(/\n{2,}/)
+            .map((part) => part.trim())
+            .filter(Boolean),
+          ctaLabel: metadata.cta_label || "Shop now",
+          ctaUrl: metadata.cta_url || "/us/store",
+        })
     const result = await sendTrackedEmail(container, {
       to: profile.email,
       stream: "broadcast",
       purpose: "broadcast",
-      template_key: "campaign-simple",
+      template_key: campaign.template_key || "campaign-simple",
       subject: email.subject,
       html: email.html,
       text: email.text,
@@ -737,6 +765,87 @@ export async function communicationReports(container: MedusaContainer, days = 30
 
 export async function communicationTemplates(container: MedusaContainer) {
   return { templates: await listEmailTemplates(dbFrom(container)) }
+}
+
+/**
+ * Upsert a canvas-designed template (GrapesJS/MJML from the staff
+ * console). Keyed by `key`; the MJML source rides in metadata so the
+ * editor can reopen and keep editing, while html_body is the compiled
+ * document the send path uses. Versions bump on every save.
+ */
+export async function saveCanvasTemplate(
+  container: MedusaContainer,
+  input: {
+    key: string
+    name: string
+    subject: string
+    preheader?: string | null
+    html_body: string
+    text_body?: string | null
+    mjml_source?: string | null
+    canvas_project?: unknown
+    message_stream?: string
+    saved_by?: string | null
+  }
+) {
+  const db = dbFrom(container)
+  const key = String(input.key || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+  if (!key) throw new Error("Template key is required.")
+  if (!input.html_body || !input.html_body.trim()) {
+    throw new Error("Template HTML is required.")
+  }
+
+  const existing = await db("gp_email_template")
+    .whereNull("deleted_at")
+    .where("key", key)
+    .first()
+
+  const metadata = {
+    ...(existing?.metadata || {}),
+    editor: "grapesjs-mjml",
+    mjml_source: input.mjml_source || null,
+    canvas_project: input.canvas_project ?? existing?.metadata?.canvas_project ?? null,
+    saved_by: input.saved_by || null,
+    saved_at: new Date().toISOString(),
+  }
+
+  if (existing) {
+    await db("gp_email_template").where("id", existing.id).update({
+      name: input.name,
+      subject: input.subject,
+      preheader: input.preheader || null,
+      html_body: input.html_body,
+      text_body: input.text_body || null,
+      message_stream: input.message_stream || existing.message_stream || "broadcast",
+      version: Number(existing.version || 1) + 1,
+      metadata,
+      updated_at: now(),
+    })
+    return { key, id: existing.id, version: Number(existing.version || 1) + 1 }
+  }
+
+  const idValue = id("gptmpl")
+  await db("gp_email_template").insert({
+    id: idValue,
+    key,
+    name: input.name,
+    subject: input.subject,
+    preheader: input.preheader || null,
+    html_body: input.html_body,
+    text_body: input.text_body || null,
+    message_stream: input.message_stream || "broadcast",
+    message_purpose: "broadcast",
+    consent_required: true,
+    status: "active",
+    version: 1,
+    metadata,
+    created_at: now(),
+    updated_at: now(),
+  })
+  return { key, id: idValue, version: 1 }
 }
 
 export async function sendDueScheduledCampaigns(container: MedusaContainer) {
