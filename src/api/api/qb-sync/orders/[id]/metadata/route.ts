@@ -110,7 +110,10 @@ async function emitQbMetadataRouteFailureAlert(input: {
 }) {
   await emitOpsAlert({
     alertKind: "qbd_order_metadata_update_failed",
-    severity: "page",
+    // A stale-key rejection is the guard WORKING (it protected manually
+    // cleared orders from being clobbered) — warn-digest material, not a
+    // page. Real callback failures (configuration/persist) still page.
+    severity: input.reason === "request_key_mismatch" ? "warn" : "page",
     title:
       input.reason === "configuration"
         ? "QuickBooks metadata callback is not configured"

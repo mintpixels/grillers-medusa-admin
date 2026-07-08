@@ -225,7 +225,7 @@ describe("QuickBooks sync order metadata callback", () => {
     expect(emitOpsAlert).toHaveBeenCalledWith(
       expect.objectContaining({
         alertKind: "qbd_order_metadata_update_failed",
-        severity: "page",
+        severity: "warn",
         fingerprint: "qbd_order_metadata_update:request_key_mismatch",
         meta: expect.objectContaining({
           reason: "request_key_mismatch",
