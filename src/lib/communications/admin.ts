@@ -88,6 +88,7 @@ export async function communicationOverview(container: MedusaContainer) {
   const [
     profileCount,
     consentCount,
+    smsConsentCount,
     messageCounts,
     recentMessages,
     flows,
@@ -102,6 +103,11 @@ export async function communicationOverview(container: MedusaContainer) {
     db("gp_customer_profile")
       .whereNull("deleted_at")
       .where("email_consent", true)
+      .count({ count: "*" })
+      .first(),
+    db("gp_customer_profile")
+      .whereNull("deleted_at")
+      .where("sms_consent", true)
       .count({ count: "*" })
       .first(),
     db("gp_message_log")
@@ -133,10 +139,12 @@ export async function communicationOverview(container: MedusaContainer) {
         "id",
         "key",
         "name",
+        "description",
         "status",
         "message_stream",
         "message_purpose",
-        "trigger_event"
+        "trigger_event",
+        "steps"
       )
       .orderBy("name", "asc"),
     db("gp_segment")
@@ -145,7 +153,17 @@ export async function communicationOverview(container: MedusaContainer) {
       .orderBy("name", "asc"),
     db("gp_campaign")
       .whereNull("deleted_at")
-      .select("id", "name", "status", "subject", "segment_key", "sent_at", "scheduled_at")
+      .select(
+        "id",
+        "name",
+        "status",
+        "subject",
+        "segment_key",
+        "sent_at",
+        "scheduled_at",
+        "metrics",
+        "metadata"
+      )
       .orderBy("created_at", "desc")
       .limit(10),
     listEmailTemplates(db),
@@ -162,6 +180,7 @@ export async function communicationOverview(container: MedusaContainer) {
     metrics: {
       profiles: Number(profileCount?.count || 0),
       consented: Number(consentCount?.count || 0),
+      sms_consented: Number(smsConsentCount?.count || 0),
       messages_sent: statusCounts.sent || 0,
       messages_delivered: statusCounts.delivered || 0,
       messages_failed: statusCounts.failed || 0,
@@ -388,6 +407,12 @@ async function profilesForDefinition(
   if (definition.engagement_score_gte) {
     query = query.where("engagement_score", ">=", Number(definition.engagement_score_gte))
   }
+  if (definition.min_total_orders) {
+    query = query.where("total_orders", ">=", Number(definition.min_total_orders))
+  }
+  if (definition.min_total_revenue) {
+    query = query.where("total_revenue", ">=", Number(definition.min_total_revenue))
+  }
   if (definition.preferred_delivery_zone) {
     query = query.where("preferred_delivery_zone", definition.preferred_delivery_zone)
   }
@@ -471,6 +496,293 @@ async function audienceForSegment(db: KnexLike, segmentKey?: string | null) {
   })
 }
 
+/**
+ * SMS-reachable audience for a segment: same membership as email, but
+ * gated on sms_consent and a usable phone (the number captured at opt-in
+ * wins; the profile phone is the fallback).
+ */
+async function smsAudienceForSegment(db: KnexLike, segmentKey?: string | null) {
+  const audience = await audienceForSegment(db, segmentKey)
+  return audience
+    .filter((p: Record<string, any>) => p.sms_consent && p.sms_consent_at)
+    .map((p: Record<string, any>) => ({
+      ...p,
+      sms_phone:
+        (p.preferences && (p.preferences as any).sms_consent_phone) ||
+        p.phone ||
+        null,
+    }))
+    .filter((p: Record<string, any>) => Boolean(p.sms_phone))
+}
+
+function interpolateSmsBody(body: string, profile: Record<string, any>) {
+  return body
+    .replace(/\{\{\s*first_name\s*\}\}/g, profile.first_name || "there")
+    .replace(/\{\{\s*email\s*\}\}/g, profile.email || "")
+}
+
+async function sendSmsCampaign(
+  container: MedusaContainer,
+  db: KnexLike,
+  campaign: Record<string, any>,
+  opts: {
+    test_email?: string | null
+    test_phone?: string | null
+    approved_by?: string | null
+  }
+) {
+  const { sendTrackedSms } = await import("./sms.js")
+  const metadata = campaign.metadata || {}
+  const body = String(metadata.sms_body || "").trim()
+  if (!body) {
+    return {
+      sent: 0,
+      skipped: 0,
+      failed: 0,
+      audience_count: 0,
+      error: "sms_body_missing",
+    }
+  }
+  if (!opts.test_phone && campaign.status === "sent") {
+    return {
+      sent: 0,
+      skipped: 0,
+      failed: 0,
+      audience_count: 0,
+      already_sent: true,
+    }
+  }
+
+  const audience = opts.test_phone
+    ? [
+        {
+          id: null,
+          sms_phone: opts.test_phone,
+          first_name: "",
+          email: null,
+        },
+      ]
+    : await smsAudienceForSegment(db, campaign.segment_key)
+
+  if (audience.length > audienceLimit()) {
+    await recordCommunicationEvent(db, {
+      event_name: "campaign_audience_over_limit",
+      campaign_id: campaign.id,
+      source: "admin",
+      properties: { segment_key: campaign.segment_key, limit: audienceLimit() },
+    })
+    return {
+      sent: 0,
+      skipped: 0,
+      failed: 0,
+      audience_count: audience.length,
+      error: "audience_exceeds_max",
+    }
+  }
+
+  // Same two-person rule as email campaigns.
+  if (
+    campaignNeedsApproval({
+      audienceCount: audience.length,
+      approvedBy: opts.approved_by || campaign.approved_by,
+      testEmail: opts.test_phone || null,
+    })
+  ) {
+    await requestCampaignApproval(db, campaign, audience.length)
+    return {
+      sent: 0,
+      skipped: 0,
+      failed: 0,
+      audience_count: audience.length,
+      pending_approval: true,
+    }
+  }
+
+  let sent = 0
+  let skipped = 0
+  let failed = 0
+  for (const profile of audience) {
+    const result = await sendTrackedSms(container, {
+      to: profile.sms_phone,
+      body: interpolateSmsBody(body, profile),
+      stream: "broadcast",
+      purpose: "broadcast",
+      template_key: campaign.template_key || "campaign-sms",
+      topic: "promotions",
+      campaign_id: campaign.id,
+      profile_id: profile.id || null,
+      idempotency_key: opts.test_phone
+        ? `campaign-sms-test:${campaign.id}:${Date.now()}`
+        : `campaign-sms:${campaign.id}:${profile.id || profile.sms_phone}`,
+      staff_test: Boolean(opts.test_phone),
+    })
+    if (result.deferred) {
+      const resumeAt = result.deferUntil || nextAllowedSendTime(new Date())
+      await recordCommunicationEvent(db, {
+        event_name: "campaign_deferred_blackout",
+        campaign_id: campaign.id,
+        source: "admin",
+        properties: {
+          channel: "sms",
+          reason: result.error || "deferred",
+          resume_at: resumeAt.toISOString(),
+          sent_before_defer: sent,
+        },
+      })
+      return {
+        sent,
+        skipped,
+        failed,
+        audience_count: audience.length,
+        deferred: true,
+        resume_at: resumeAt.toISOString(),
+      }
+    }
+    if (result.ok && result.skipped) skipped += 1
+    else if (result.ok) sent += 1
+    else failed += 1
+  }
+
+  if (!opts.test_phone) {
+    await db("gp_campaign").where("id", campaign.id).update({
+      status: "sent",
+      sent_at: now(),
+      approved_by: opts.approved_by || campaign.approved_by,
+      approved_at: campaign.approved_at || now(),
+      metrics: { sent, skipped, failed },
+      updated_at: now(),
+    })
+  }
+
+  await recordCommunicationEvent(db, {
+    event_name: opts.test_phone ? "campaign_test_sent" : "campaign_sent",
+    campaign_id: campaign.id,
+    source: "admin",
+    properties: {
+      channel: "sms",
+      sent,
+      skipped,
+      failed,
+      test_phone: opts.test_phone ? String(opts.test_phone).slice(-4) : null,
+    },
+  })
+
+  return { sent, skipped, failed, audience_count: audience.length }
+}
+
+/** Predicate keys the console segment builder may use. */
+export const SEGMENT_DEFINITION_KEYS = [
+  "customer_type",
+  "route_market",
+  "lifecycle_stage",
+  "email_consent",
+  "sms_consent",
+  "holiday_buyer",
+  "last_order_within_days",
+  "engagement_score_gte",
+  "preferred_delivery_zone",
+  "preferred_cuts_any",
+  "preferred_kosher_types_any",
+  "min_total_orders",
+  "min_total_revenue",
+] as const
+
+export async function createOrUpdateSegment(
+  container: MedusaContainer,
+  input: {
+    key?: string | null
+    name: string
+    description?: string | null
+    definition: Record<string, any>
+    created_by?: string | null
+  }
+) {
+  const db = dbFrom(container)
+  const key =
+    (input.key || input.name)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_|_$/g, "") || `segment_${Date.now()}`
+
+  const definition: Record<string, any> = {}
+  for (const allowed of SEGMENT_DEFINITION_KEYS) {
+    if (input.definition?.[allowed] !== undefined && input.definition[allowed] !== null && input.definition[allowed] !== "") {
+      definition[allowed] = input.definition[allowed]
+    }
+  }
+
+  const existing = await db("gp_segment")
+    .whereNull("deleted_at")
+    .where("key", key)
+    .first()
+
+  if (existing) {
+    await db("gp_segment").where("id", existing.id).update({
+      name: input.name,
+      description: input.description || existing.description,
+      query_definition: definition,
+      metadata: {
+        ...(existing.metadata || {}),
+        custom: true,
+        updated_by: input.created_by || null,
+      },
+      updated_at: now(),
+    })
+  } else {
+    await db("gp_segment").insert({
+      id: id("gpseg"),
+      key,
+      name: input.name,
+      description: input.description || null,
+      source: "profile",
+      status: "active",
+      query_definition: definition,
+      metadata: { custom: true, created_by: input.created_by || null },
+      created_at: now(),
+      updated_at: now(),
+    })
+  }
+
+  const refreshed = await refreshSegmentMembership(container)
+  const segment = await db("gp_segment")
+    .whereNull("deleted_at")
+    .where("key", key)
+    .first()
+  return { segment, refreshed }
+}
+
+/** Dry-run a definition: audience count + a small sample, nothing persisted. */
+export async function previewSegmentDefinition(
+  container: MedusaContainer,
+  definition: Record<string, any>
+) {
+  const db = dbFrom(container)
+  const clean: Record<string, any> = {}
+  for (const allowed of SEGMENT_DEFINITION_KEYS) {
+    if (definition?.[allowed] !== undefined && definition[allowed] !== null && definition[allowed] !== "") {
+      clean[allowed] = definition[allowed]
+    }
+  }
+  const profiles = await profilesForDefinition(db, clean, {
+    requireConsent: true,
+    limit: audienceLimit() + 1,
+  })
+  const smsReachable = profiles.filter(
+    (p: Record<string, any>) =>
+      p.sms_consent &&
+      ((p.preferences && (p.preferences as any).sms_consent_phone) || p.phone)
+  ).length
+  return {
+    count: profiles.length,
+    sms_reachable: smsReachable,
+    sample: profiles.slice(0, 5).map((p: Record<string, any>) => ({
+      email: p.email,
+      first_name: p.first_name,
+      last_name: p.last_name,
+    })),
+  }
+}
+
 export async function createCampaign(
   container: MedusaContainer,
   input: {
@@ -487,6 +799,10 @@ export async function createCampaign(
     template_key?: string | null
     /** Audit: who created the campaign (NOT an approval). */
     created_by?: string | null
+    /** "email" (default) or "sms". */
+    channel?: string | null
+    /** SMS campaigns: the message body ({{first_name}} supported). */
+    sms_body?: string | null
   }
 ) {
   const db = dbFrom(container)
@@ -509,6 +825,8 @@ export async function createCampaign(
       cta_label: input.cta_label || "Shop now",
       cta_url: input.cta_url || "/us/store",
       created_by: input.created_by || null,
+      channel: input.channel === "sms" ? "sms" : "email",
+      sms_body: input.sms_body || null,
     },
     created_at: now(),
     updated_at: now(),
@@ -525,7 +843,11 @@ export async function createCampaign(
 export async function sendCampaign(
   container: MedusaContainer,
   campaignId: string,
-  opts: { test_email?: string | null; approved_by?: string | null } = {}
+  opts: {
+    test_email?: string | null
+    test_phone?: string | null
+    approved_by?: string | null
+  } = {}
 ) {
   const db = dbFrom(container)
   const campaign = await db("gp_campaign")
@@ -533,7 +855,12 @@ export async function sendCampaign(
     .where("id", campaignId)
     .first()
   if (!campaign) throw new Error("Campaign not found.")
-  if (!opts.test_email && campaign.status === "sent") {
+  const isTest = Boolean(opts.test_email || opts.test_phone)
+  const channel = (campaign.metadata || {}).channel === "sms" ? "sms" : "email"
+  if (channel === "sms") {
+    return sendSmsCampaign(container, db, campaign, opts)
+  }
+  if (!isTest && campaign.status === "sent") {
     return {
       sent: 0,
       skipped: 0,

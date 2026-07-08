@@ -13,6 +13,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     // allowlist-checked) — test sends bypass the gate via test_email.
     const result = await sendCampaign(req.scope, String(req.params.id), {
       test_email: body.test_email || null,
+      test_phone: body.test_phone || null,
     })
     res.status(202).json({ ok: true, ...result })
   } catch (error) {
@@ -22,7 +23,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       error,
       meta: {
         campaign_id: req.params.id || null,
-        test_send: Boolean(body.test_email),
+        test_send: Boolean(body.test_email || body.test_phone),
       },
     })
     res.status(500).json({ ok: false, error: "campaign_send_failed" })

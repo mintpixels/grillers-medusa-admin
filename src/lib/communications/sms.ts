@@ -104,6 +104,12 @@ export type SendTrackedSmsInput = {
   order_id?: string | null
   cart_id?: string | null
   idempotency_key?: string | null
+  /**
+   * Staff-initiated test to an explicitly typed number. Skips consent,
+   * quiet hours, and the weekly cap (a designer testing their own copy);
+   * the Shabbat/Yom Tov blackout still applies.
+   */
+  staff_test?: boolean
 }
 
 export type SendTrackedSmsResult = {
@@ -163,8 +169,9 @@ export async function sendTrackedSms(
     return { ok: true, skipped: true } as SendTrackedSmsResult
   }
 
-  // 1) Consent at send time (marketing/lifecycle only).
-  if (requiresSmsConsent(input.stream)) {
+  // 1) Consent at send time (marketing/lifecycle only). Staff tests to a
+  // typed number are exempt.
+  if (!input.staff_test && requiresSmsConsent(input.stream)) {
     if (!profile || !profile.sms_consent || !profile.sms_consent_at) {
       return suppress("missing_sms_consent")
     }
@@ -195,8 +202,9 @@ export async function sendTrackedSms(
       }
     }
 
-    // 3) Quiet hours (TCPA): defer to the next window opening.
-    if (isInSmsQuietHours(now)) {
+    // 3) Quiet hours (TCPA): defer to the next window opening. Staff
+    // tests to the operator's own phone are exempt.
+    if (!input.staff_test && isInSmsQuietHours(now)) {
       return {
         ok: false,
         deferred: true,
@@ -204,9 +212,9 @@ export async function sendTrackedSms(
       }
     }
 
-    // 4) Weekly cap.
+    // 4) Weekly cap (staff tests exempt).
     const cap = Number(process.env.COMMS_SMS_WEEKLY_CAP || 2)
-    if (Number.isFinite(cap) && cap > 0) {
+    if (!input.staff_test && Number.isFinite(cap) && cap > 0) {
       const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
       const recent = await db("gp_message_log")
         .whereNull("deleted_at")
