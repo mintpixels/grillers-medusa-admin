@@ -92,6 +92,7 @@ export async function importConstantContactRows(
     subscribed: 0,
     unsubscribed: 0,
     bounced: 0,
+    no_consent: 0,
     imported: 0,
     skipped: 0,
     failed: 0,
@@ -109,24 +110,51 @@ export async function importConstantContactRows(
       const unsubscribed =
         status.includes("unsub") || boolish(field(row, ["unsubscribed"]))
       const bounced = status.includes("bounce") || boolish(field(row, ["bounced"]))
-      const consent = !unsubscribed && !bounced
+      // Consent requires POSITIVE evidence (Active/Confirmed/Subscribed).
+      // CC exports also contain rows with an empty status, "Awaiting
+      // confirmation", or "No Permissions Set" — those contacts never
+      // opted in, and importing them as consented would make the first
+      // GP campaign a CAN-SPAM violation against thousands of addresses.
+      // They import with email_consent=false (transactional still fine)
+      // and NO suppression record (they didn't unsubscribe).
+      const consent =
+        !unsubscribed &&
+        !bounced &&
+        (status.includes("active") ||
+          status.includes("confirmed") ||
+          status.includes("subscribed") ||
+          boolish(field(row, ["subscribed"])))
+
+      // no-consent rows pass undefined so an existing profile's stronger
+      // evidence (e.g. site signup with express opt-in) is never
+      // downgraded by a CC row that merely lacks permission data.
+      const consentSignal = consent
+        ? true
+        : unsubscribed || bounced
+          ? false
+          : undefined
 
       const profile = await upsertCustomerProfile(db, {
         email,
         first_name: field(row, ["first_name", "First Name"]) || undefined,
         last_name: field(row, ["last_name", "Last Name"]) || undefined,
-        email_consent: consent,
-        preferences: {
-          promotions: consent,
-          holiday_reminders: consent,
-          recipes: consent,
-          new_products: consent,
-          back_in_stock: consent,
-        },
+        email_consent: consentSignal,
+        preferences:
+          consentSignal === undefined
+            ? undefined
+            : {
+                promotions: consentSignal,
+                holiday_reminders: consentSignal,
+                recipes: consentSignal,
+                new_products: consentSignal,
+                back_in_stock: consentSignal,
+              },
         metadata: {
           constant_contact_contact_id: field(row, ["id", "Contact ID"]) || null,
           constant_contact_lists: field(row, ["lists", "Lists"]) || null,
           constant_contact_tags: field(row, ["tags", "Tags"]) || null,
+          constant_contact_permission:
+            field(row, ["permission", "Email permission status"]) || null,
           imported_from: "constant_contact",
         },
       })
@@ -149,8 +177,10 @@ export async function importConstantContactRows(
           source: "constant_contact_import",
           metadata: row,
         })
-      } else {
+      } else if (consent) {
         stats.subscribed += 1
+      } else {
+        stats.no_consent += 1
       }
 
       await recordCommunicationEvent(db, {
