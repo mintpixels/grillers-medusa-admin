@@ -469,15 +469,23 @@ export async function recordIdentity(
       },
       updated_at: now,
     }
-    if (existing) {
-      await db("gp_identity_map").where("id", existing.id).update(patch)
-    } else {
-      await db("gp_identity_map").insert({
-        id: tableId("gpidmap"),
-        first_seen_at: now,
-        created_at: now,
-        ...patch,
-      })
+    try {
+      if (existing) {
+        await db("gp_identity_map").where("id", existing.id).update(patch)
+      } else {
+        await db("gp_identity_map").insert({
+          id: tableId("gpidmap"),
+          first_seen_at: now,
+          created_at: now,
+          ...patch,
+        })
+      }
+    } catch (err: any) {
+      // Another active row already owns one of these identifiers (e.g.
+      // two carts merging onto one anonymous_id). The identity is already
+      // mapped — a unique violation here is benign, not a failure that
+      // should abort lifecycle maintenance and page ops.
+      if (String(err?.code) !== "23505") throw err
     }
   }
 }
