@@ -534,12 +534,17 @@ async function smsAudienceForSegment(db: KnexLike, segmentKey?: string | null) {
   return { audience, baseOverflow }
 }
 
-function interpolateSmsBody(body: string, profile: Record<string, any>) {
+function interpolateSmsBody(
+  body: string,
+  profile: Record<string, any>,
+  coupon?: string | null
+) {
   // Function replacers: a first_name containing "$&" or "$1" must be
   // inserted literally, not treated as a replacement pattern.
   return body
     .replace(/\{\{\s*first_name\s*\}\}/g, () => profile.first_name || "there")
     .replace(/\{\{\s*email\s*\}\}/g, () => profile.email || "")
+    .replace(/\{\{\s*coupon_code\s*\}\}/g, () => coupon || "")
 }
 
 function abVariantFor(recipientKey: string, campaignId: string): "a" | "b" {
@@ -721,13 +726,40 @@ async function sendSmsCampaign(
     }
   }
 
+  // Same per-recipient coupon behavior as email campaigns.
+  const couponConfig = couponConfigOf(metadata)
+  let couponByRecipient: Record<string, string> = {}
+  if (couponConfig && audience.length && !opts.test_phone) {
+    const priorCodes = (metadata.coupon_codes || {}) as Record<string, string>
+    const keyOf = (p: Record<string, any>) =>
+      normalizeEmail(p.email) || String(p.sms_phone)
+    const missing = audience.filter((p: Record<string, any>) => !priorCodes[keyOf(p)])
+    let fresh: string[] = []
+    if (missing.length) {
+      fresh = await generateCampaignCoupons(container, campaign, couponConfig, missing.length)
+    }
+    couponByRecipient = { ...priorCodes }
+    missing.forEach((p: Record<string, any>, i: number) => {
+      couponByRecipient[keyOf(p)] = fresh[i]
+    })
+    if (missing.length) {
+      await db("gp_campaign").where("id", campaign.id).update({
+        metadata: { ...metadata, coupon_codes: couponByRecipient },
+        updated_at: now(),
+      })
+    }
+  }
+
   let sent = 0
   let skipped = 0
   let failed = 0
   for (const profile of audience) {
+    const recipientCoupon =
+      couponByRecipient[normalizeEmail(profile.email) || String(profile.sms_phone)] ||
+      (opts.test_phone && couponConfig ? `${couponConfig.prefix || "GP"}-TEST1` : null)
     const result = await sendTrackedSms(container, {
       to: profile.sms_phone,
-      body: interpolateSmsBody(body, profile),
+      body: interpolateSmsBody(body, profile, recipientCoupon),
       stream: "broadcast",
       purpose: "broadcast",
       template_key: campaign.template_key || "campaign-sms",
