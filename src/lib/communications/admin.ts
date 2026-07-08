@@ -760,7 +760,6 @@ export async function createOrUpdateSegment(
       key,
       name: input.name,
       description: input.description || null,
-      source: "profile",
       status: "active",
       query_definition: definition,
       metadata: { custom: true, created_by: input.created_by || null },
