@@ -1,10 +1,11 @@
 import crypto from "crypto"
 import type { MedusaContainer } from "@medusajs/framework/types"
-import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { buildSimpleMessageEmail } from "../emails/templates/simple-message"
 import {
   normalizeEmail,
   recordCommunicationEvent,
+  recordSuppression,
   sendTrackedEmail,
   type CommunicationStream,
 } from "./core"
@@ -541,6 +542,109 @@ function interpolateSmsBody(body: string, profile: Record<string, any>) {
     .replace(/\{\{\s*email\s*\}\}/g, () => profile.email || "")
 }
 
+function abVariantFor(recipientKey: string, campaignId: string): "a" | "b" {
+  const hash = crypto.createHash("sha1").update(`${campaignId}:${recipientKey}`).digest()
+  return hash[0] % 2 === 0 ? "a" : "b"
+}
+
+function couponCode(prefix: string): string {
+  const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+  let suffix = ""
+  const bytes = crypto.randomBytes(5)
+  for (let i = 0; i < 5; i += 1) suffix += alphabet[bytes[i] % alphabet.length]
+  return `${prefix}-${suffix}`
+}
+
+type CouponConfig = {
+  kind: "percent" | "fixed"
+  value: number
+  expires_days?: number
+  prefix?: string
+}
+
+function couponConfigOf(metadata: Record<string, any>): CouponConfig | null {
+  const raw = metadata?.coupon
+  if (!raw || typeof raw !== "object") return null
+  const value = Number(raw.value)
+  const kind = raw.kind === "fixed" ? "fixed" : "percent"
+  if (!Number.isFinite(value) || value <= 0) return null
+  if (kind === "percent" && value > 100) return null
+  return {
+    kind,
+    value,
+    expires_days: Number(raw.expires_days) > 0 ? Number(raw.expires_days) : 14,
+    prefix:
+      String(raw.prefix || "GP")
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, "")
+        .slice(0, 10) || "GP",
+  }
+}
+
+/**
+ * Per-recipient unique coupon codes, bulk-created through Medusa's
+ * promotion module (usage_limit 1 each) under one promotion campaign
+ * that carries the expiry. Returns codes aligned to the audience array.
+ */
+async function generateCampaignCoupons(
+  container: MedusaContainer,
+  campaign: Record<string, any>,
+  config: CouponConfig,
+  count: number
+): Promise<string[]> {
+  const promotionModule = container.resolve(Modules.PROMOTION) as any
+  const endsAt = new Date(
+    Date.now() + (config.expires_days || 14) * 24 * 60 * 60 * 1000
+  )
+  const identifier = `gp-comms:${campaign.key || campaign.id}`
+  let promoCampaignId: string | null = null
+  try {
+    const existing = await promotionModule.listCampaigns({
+      campaign_identifier: identifier,
+    })
+    if (existing?.length) {
+      promoCampaignId = existing[0].id
+    } else {
+      const created = await promotionModule.createCampaigns([
+        {
+          name: `GP Comms — ${campaign.name}`.slice(0, 120),
+          campaign_identifier: identifier,
+          ends_at: endsAt,
+        },
+      ])
+      promoCampaignId = created?.[0]?.id || null
+    }
+  } catch {
+    promoCampaignId = null
+  }
+
+  const codes: string[] = []
+  const CHUNK = 200
+  for (let offset = 0; offset < count; offset += CHUNK) {
+    const size = Math.min(CHUNK, count - offset)
+    const chunkCodes = Array.from({ length: size }, () =>
+      couponCode(config.prefix || "GP")
+    )
+    await promotionModule.createPromotions(
+      chunkCodes.map((code) => ({
+        code,
+        type: "standard",
+        status: "active",
+        ...(promoCampaignId ? { campaign_id: promoCampaignId } : {}),
+        application_method: {
+          type: config.kind === "fixed" ? "fixed" : "percentage",
+          target_type: "order",
+          value: config.value,
+          currency_code: "usd",
+          allocation: "across",
+        },
+      }))
+    )
+    codes.push(...chunkCodes)
+  }
+  return codes
+}
+
 async function sendSmsCampaign(
   container: MedusaContainer,
   db: KnexLike,
@@ -827,6 +931,10 @@ export async function createCampaign(
     channel?: string | null
     /** SMS campaigns: the message body ({{first_name}} supported). */
     sms_body?: string | null
+    /** A/B test: variant-B subject line (deterministic 50/50 split). */
+    subject_b?: string | null
+    /** Unique per-recipient coupon: {kind, value, expires_days, prefix}. */
+    coupon?: Record<string, any> | null
   }
 ) {
   const db = dbFrom(container)
@@ -853,6 +961,8 @@ export async function createCampaign(
       created_by: input.created_by || null,
       channel: input.channel === "sms" ? "sms" : "email",
       sms_body: input.sms_body || null,
+      subject_b: input.subject_b || null,
+      coupon: input.coupon || null,
     },
     created_at: now(),
     updated_at: now(),
@@ -991,31 +1101,91 @@ export async function sendCampaign(
       .first()
   }
 
-  const mergeFields = (value: string, profile: Record<string, any>) =>
+  const mergeFields = (
+    value: string,
+    profile: Record<string, any>,
+    coupon?: string | null
+  ) =>
     value
-      .replace(/\{\{\s*first_name\s*\}\}/g, profile.first_name || "there")
-      .replace(/\{\{\s*email\s*\}\}/g, profile.email || "")
+      .replace(/\{\{\s*first_name\s*\}\}/g, () => profile.first_name || "there")
+      .replace(/\{\{\s*email\s*\}\}/g, () => profile.email || "")
+      .replace(/\{\{\s*coupon_code\s*\}\}/g, () => coupon || "")
+
+  // Unique per-recipient coupon codes (usage_limit 1, campaign-level
+  // expiry) — generated up front so a mid-run defer/resume reuses the
+  // same recipient→code mapping via the snapshot below.
+  const couponConfig = couponConfigOf(metadata)
+  let couponByRecipient: Record<string, string> = {}
+  if (couponConfig && audience.length) {
+    const priorCodes = (metadata.coupon_codes || {}) as Record<string, string>
+    const missing = audience.filter(
+      (p: Record<string, any>) => !priorCodes[normalizeEmail(p.email)]
+    )
+    let fresh: string[] = []
+    if (missing.length) {
+      fresh = await generateCampaignCoupons(
+        container,
+        campaign,
+        couponConfig,
+        missing.length
+      )
+    }
+    couponByRecipient = { ...priorCodes }
+    missing.forEach((p: Record<string, any>, i: number) => {
+      couponByRecipient[normalizeEmail(p.email)] = fresh[i]
+    })
+    if (missing.length && !opts.test_email) {
+      await db("gp_campaign").where("id", campaign.id).update({
+        metadata: { ...metadata, coupon_codes: couponByRecipient },
+        updated_at: now(),
+      })
+    }
+  }
+
+  // A/B subject split: deterministic per recipient, recorded on the
+  // message (experiment_context) so opens/clicks report by variant.
+  const subjectB = String(metadata.subject_b || "").trim()
+  const abActive = Boolean(subjectB)
 
   let sent = 0
   let skipped = 0
   let failed = 0
+  let sentA = 0
+  let sentB = 0
   for (const profile of audience) {
+    const recipientCoupon =
+      couponByRecipient[normalizeEmail(profile.email)] || null
+    const variant: "a" | "b" = abActive
+      ? abVariantFor(profile.id || normalizeEmail(profile.email), campaign.id)
+      : "a"
+    const effectiveSubject =
+      variant === "b" && subjectB ? subjectB : campaign.subject
     const email = canvasTemplate
       ? {
-          subject: mergeFields(campaign.subject, profile),
-          html: mergeFields(String(canvasTemplate.html_body), profile),
+          subject: mergeFields(effectiveSubject, profile, recipientCoupon),
+          html: mergeFields(
+            String(canvasTemplate.html_body),
+            profile,
+            recipientCoupon
+          ),
           text:
-            mergeFields(String(canvasTemplate.text_body || ""), profile) ||
-            `${campaign.subject}\n\nView this email in a browser that supports HTML.`,
+            mergeFields(
+              String(canvasTemplate.text_body || ""),
+              profile,
+              recipientCoupon
+            ) ||
+            `${effectiveSubject}\n\nView this email in a browser that supports HTML.`,
         }
       : buildSimpleMessageEmail({
-          subject: campaign.subject,
+          subject: mergeFields(effectiveSubject, profile, recipientCoupon),
           eyebrow: "Griller's Pride",
-          heading: campaign.subject,
-          intro: metadata.intro || undefined,
+          heading: mergeFields(effectiveSubject, profile, recipientCoupon),
+          intro: metadata.intro
+            ? mergeFields(String(metadata.intro), profile, recipientCoupon)
+            : undefined,
           paragraphs: String(metadata.body || "")
             .split(/\n{2,}/)
-            .map((part) => part.trim())
+            .map((part) => mergeFields(part.trim(), profile, recipientCoupon))
             .filter(Boolean),
           ctaLabel: metadata.cta_label || "Shop now",
           ctaUrl: metadata.cta_url || "/us/store",
@@ -1041,6 +1211,19 @@ export async function sendCampaign(
       template_model: {
         first_name: profile.first_name || "",
         email: profile.email,
+        ...(recipientCoupon ? { coupon_code: recipientCoupon } : {}),
+      },
+      metadata: {
+        ...(abActive
+          ? {
+              experiment_context: {
+                experiment: `campaign:${campaign.key || campaign.id}`,
+                variant,
+              },
+              ab_variant: variant,
+            }
+          : {}),
+        ...(recipientCoupon ? { coupon_code: recipientCoupon } : {}),
       },
     })
     if (result.deferred) {
@@ -1067,8 +1250,13 @@ export async function sendCampaign(
       }
     }
     if (result.ok && result.skipped) skipped += 1
-    else if (result.ok) sent += 1
-    else failed += 1
+    else if (result.ok) {
+      sent += 1
+      if (abActive) {
+        if (variant === "a") sentA += 1
+        else sentB += 1
+      }
+    } else failed += 1
   }
 
   if (!opts.test_email) {
@@ -1078,7 +1266,12 @@ export async function sendCampaign(
       approved_by: opts.approved_by || campaign.approved_by,
       approved_at: campaign.approved_at || now(),
       audience_snapshot: snapshot,
-      metrics: { sent, skipped, failed },
+      metrics: {
+        sent,
+        skipped,
+        failed,
+        ...(abActive ? { sent_a: sentA, sent_b: sentB } : {}),
+      },
       updated_at: now(),
     })
   }
@@ -1150,8 +1343,87 @@ export async function runCommunicationMaintenance(container: MedusaContainer) {
   // "6 weeks before seder" fire sees today's membership.
   const calendarEnrollment = await enrollCalendarAnchoredFlows(db)
   const campaigns = await sendDueScheduledCampaigns(container)
+  const sunset = await sunsetInactiveProfiles(db)
   const result = await runDueFlowEnrollments(container, 100)
-  return { ...result, segments, carts, campaigns, calendarEnrollment }
+  return { ...result, segments, carts, campaigns, calendarEnrollment, sunset }
+}
+
+/**
+ * Sunset policy: a consented profile that received >= COMMS_SUNSET_MIN_SENDS
+ * marketing emails over COMMS_SUNSET_DAYS with zero opens, zero clicks,
+ * and zero orders gets a marketing suppression (reason sunset_policy).
+ * Chronic non-openers poison deliverability for everyone else; the
+ * suppression is reversible (resubscribe clears it) and consent itself
+ * is left untouched. Capped per run so one pass never mass-suppresses.
+ */
+export async function sunsetInactiveProfiles(db: KnexLike) {
+  if (process.env.COMMS_SUNSET_ENABLED === "false") {
+    return { suppressed: 0, enabled: false }
+  }
+  const days = Math.max(30, Number(process.env.COMMS_SUNSET_DAYS || 180))
+  const minSends = Math.max(3, Number(process.env.COMMS_SUNSET_MIN_SENDS || 8))
+  const cap = Math.max(1, Number(process.env.COMMS_SUNSET_CAP_PER_RUN || 200))
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+
+  const result = await db.raw(
+    `
+    select p.id, p.email, p.email_lower
+    from gp_customer_profile p
+    where p.deleted_at is null
+      and p.email_consent = true
+      and (
+        select count(*) from gp_message_log m
+        where m.deleted_at is null
+          and m.email_lower = p.email_lower
+          and (m.message_stream in ('broadcast','lifecycle')
+               or m.message_purpose in ('broadcast','marketing_1to1'))
+          and m.status in ('sent','delivered')
+          and m.created_at >= :since
+      ) >= :minSends
+      and not exists (
+        select 1 from gp_message_log m2
+        where m2.deleted_at is null
+          and m2.email_lower = p.email_lower
+          and (m2.opened_at >= :since or m2.clicked_at >= :since)
+      )
+      and not exists (
+        select 1 from gp_communication_event ev
+        where ev.deleted_at is null
+          and ev.profile_id = p.id
+          and ev.event_name = 'order_completed'
+          and ev.occurred_at >= :since
+      )
+      and not exists (
+        select 1 from gp_suppression_preference sp
+        where sp.deleted_at is null
+          and sp.email_lower = p.email_lower
+          and sp.resubscribed_at is null
+      )
+    limit :cap
+    `,
+    { since, minSends, cap }
+  )
+  const candidates: Array<Record<string, any>> = result?.rows || []
+
+  let suppressed = 0
+  for (const candidate of candidates) {
+    await recordSuppression(db, {
+      email: candidate.email,
+      scope: "marketing",
+      reason: "sunset_policy",
+      source: "sunset_policy",
+      metadata: { days, min_sends: minSends },
+    })
+    await recordCommunicationEvent(db, {
+      event_name: "profile_sunset",
+      profile_id: candidate.id,
+      email: candidate.email,
+      source: "sunset_policy",
+      properties: { days, min_sends: minSends },
+    })
+    suppressed += 1
+  }
+  return { suppressed, enabled: true, window_days: days, min_sends: minSends }
 }
 
 export async function communicationReports(container: MedusaContainer, days = 30) {

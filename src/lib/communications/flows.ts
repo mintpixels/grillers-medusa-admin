@@ -432,6 +432,35 @@ const PREBUILT_FLOWS: Array<{
     ],
   },
   {
+    key: "browse_abandon",
+    name: "Browse Abandonment",
+    description:
+      "Someone views products but doesn't start a cart — one gentle nudge a few hours later. Never more than one active per person, one-week cooldown.",
+    trigger_event: "product_viewed",
+    message_stream: "lifecycle",
+    trigger_conditions: { single_active: true, cooldown_days: 7 },
+    steps: [
+      { type: "delay", minutes: 240 },
+      { type: "exit_if_event", event_name: "cart_updated" },
+      { type: "exit_if_event", event_name: "checkout_started" },
+      { type: "exit_if_event", event_name: "order_completed" },
+      {
+        type: "email",
+        template_key: "browse-abandon-1",
+        subject: "Still eyeing the counter?",
+        heading: "Pick up where you left off",
+        intro: "The cuts you were looking at are still at the counter.",
+        paragraphs: [
+          "Orders placed before the weekly cutoff ship on ice this week.",
+          "If you were comparing cuts, reply to this email — a butcher will answer.",
+        ],
+        ctaLabel: "Back to the counter",
+        ctaUrl: "/us/store",
+        topic: "promotions",
+      },
+    ],
+  },
+  {
     key: "holiday_reminder",
     name: "Holiday and Shabbos Reminder",
     description: "Segment-safe reminder for seasonal planning and delivery timing.",
@@ -525,6 +554,9 @@ export async function seedCommunicationDefaults(db: KnexLike) {
       updated_at: now(),
     }
     if (existing) {
+      // Console-edited flows are owned by the operator from then on —
+      // the code seed must never clobber their copy, timing, or status.
+      if ((existing.metadata || {}).console_edited) continue
       await db("gp_communication_flow").where("id", existing.id).update(payload)
     } else {
       await db("gp_communication_flow").insert({
@@ -571,6 +603,32 @@ async function enrollProfileInFlow(
     .first()
   if (existing) return false
 
+  // Flow-level enrollment guards (trigger_conditions):
+  //   single_active — never enroll while an active enrollment exists
+  //     (browse-abandonment would otherwise enroll once per pageview)
+  //   cooldown_days — no re-enrollment within N days of the last one
+  const conditions = (flow.trigger_conditions || {}) as Record<string, any>
+  if (conditions.single_active) {
+    const active = await db("gp_flow_enrollment")
+      .whereNull("deleted_at")
+      .where("flow_key", flow.key)
+      .where("profile_id", profileId)
+      .where("status", "active")
+      .first()
+    if (active) return false
+  }
+  const cooldownDays = Number(conditions.cooldown_days || 0)
+  if (cooldownDays > 0) {
+    const since = new Date(Date.now() - cooldownDays * 24 * 60 * 60 * 1000)
+    const recent = await db("gp_flow_enrollment")
+      .whereNull("deleted_at")
+      .where("flow_key", flow.key)
+      .where("profile_id", profileId)
+      .where("enrolled_at", ">=", since)
+      .first()
+    if (recent) return false
+  }
+
   const holdout = isHoldout(profileId, flow)
   await db("gp_flow_enrollment").insert({
     id: id("gpenroll"),
@@ -596,6 +654,104 @@ async function enrollProfileInFlow(
     })
   }
   return true
+}
+
+const FLOW_STEP_VALIDATORS: Record<string, (step: Record<string, any>) => string | null> = {
+  delay: (step) => {
+    const minutes = Number(step.minutes || 0) + Number(step.days || 0) * 24 * 60
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      return "delay steps need minutes or days greater than zero"
+    }
+    return null
+  },
+  email: (step) => {
+    if (!String(step.template_key || "").trim()) return "email steps need a template_key"
+    if (!String(step.subject || "").trim()) return "email steps need a subject"
+    if (!String(step.heading || step.intro || (step.paragraphs || []).join("") || "").trim()) {
+      return "email steps need a heading, intro, or paragraphs"
+    }
+    return null
+  },
+  sms: (step) => {
+    if (!String(step.template_key || "").trim()) return "sms steps need a template_key"
+    if (!String(step.body || "").trim()) return "sms steps need a body"
+    return null
+  },
+  exit_if_event: (step) => {
+    if (!String(step.event_name || "").trim()) return "exit_if_event steps need an event_name"
+    return null
+  },
+}
+
+export function validateFlowSteps(steps: unknown): string | null {
+  if (!Array.isArray(steps) || !steps.length) return "a flow needs at least one step"
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i] as Record<string, any>
+    const validator = FLOW_STEP_VALIDATORS[String(step?.type || "")]
+    if (!validator) {
+      return `step ${i + 1}: unknown type "${step?.type}" (use email, sms, delay, or exit_if_event)`
+    }
+    const problem = validator(step)
+    if (problem) return `step ${i + 1}: ${problem}`
+  }
+  return null
+}
+
+/**
+ * Console flow editing. Whitelisted fields only; steps are validated
+ * against the runner's shapes; the flow is marked console_edited so the
+ * code seeder never overwrites the operator's copy again.
+ */
+export async function updateCommunicationFlow(
+  container: MedusaContainer,
+  key: string,
+  patch: {
+    name?: string
+    description?: string | null
+    status?: string
+    steps?: unknown
+    trigger_conditions?: Record<string, any> | null
+    edited_by?: string | null
+  }
+) {
+  const db = container.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+  const flow = await db("gp_communication_flow")
+    .whereNull("deleted_at")
+    .where("key", key)
+    .first()
+  if (!flow) throw new Error(`Flow "${key}" not found.`)
+
+  const update: Record<string, any> = { updated_at: now() }
+  if (patch.name !== undefined) {
+    if (!String(patch.name).trim()) throw new Error("Flow name cannot be empty.")
+    update.name = String(patch.name).trim()
+  }
+  if (patch.description !== undefined) {
+    update.description = patch.description ? String(patch.description) : null
+  }
+  if (patch.status !== undefined) {
+    if (!["active", "paused"].includes(String(patch.status))) {
+      throw new Error('Status must be "active" or "paused".')
+    }
+    update.status = patch.status
+  }
+  if (patch.steps !== undefined) {
+    const problem = validateFlowSteps(patch.steps)
+    if (problem) throw new Error(problem)
+    update.steps = jsonb(patch.steps as any)
+  }
+  if (patch.trigger_conditions !== undefined) {
+    update.trigger_conditions = jsonb(patch.trigger_conditions || {})
+  }
+  update.metadata = jsonb({
+    ...(flow.metadata || {}),
+    console_edited: true,
+    edited_by: patch.edited_by || null,
+    edited_at: new Date().toISOString(),
+  })
+
+  await db("gp_communication_flow").where("id", flow.id).update(update)
+  return db("gp_communication_flow").whereNull("deleted_at").where("key", key).first()
 }
 
 export async function evaluateFlowsForEvent(

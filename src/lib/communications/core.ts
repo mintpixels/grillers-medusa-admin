@@ -6,6 +6,7 @@ import {
 } from "@medusajs/framework/utils"
 import { emitOpsAlert } from "../ops-alert"
 import { isInSendBlackout } from "./hebrew-calendar"
+import { instrumentEmailHtml } from "./links"
 
 type KnexLike = any
 
@@ -127,6 +128,34 @@ export function normalizeEmail(value: unknown): string {
 
 export function newPreferenceToken(): string {
   return crypto.randomBytes(24).toString("base64url")
+}
+
+const STOREFRONT_BASE =
+  process.env.STOREFRONT_BASE_URL || "https://grillers-medusa-frontend.vercel.app"
+
+/**
+ * Tokenized preference-center URL for a profile. The token is minted
+ * lazily and stored on profile metadata; the storefront page + public
+ * backend routes resolve it without a login.
+ */
+export async function preferenceUrlForProfile(
+  db: KnexLike,
+  profile: Record<string, any> | null
+): Promise<string | null> {
+  if (!profile?.id) return null
+  const metadata = jsonObject(profile.metadata)
+  let token = String(metadata.preference_token || "")
+  if (!token) {
+    token = newPreferenceToken()
+    await db("gp_customer_profile")
+      .where("id", profile.id)
+      .update({
+        metadata: { ...metadata, preference_token: token },
+        updated_at: new Date(),
+      })
+    profile.metadata = { ...metadata, preference_token: token }
+  }
+  return `${STOREFRONT_BASE}/us/preferences/${token}`
 }
 
 function asDate(value?: Date | string): Date {
@@ -955,6 +984,37 @@ export async function sendTrackedEmail(
     updated_at: now,
   }
 
+  // Marketing links: UTM + signed click-tracking redirect (skips
+  // transactional receipts). The instrumented html is what actually
+  // sends; original destinations persist on the message row so the
+  // /l/ redirect route can resolve index → URL.
+  let outgoingHtml = input.html
+  if (input.stream === "broadcast" || input.stream === "lifecycle") {
+    const preferenceUrl = await preferenceUrlForProfile(db, profile)
+    if (preferenceUrl) {
+      outgoingHtml = outgoingHtml.replace(/\{\{\s*preference_url\s*\}\}/g, () => preferenceUrl)
+      ;(messageRow.template_model as Record<string, any>).preference_url = preferenceUrl
+    }
+    const instrumented = instrumentEmailHtml(outgoingHtml, {
+      messageId: messageRow.id,
+      backendBaseUrl:
+        process.env.PUBLIC_BACKEND_URL ||
+        "https://grillers-medusa-admin-production.up.railway.app",
+      utm: {
+        campaign: input.campaign_id || input.flow_key || undefined,
+        content: input.template_key,
+        medium: "email",
+      },
+    })
+    outgoingHtml = instrumented.html
+    if (instrumented.links.length) {
+      ;(messageRow as Record<string, any>).metadata = {
+        ...(messageRow.metadata as Record<string, any>),
+        links: instrumented.links,
+      }
+    }
+  }
+
   if (existing) {
     await db("gp_message_log")
       .where("id", existing.id)
@@ -984,7 +1044,7 @@ export async function sendTrackedEmail(
       template: input.template_key,
       content: {
         subject: input.subject,
-        html: input.html,
+        html: outgoingHtml,
         text: input.text,
       },
       data: {

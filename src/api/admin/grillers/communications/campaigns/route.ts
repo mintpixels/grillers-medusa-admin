@@ -51,6 +51,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       created_by: actor,
       channel: body.channel,
       sms_body: body.sms_body,
+      subject_b: body.subject_b,
+      coupon: body.coupon,
     })
     res.status(201).json({ campaign })
   } catch (error) {
