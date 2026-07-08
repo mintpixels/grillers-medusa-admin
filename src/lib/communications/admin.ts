@@ -501,24 +501,44 @@ async function audienceForSegment(db: KnexLike, segmentKey?: string | null) {
  * gated on sms_consent and a usable phone (the number captured at opt-in
  * wins; the profile phone is the fallback).
  */
+function preferencesObject(value: unknown): Record<string, any> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, any>
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === "object" ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+  return {}
+}
+
 async function smsAudienceForSegment(db: KnexLike, segmentKey?: string | null) {
-  const audience = await audienceForSegment(db, segmentKey)
-  return audience
+  const base = await audienceForSegment(db, segmentKey)
+  // If the BASE fetch hit its overfetch ceiling, the SMS subset is an
+  // arbitrary truncation of the real audience — the caller must fail
+  // closed rather than silently text a partial list.
+  const baseOverflow = base.length > audienceLimit()
+  const audience = base
     .filter((p: Record<string, any>) => p.sms_consent && p.sms_consent_at)
     .map((p: Record<string, any>) => ({
       ...p,
       sms_phone:
-        (p.preferences && (p.preferences as any).sms_consent_phone) ||
-        p.phone ||
-        null,
+        preferencesObject(p.preferences).sms_consent_phone || p.phone || null,
     }))
     .filter((p: Record<string, any>) => Boolean(p.sms_phone))
+  return { audience, baseOverflow }
 }
 
 function interpolateSmsBody(body: string, profile: Record<string, any>) {
+  // Function replacers: a first_name containing "$&" or "$1" must be
+  // inserted literally, not treated as a replacement pattern.
   return body
-    .replace(/\{\{\s*first_name\s*\}\}/g, profile.first_name || "there")
-    .replace(/\{\{\s*email\s*\}\}/g, profile.email || "")
+    .replace(/\{\{\s*first_name\s*\}\}/g, () => profile.first_name || "there")
+    .replace(/\{\{\s*email\s*\}\}/g, () => profile.email || "")
 }
 
 async function sendSmsCampaign(
@@ -553,18 +573,17 @@ async function sendSmsCampaign(
     }
   }
 
-  const audience = opts.test_phone
-    ? [
-        {
-          id: null,
-          sms_phone: opts.test_phone,
-          first_name: "",
-          email: null,
-        },
-      ]
+  const resolved = opts.test_phone
+    ? {
+        audience: [
+          { id: null, sms_phone: opts.test_phone, first_name: "", email: null },
+        ],
+        baseOverflow: false,
+      }
     : await smsAudienceForSegment(db, campaign.segment_key)
+  const audience = resolved.audience
 
-  if (audience.length > audienceLimit()) {
+  if (resolved.baseOverflow || audience.length > audienceLimit()) {
     await recordCommunicationEvent(db, {
       event_name: "campaign_audience_over_limit",
       campaign_id: campaign.id,
@@ -716,6 +735,13 @@ export async function createOrUpdateSegment(
     .where("key", key)
     .first()
 
+  if (existing && !(existing.metadata || {}).custom) {
+    // Seeded GP-library segments are code-managed; a console segment whose
+    // name slugifies to the same key must not silently overwrite one.
+    throw new Error(
+      `"${input.name}" collides with the built-in segment "${existing.name}" — pick a different name.`
+    )
+  }
   if (existing) {
     await db("gp_segment").where("id", existing.id).update({
       name: input.name,
@@ -794,7 +820,6 @@ export async function createCampaign(
     cta_label?: string | null
     cta_url?: string | null
     scheduled_at?: string | null
-    approved_by?: string | null
     /** A gp_email_template key (canvas-designed) to send instead of the simple builder. */
     template_key?: string | null
     /** Audit: who created the campaign (NOT an approval). */
@@ -818,7 +843,9 @@ export async function createCampaign(
       scheduledAt && !Number.isNaN(scheduledAt.getTime()) ? "scheduled" : "draft",
     scheduled_at:
       scheduledAt && !Number.isNaN(scheduledAt.getTime()) ? scheduledAt : null,
-    approved_by: input.approved_by || null,
+    // Approval is ONLY ever written by the Slack approve flow — a client-
+    // supplied value here would pre-satisfy the >500 two-person gate.
+    approved_by: null,
     metadata: {
       intro: input.intro || "",
       body: input.body || "",

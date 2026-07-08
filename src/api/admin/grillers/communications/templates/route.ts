@@ -1,4 +1,5 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import {
   communicationTemplates,
   saveCanvasTemplate,
@@ -7,6 +8,22 @@ import { respondAdminCommunicationsRouteFailure } from "../_shared/alerts"
 
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   try {
+    // ?key= returns ONE full template row (mjml_source included) so the
+    // canvas can load an existing design for editing.
+    const key = String((req.query as any)?.key || "").trim()
+    if (key) {
+      const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
+      const template = await db("gp_email_template")
+        .whereNull("deleted_at")
+        .where("key", key)
+        .first()
+      if (!template) {
+        res.status(404).json({ error: "template_not_found" })
+        return
+      }
+      res.status(200).json({ template })
+      return
+    }
     res.status(200).json(await communicationTemplates(req.scope))
   } catch (error) {
     await respondAdminCommunicationsRouteFailure({

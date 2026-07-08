@@ -280,7 +280,17 @@ export async function sendTrackedSms(
   if (existing) {
     await db("gp_message_log").where("id", existing.id).update({ ...row, id: undefined, created_at: undefined })
   } else {
-    await db("gp_message_log").insert(row)
+    try {
+      await db("gp_message_log").insert(row)
+    } catch (err: any) {
+      // Unique violation on idempotency_key: a concurrent duplicate fire
+      // (double-clicked approve, at-least-once queue delivery) already
+      // claimed this send. Treat as skipped — the winner texts once.
+      if (String(err?.code) === "23505") {
+        return { ok: true, skipped: true }
+      }
+      throw err
+    }
   }
 
   try {

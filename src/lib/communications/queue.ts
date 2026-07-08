@@ -14,13 +14,27 @@ function redisUrl() {
   return process.env.REDIS_URL || process.env.COMMUNICATIONS_REDIS_URL || ""
 }
 
+// ONE shared connection + ONE Queue per name for the process lifetime.
+// The previous per-call `new IORedis`/`new Queue` leaked a socket on every
+// enqueue and every health check — a 33k-event import exhausted the
+// container's ephemeral ports (EADDRNOTAVAIL) and degraded the whole API.
+let sharedConnection: IORedis | null = null
+const queueCache = new Map<string, Queue>()
+
 function redisConnection() {
   const url = redisUrl()
   if (!url) return null
-  return new IORedis(url, {
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
-  })
+  if (!sharedConnection) {
+    sharedConnection = new IORedis(url, {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+    })
+    sharedConnection.on("error", () => {
+      // ioredis retries internally; without a listener every hiccup
+      // becomes an unhandled error event.
+    })
+  }
+  return sharedConnection
 }
 
 export function queuesConfigured() {
@@ -30,7 +44,9 @@ export function queuesConfigured() {
 function queue(name: string) {
   const connection = redisConnection()
   if (!connection) return null
-  return new Queue(`${QUEUE_PREFIX}-${name}`, {
+  const cached = queueCache.get(name)
+  if (cached) return cached
+  const created = new Queue(`${QUEUE_PREFIX}-${name}`, {
     connection: connection as any,
     defaultJobOptions: {
       attempts: 5,
@@ -39,6 +55,8 @@ function queue(name: string) {
       removeOnFail: 5000,
     },
   })
+  queueCache.set(name, created)
+  return created
 }
 
 function redactedErrorMessage(error: unknown): string {
@@ -145,7 +163,6 @@ export async function enqueueCommunicationEvent(
       jobId: event.event_id,
     })
     await delivery(db, event, "delivered", { queue: eventQueue.name })
-    await eventQueue.close()
     return true
   } catch (err) {
     await delivery(
@@ -155,7 +172,6 @@ export async function enqueueCommunicationEvent(
       {},
       err instanceof Error ? err.message : String(err)
     )
-    await eventQueue.close().catch(() => undefined)
     return false
   }
 }
@@ -167,7 +183,6 @@ export async function enqueueFlowRun(input: Record<string, any> = {}) {
     jobId: input.job_id || `flow-run:${Date.now()}`,
     delay: Number(input.delay_ms || 0),
   })
-  await flowQueue.close()
   return true
 }
 
@@ -192,7 +207,6 @@ export async function enqueueCampaignSend(
       delay: Number(input.delay_ms || 0),
     }
   )
-  await campaignQueue.close()
   return true
 }
 
@@ -316,7 +330,6 @@ export async function communicationQueueHealth() {
     if (!q) continue
     const counts = await q.getJobCounts("waiting", "delayed", "active", "failed")
     rows.push({ name: q.name, counts })
-    await q.close()
   }
   return { configured: true, queues: rows }
 }

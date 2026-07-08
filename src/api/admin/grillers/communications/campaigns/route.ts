@@ -46,11 +46,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       cta_url: body.cta_url,
       scheduled_at: body.scheduled_at,
       template_key: body.template_key,
-      // The creator is NOT an approver: passing the actor as approved_by
-      // would pre-approve every campaign and silently bypass the >500
-      // two-person Slack gate. Creator identity rides in created_by.
-      approved_by: null,
+      // The creator is NOT an approver — createCampaign hard-codes
+      // approved_by: null; only the Slack approve flow can set it.
       created_by: actor,
+      channel: body.channel,
+      sms_body: body.sms_body,
     })
     res.status(201).json({ campaign })
   } catch (error) {
