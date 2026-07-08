@@ -212,13 +212,13 @@ export async function enqueueCampaignSend(
 
 async function processEventJob(container: MedusaContainer, job: Job) {
   const event = job.data || {}
-  const { evaluateFlowsForEvent } = await import("./flows.js")
+  const { evaluateFlowsForEvent, isFlowTriggerableEvent } = await import("./flows.js")
   const { syncCartLifecycleFromEvent } = await import("./cart-lifecycle.js")
   const { attributeOrderFromEvent } = await import("./attribution.js")
   const db = container.resolve(ContainerRegistrationKeys.PG_CONNECTION)
   await syncCartLifecycleFromEvent(db, event)
   await attributeOrderFromEvent(db, event)
-  if (!String(event.event_name || "").startsWith("email_")) {
+  if (isFlowTriggerableEvent(event.event_name)) {
     await evaluateFlowsForEvent(db, event)
   }
 }

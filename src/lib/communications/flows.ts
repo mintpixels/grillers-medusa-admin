@@ -754,11 +754,38 @@ export async function updateCommunicationFlow(
   return db("gp_communication_flow").whereNull("deleted_at").where("key", key).first()
 }
 
+/**
+ * Message-delivery telemetry must never trigger flows (an email_sent
+ * event re-triggering a flow would loop forever). Business events that
+ * happen to start with email_ (email_signup!) are NOT telemetry — hence
+ * an explicit denylist instead of the old startsWith("email_") guard,
+ * which silently made the Welcome Series untriggerable.
+ */
+export const FLOW_TRIGGER_DENYLIST = new Set([
+  "email_sent",
+  "email_delivered",
+  "email_suppressed",
+  "email_deferred_blackout",
+  "email_opened",
+  "email_clicked",
+  "email_bounced",
+  "email_complained",
+  "email_failed",
+  "sms_sent",
+  "sms_suppressed",
+  "sms_deferred_blackout",
+  "sms_failed",
+])
+
+export function isFlowTriggerableEvent(eventName: unknown): boolean {
+  return !FLOW_TRIGGER_DENYLIST.has(String(eventName || ""))
+}
+
 export async function evaluateFlowsForEvent(
   db: KnexLike,
   event: Record<string, any>
 ) {
-  if (!event.profile_id || String(event.event_name).startsWith("email_")) {
+  if (!event.profile_id || !isFlowTriggerableEvent(event.event_name)) {
     return
   }
   await seedCommunicationDefaults(db)

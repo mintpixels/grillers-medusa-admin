@@ -619,8 +619,10 @@ export async function recordCommunicationEvent(
       const { attributeOrderFromEvent } = await import("./attribution.js")
       await syncCartLifecycleFromEvent(db, row)
       await attributeOrderFromEvent(db, row)
-      if (!String(row.event_name || "").startsWith("email_")) {
-        const { evaluateFlowsForEvent } = await import("./flows.js")
+      const { evaluateFlowsForEvent, isFlowTriggerableEvent } = await import(
+        "./flows.js"
+      )
+      if (isFlowTriggerableEvent(row.event_name)) {
         await evaluateFlowsForEvent(db, row)
       }
     }
