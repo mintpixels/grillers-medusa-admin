@@ -25,6 +25,7 @@ import {
   ensureFinalizationForOrder,
   ensurePaymentSetup,
   metadataObject,
+  withoutCardPaymentMetadata,
 } from "../../../../../lib/catch-weight-finalization";
 import {
   checkInventoryAvailability,
@@ -508,6 +509,8 @@ async function placeInvoiceOrder(
     gp_payment_method: "invoice",
     gp_payment_terms: paymentTerms,
     gp_credit_limit: customerMeta.gp_credit_limit ?? null,
+    payment_setup_status: "not_applicable_invoice",
+    final_charge_status: "not_applicable_invoice",
     fulfillment_gate_status: "open_invoice",
   };
 
@@ -548,7 +551,11 @@ async function placeInvoiceOrder(
   }
 
   const checkoutMetadata = appendStaffAudit(
-    { ...existingMetadata, ...invoiceFields, ...creditMeta },
+    {
+      ...withoutCardPaymentMetadata(existingMetadata),
+      ...invoiceFields,
+      ...creditMeta,
+    },
     {
       action: "checkout_pay_by_invoice",
       status: "order_ready_invoice",
@@ -626,7 +633,7 @@ async function placeInvoiceOrder(
   // creditMeta was computed pre-completion and is already on the order via the cart copy; we
   // re-stamp it here idempotently alongside the finalization fields.
   const metadata = {
-    ...metadataObject(order.metadata),
+    ...withoutCardPaymentMetadata(order.metadata),
     ...invoiceFields,
     ...creditMeta,
     catch_weight_status: "pending_pack",

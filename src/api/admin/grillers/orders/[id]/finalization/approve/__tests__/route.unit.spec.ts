@@ -2,13 +2,20 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { emitOpsAlert } from "../../../../../../../../lib/ops-alert"
 
 const mockApproveFinalization = jest.fn()
+const mockInvoiceArOrderMetadata = jest.fn((_input: any) => ({
+  payment_workflow: "invoice_ar",
+  catch_weight_final_lines: [{ line_item_id: "ordli_1" }],
+  catch_weight_packages: [{ shipper_qbd_list_id: "SHIPPER-LIST-ID" }],
+}))
+const mockIsInvoiceOrder = jest.fn((_order: any) => false)
 
 jest.mock("../../../../../../../../lib/catch-weight-finalization", () => ({
   CATCH_WEIGHT_ORDER_FIELDS: ["id", "metadata"],
+  FINALIZATION_PACKED_PENDING_CHARGE: "packed_pending_charge",
   appendStaffAudit: jest.fn((metadata) => metadata),
   approveFinalization: (...args: any[]) => mockApproveFinalization(...args),
-  invoiceArOrderMetadata: jest.fn(() => ({})),
-  isInvoiceOrder: jest.fn(() => false),
+  invoiceArOrderMetadata: (input: any) => mockInvoiceArOrderMetadata(input),
+  isInvoiceOrder: (order: any) => mockIsInvoiceOrder(order),
   metadataObject: jest.fn((metadata) => metadata || {}),
 }))
 
@@ -38,22 +45,91 @@ function makeScope() {
   const orderModule = {
     updateOrders: jest.fn(async () => undefined),
   }
+  const eventBus = { emit: jest.fn(async () => undefined) }
   const scope = {
     resolve: (key: string) => {
       if (key === ContainerRegistrationKeys.QUERY) return query
       if (key === ContainerRegistrationKeys.LOGGER) return logger
       if (key === ContainerRegistrationKeys.PG_CONNECTION) return db
       if (key === Modules.ORDER) return orderModule
+      if (key === Modules.EVENT_BUS) return eventBus
       throw new Error(`Unknown dependency ${key}`)
     },
   }
 
-  return { db, logger, orderModule, query, scope }
+  return { db, eventBus, logger, orderModule, query, scope }
 }
 
-describe("approve finalization route alerts", () => {
+describe("approve finalization route", () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    mockIsInvoiceOrder.mockReturnValue(false)
+  })
+
+  it("passes finalized lines and shipper packages into the A/R envelope without starting a charge", async () => {
+    mockIsInvoiceOrder.mockReturnValue(true)
+    mockApproveFinalization.mockResolvedValueOnce({
+      finalization: {
+        id: "fin_123",
+        status: "released_to_fulfillment",
+        final_order_total: 143.42,
+      },
+      totals: { final_order_total: 143.42, delta_total: 13.42 },
+      lines: [
+        {
+          line_item_id: "ordli_1",
+          actual_weight_total: 4.12,
+          final_line_subtotal: 61.76,
+        },
+      ],
+      packages: [
+        {
+          package_type: "Polystyrene Container 24x17x13",
+          shipper_qbd_list_id: "SHIPPER-LIST-ID",
+        },
+      ],
+    })
+    const { eventBus, orderModule, scope } = makeScope()
+    const req = {
+      auth_context: { actor_id: "user_123" },
+      body: { staff_actor_customer_id: "cust_staff" },
+      params: { id: "order_123" },
+      scope,
+    } as any
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(mockInvoiceArOrderMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({
+        order: expect.objectContaining({ id: "order_123" }),
+        finalization: expect.objectContaining({ id: "fin_123" }),
+        lines: [
+          expect.objectContaining({
+            line_item_id: "ordli_1",
+            actual_weight_total: 4.12,
+            final_line_subtotal: 61.76,
+          }),
+        ],
+        packages: [
+          expect.objectContaining({
+            shipper_qbd_list_id: "SHIPPER-LIST-ID",
+          }),
+        ],
+      })
+    )
+    expect(orderModule.updateOrders).toHaveBeenCalledWith("order_123", {
+      metadata: expect.objectContaining({
+        payment_workflow: "invoice_ar",
+        catch_weight_final_lines: [{ line_item_id: "ordli_1" }],
+        catch_weight_packages: [
+          { shipper_qbd_list_id: "SHIPPER-LIST-ID" },
+        ],
+      }),
+    })
+    // Invoice approval releases to A/R. It never emits the card auto-charge event.
+    expect(eventBus.emit).not.toHaveBeenCalled()
+    expect(res.status).toHaveBeenCalledWith(200)
   })
 
   it("alerts when approval fails after the order is loaded", async () => {

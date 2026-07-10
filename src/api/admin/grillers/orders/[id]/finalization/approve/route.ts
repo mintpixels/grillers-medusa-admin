@@ -44,6 +44,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       ? invoiceArOrderMetadata({
           order,
           finalization: approved.finalization,
+          lines: approved.lines,
+          packages: approved.packages,
           actorId: staffAuditActorId(staffAudit),
           staffAudit,
         })

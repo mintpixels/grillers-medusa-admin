@@ -2591,6 +2591,134 @@ export async function recordFinalChargeAttempt(
   return row
 }
 
+const normalizedInstructionText = (value: unknown): string | null => {
+  if (typeof value !== "string") return null
+  const text = value.replace(/\s+/g, " ").trim()
+  return text || null
+}
+
+/**
+ * Canonical customer-entered order instruction carried into finalized accounting payloads.
+ *
+ * `orderNotes` is the current storefront/cart field. The remaining names are legacy aliases
+ * already understood by the QuickBooks writers. Keeping one normalized key on the finalized
+ * order prevents the final invoice from losing the note when its posting payload is rebuilt.
+ */
+export function customerOrderInstructions(
+  order: Record<string, any>
+): string | null {
+  const metadata = metadataObject(order?.metadata)
+  const candidates = [
+    metadata.order_instructions,
+    metadata.orderNotes,
+    metadata.order_notes,
+    metadata.checkoutNotes,
+    metadata.checkout_notes,
+    metadata.customerCheckoutNote,
+    metadata.customer_checkout_note,
+    metadata.customerNote,
+    metadata.customer_note,
+    metadata.deliveryInstructions,
+    metadata.delivery_instructions,
+    order?.note,
+    order?.notes,
+  ]
+
+  const instructions: string[] = []
+  for (const candidate of candidates) {
+    const normalized = normalizedInstructionText(candidate)
+    if (normalized && !instructions.includes(normalized)) {
+      instructions.push(normalized)
+    }
+  }
+
+  if (instructions.length) return instructions.join(" | ")
+
+  return normalizedInstructionText(metadata.customer_order_instructions)
+}
+
+const CARD_PAYMENT_METADATA_KEYS = [
+  "stripe_provider_id",
+  "stripe_payment_method_id",
+  "stripe_account_holder_id",
+  "setup_intent_id",
+  "final_charge_consent_version",
+  "final_charge_consent_text",
+  "final_charge_consented_at",
+  "stripe_payment_intent_id",
+  "stripe_charge_id",
+  "stripe_status",
+  "stripe_failure_code",
+  "stripe_failure_message",
+  "payment_setup_status",
+  "final_charge_status",
+  "final_charge_failed_at",
+  "final_charge_succeeded_at",
+  "final_charge_recording_failed_at",
+  "final_charge_recording_failure_message",
+] as const
+
+/** Remove saved-card and final-charge state before a cart/order enters the no-card A/R lane. */
+export function withoutCardPaymentMetadata(value: unknown): Record<string, any> {
+  const metadata = metadataObject(value)
+  for (const key of CARD_PAYMENT_METADATA_KEYS) {
+    delete metadata[key]
+  }
+  return metadata
+}
+
+/**
+ * Shared finalized line/package snapshot for both card and pay-by-invoice releases.
+ * QuickBooks posting must receive the same weighed economics regardless of payment workflow.
+ */
+export function finalizedCatchWeightOrderMetadata(input: {
+  order: Record<string, any>
+  lines?: Array<Record<string, any>> | null
+  packages?: Array<Record<string, any>> | null
+}) {
+  const instructions = customerOrderInstructions(input.order)
+  const lines = Array.isArray(input.lines) ? input.lines : []
+  const packages = Array.isArray(input.packages)
+    ? input.packages
+        .filter((pkg) => pkg && typeof pkg === "object")
+        .map((pkg) => ({ ...pkg }))
+    : []
+
+  return {
+    catch_weight_final_lines: lines.map((line) => ({
+      line_item_id: line.line_item_id,
+      product_id: line.product_id,
+      variant_id: line.variant_id,
+      customer_title: line.customer_title || null,
+      title_snapshot: line.title_snapshot || null,
+      sku: line.sku,
+      qbd_list_id: line.replacement_qbd_list_id || line.qbd_list_id,
+      pricing_mode: line.pricing_mode,
+      ordered_quantity: line.ordered_quantity,
+      actual_quantity: line.actual_quantity,
+      actual_piece_count: line.actual_piece_count,
+      actual_weight_total: line.actual_weight_total,
+      actual_unit_price: line.actual_unit_price ?? line.unit_price,
+      final_line_subtotal: line.final_line_subtotal,
+      final_line_total: line.final_line_total,
+      delta_line_total: line.delta_line_total,
+      status: line.status,
+      note: line.note || null,
+      replacement_variant_id: line.replacement_variant_id || null,
+      replacement_qbd_list_id: line.replacement_qbd_list_id || null,
+      replacement_reason: line.replacement_reason || null,
+      short_reason: line.short_reason || null,
+      metadata: line.metadata || null,
+      staff_added_line:
+        metadataObject(line.metadata).staff_added_line === true || false,
+    })),
+    catch_weight_packages: packages,
+    ...(instructions
+      ? { customer_order_instructions: instructions }
+      : {}),
+  }
+}
+
 export function finalChargeOrderMetadata(input: {
   order: Record<string, any>
   finalization: Record<string, any>
@@ -2662,10 +2790,13 @@ export const QBD_ACTION_INVOICE_AR = "invoice_ar_accounting_record"
 export function invoiceArOrderMetadata(input: {
   order: Record<string, any>
   finalization: Record<string, any>
+  lines?: Array<Record<string, any>> | null
+  packages?: Array<Record<string, any>> | null
   actorId?: string | null
   staffAudit?: Record<string, any>
 }) {
-  const metadata = metadataObject(input.order.metadata)
+  const metadata = withoutCardPaymentMetadata(input.order.metadata)
+  delete metadata.customer_order_instructions
   const amountMinor = amountInMinorUnits(
     input.finalization.final_order_total,
     input.finalization.currency_code
@@ -2675,7 +2806,13 @@ export function invoiceArOrderMetadata(input: {
   return appendStaffAudit(
     {
       ...metadata,
+      ...finalizedCatchWeightOrderMetadata({
+        order: input.order,
+        lines: input.lines,
+        packages: input.packages,
+      }),
       payment_workflow: PAYMENT_WORKFLOW_INVOICE_AR,
+      payment_setup_status: "not_applicable_invoice",
       catch_weight_status: FINALIZATION_RELEASED_TO_FULFILLMENT,
       finalization_id: input.finalization.id,
       finalization_status: FINALIZATION_RELEASED_TO_FULFILLMENT,
