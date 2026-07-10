@@ -720,6 +720,17 @@ const pricingModeFromItem = (item: Record<string, any>) => {
   }
 
   if (
+    raw === "fixed" ||
+    raw === "fixed_price" ||
+    raw === "fixed-price" ||
+    raw === "flat" ||
+    raw === "pack" ||
+    raw === "by_pack"
+  ) {
+    return "fixed_price"
+  }
+
+  if (
     metadata.catch_weight === true ||
     metadata.is_catch_weight === true ||
     metadata.RequiresCatchWeight === true

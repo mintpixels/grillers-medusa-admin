@@ -167,6 +167,84 @@ describe("catch-weight finalization helpers", () => {
     expect(line.final_line_total).toBeNull()
   })
 
+  it.each(["fixed", "fixed_price"])(
+    "keeps an explicit %s 4 lb pack fixed-price through final totals",
+    async (pricingMode) => {
+      const line = buildFinalizationLineSnapshot(
+        { id: "order_empire_drumsticks" },
+        {
+          id: "item_empire_drumsticks",
+          title: "Empire Chicken Drumsticks 4 lb",
+          variant_id: "variant_empire_drumsticks",
+          variant_sku: "6-80-01-3",
+          quantity: 1,
+          unit_price: 24.25,
+          subtotal: 24.25,
+          tax_total: 0.909375,
+          total: 25.159375,
+          metadata: {
+            pricing_mode: pricingMode,
+            qbd_list_id: "800007FF-1385922569",
+          },
+        },
+        "gpfin_empire_drumsticks"
+      )
+
+      expect(line.pricing_mode).toBe("fixed_price")
+      expect(line.actual_unit_price).toBe(24.25)
+
+      const db = createMemoryCatchWeightDb({
+        gp_order_finalization: [
+          {
+            id: "gpfin_empire_drumsticks",
+            order_id: "order_empire_drumsticks",
+            status: "packing",
+            estimated_order_total: 45.159375,
+            deleted_at: null,
+          },
+        ],
+        gp_order_finalization_line: [
+          {
+            ...line,
+            actual_quantity: 1,
+            actual_piece_count: 1,
+            actual_weight_total: null,
+            status: "ready",
+            deleted_at: null,
+          },
+        ],
+        gp_order_payment_setup: [],
+        gp_final_charge_attempt: [],
+      })
+
+      const preview = await previewFinalization(
+        db,
+        {
+          id: "order_empire_drumsticks",
+          total: 45.159375,
+          item_subtotal: 24.25,
+          tax_total: 0.909375,
+          shipping_total: 20,
+          discount_total: 0,
+          items: [],
+        },
+        { persist: true }
+      )
+
+      const previewLine = preview.lines[0] as Record<string, any>
+      expect(preview.errors).toEqual([])
+      expect(previewLine.actual_weight_total).toBeNull()
+      expect(previewLine.final_line_subtotal).toBe(24.25)
+      expect(preview.totals).toMatchObject({
+        final_item_total: 24.25,
+        final_shipping_total: 20,
+        final_tax_total: 0.91,
+        final_order_total: 45.16,
+        delta_total: 0,
+      })
+    }
+  )
+
   it("prefers current customer catalog titles over legacy line titles", () => {
     const line = buildFinalizationLineSnapshot(
       { id: "order_catalog_title" },
