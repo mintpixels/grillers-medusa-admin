@@ -3,6 +3,15 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { emitOpsAlert } from "../../../../../../lib/ops-alert"
 import { checkInventoryAvailability } from "../../../../../../lib/inventory-allocation"
 import { getPaymentContextCustomer } from "../../../../payment-methods/utils"
+import {
+  ORDER_SMS_CONSENT_DISCLOSURE,
+  ORDER_SMS_CONSENT_METHOD,
+  ORDER_SMS_CONSENT_PROVIDER,
+  ORDER_SMS_CONSENT_PURPOSE,
+  ORDER_SMS_CONSENT_SOURCE,
+  ORDER_SMS_CONSENT_VERSION,
+  ORDER_SMS_PROGRAM,
+} from "../../../../../../lib/communications/transactional-sms"
 
 jest.mock("@medusajs/core-flows", () => ({
   completeCartWorkflow: jest.fn(() => ({ run: jest.fn() })),
@@ -38,7 +47,7 @@ jest.mock("../../../../payment-methods/utils", () => {
 
 // Import POST AFTER mocks are registered.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { POST } = require("../route")
+const { POST, sanitizeCheckoutOrderSmsConsent } = require("../route")
 
 function makeReqRes() {
   const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn() }
@@ -120,6 +129,31 @@ describe("place-order route ops alerting", () => {
         alternatives: [],
       },
     ])
+  })
+
+  it("strips otherwise-valid order SMS consent from staff proxy checkout", () => {
+    const metadata = {
+      keep_me: true,
+      order_sms_consent: {
+        granted: true,
+        phone: "+14045550100",
+        timestamp: new Date().toISOString(),
+        version: ORDER_SMS_CONSENT_VERSION,
+        disclosure: ORDER_SMS_CONSENT_DISCLOSURE,
+        source: ORDER_SMS_CONSENT_SOURCE,
+        provider: ORDER_SMS_CONSENT_PROVIDER,
+        program: ORDER_SMS_PROGRAM,
+        purpose: ORDER_SMS_CONSENT_PURPOSE,
+        method: ORDER_SMS_CONSENT_METHOD,
+      },
+    }
+
+    expect(
+      sanitizeCheckoutOrderSmsConsent(metadata, "cus_staff_target")
+    ).toEqual({ keep_me: true })
+    expect(
+      sanitizeCheckoutOrderSmsConsent(metadata, null).order_sms_consent
+    ).toEqual(expect.objectContaining({ granted: true }))
   })
 
   it("emits a severity:page place_order_error alert and returns 500 when the handler throws", async () => {

@@ -17,6 +17,7 @@ import MessageLog from "./models/message-log"
 import PhoneNumberIntelligence from "./models/phone-number-intelligence"
 import Segment from "./models/segment"
 import SegmentMember from "./models/segment-member"
+import SmsProgramSuppression from "./models/sms-program-suppression"
 import SuppressionPreference from "./models/suppression-preference"
 
 class GpCommunicationsModuleService extends MedusaService({
@@ -38,6 +39,7 @@ class GpCommunicationsModuleService extends MedusaService({
   PhoneNumberIntelligence,
   Segment,
   SegmentMember,
+  SmsProgramSuppression,
   SuppressionPreference,
 }) {}
 

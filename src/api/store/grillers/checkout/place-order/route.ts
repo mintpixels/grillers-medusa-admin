@@ -40,8 +40,17 @@ import {
   evaluateCreditLimit,
   creditHoldMetadata,
 } from "../../../../../lib/gp-credit-limit";
+import { sanitizeOrderSmsConsentMetadata } from "../../../../../lib/communications/transactional-sms";
 
 const PLACE_ORDER_PATH = "store/grillers/checkout/place-order";
+
+export const sanitizeCheckoutOrderSmsConsent = (
+  metadata: unknown,
+  staffTargetCustomerId?: string | null,
+) =>
+  sanitizeOrderSmsConsentMetadata(metadata, {
+    forceRemove: Boolean(staffTargetCustomerId),
+  });
 
 const CART_INVENTORY_FIELDS = [
   "id",
@@ -475,7 +484,10 @@ async function placeInvoiceOrder(
   const existingCart = await cartModule.retrieveCart(cartId, {
     select: ["id", "email", "customer_id", "metadata"],
   });
-  const existingMetadata = metadataObject(existingCart?.metadata);
+  const existingMetadata = sanitizeCheckoutOrderSmsConsent(
+    existingCart?.metadata,
+    staffTargetCustomerId,
+  );
 
   if (staffTargetCustomerId) {
     const metadataTarget =
@@ -633,7 +645,9 @@ async function placeInvoiceOrder(
   // creditMeta was computed pre-completion and is already on the order via the cart copy; we
   // re-stamp it here idempotently alongside the finalization fields.
   const metadata = {
-    ...withoutCardPaymentMetadata(order.metadata),
+    ...withoutCardPaymentMetadata(
+      sanitizeCheckoutOrderSmsConsent(order.metadata, staffTargetCustomerId),
+    ),
     ...invoiceFields,
     ...creditMeta,
     catch_weight_status: "pending_pack",
@@ -711,7 +725,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     const existingCart = await cartModule.retrieveCart(cartId, {
       select: ["id", "email", "customer_id", "metadata"],
     });
-    const existingMetadata = metadataObject(existingCart?.metadata);
+    const existingMetadata = sanitizeCheckoutOrderSmsConsent(
+      existingCart?.metadata,
+      staffTargetCustomerId,
+    );
 
     if (staffTargetCustomerId) {
       const metadataTarget =
@@ -857,7 +874,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     });
 
     const metadata = {
-      ...metadataObject(order.metadata),
+      ...sanitizeCheckoutOrderSmsConsent(order.metadata, staffTargetCustomerId),
       payment_workflow: PAYMENT_WORKFLOW_SETUP_THEN_FINAL_CHARGE,
       payment_setup_status: "saved",
       catch_weight_status: "pending_pack",
