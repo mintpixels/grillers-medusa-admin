@@ -515,18 +515,73 @@ export async function upsertCustomerProfile(
   const emailLower = normalizeEmail(input.email)
   const now = new Date()
 
-  let existing: Record<string, any> | null = null
-  if (input.medusa_customer_id) {
-    existing = await db("gp_customer_profile")
-      .whereNull("deleted_at")
-      .where("medusa_customer_id", input.medusa_customer_id)
-      .first()
+  const findExisting = async (): Promise<Record<string, any> | null> => {
+    let profile: Record<string, any> | null = null
+    if (input.medusa_customer_id) {
+      profile = await db("gp_customer_profile")
+        .whereNull("deleted_at")
+        .where("medusa_customer_id", input.medusa_customer_id)
+        .first()
+    }
+    if (!profile && emailLower) {
+      profile = await db("gp_customer_profile")
+        .whereNull("deleted_at")
+        .where("email_lower", emailLower)
+        .first()
+    }
+    return profile
   }
-  if (!existing && emailLower) {
-    existing = await db("gp_customer_profile")
-      .whereNull("deleted_at")
-      .where("email_lower", emailLower)
-      .first()
+
+  let existing = await findExisting()
+
+  if (!existing) {
+    if (!emailLower && !input.medusa_customer_id) return null
+
+    const row = {
+      id: tableId("gpcprof"),
+      medusa_customer_id: input.medusa_customer_id || null,
+      email: input.email || null,
+      email_lower: emailLower || null,
+      phone: input.phone || null,
+      first_name: input.first_name || null,
+      last_name: input.last_name || null,
+      customer_type: input.customer_type || "dtc",
+      route_market: input.route_market || "unknown",
+      lifecycle_stage: "lead",
+      email_consent: Boolean(input.email_consent),
+      email_consent_at: input.email_consent ? now : null,
+      sms_consent: Boolean(input.sms_consent),
+      sms_consent_at: input.sms_consent
+        ? asDate(input.sms_consent_at || now)
+        : null,
+      preferences: {
+        ...DEFAULT_NEWSLETTER_PREFERENCES,
+        ...jsonObject(input.preferences),
+      },
+      preference_token: newPreferenceToken(),
+      last_active_at: now,
+      metadata: input.metadata || {},
+      created_at: now,
+      updated_at: now,
+    }
+
+    // customer.created is consumed by both the commerce-event recorder and
+    // the welcome-email subscriber. They can both observe "no profile" and
+    // attempt the first insert at the same time. Let PostgreSQL arbitrate all
+    // active-profile unique indexes without raising a transaction-poisoning
+    // 23505, then read back the winner and merge this caller's fields below.
+    await db("gp_customer_profile").insert(row).onConflict().ignore()
+
+    existing = await findExisting()
+    if (!existing) {
+      // DO NOTHING can also be triggered by a unique key unrelated to the
+      // customer's identity (for example, a preference-token collision).
+      // Failing closed here keeps that real data-integrity problem visible.
+      throw new Error(
+        "Customer profile insert conflicted but no active identity match was found"
+      )
+    }
+    if (existing.id === row.id) return existing
   }
 
   const preferences = {
@@ -622,34 +677,7 @@ export async function upsertCustomerProfile(
     return { ...existing, ...resultPatch }
   }
 
-  if (!emailLower && !input.medusa_customer_id) return null
-
-  const row = {
-    id: tableId("gpcprof"),
-    medusa_customer_id: input.medusa_customer_id || null,
-    email: input.email || null,
-    email_lower: emailLower || null,
-    phone: input.phone || null,
-    first_name: input.first_name || null,
-    last_name: input.last_name || null,
-    customer_type: input.customer_type || "dtc",
-    route_market: input.route_market || "unknown",
-    lifecycle_stage: "lead",
-    email_consent: Boolean(input.email_consent),
-    email_consent_at: input.email_consent ? now : null,
-    sms_consent: Boolean(input.sms_consent),
-    sms_consent_at: input.sms_consent
-      ? asDate(input.sms_consent_at || now)
-      : null,
-    preferences,
-    preference_token: newPreferenceToken(),
-    last_active_at: now,
-    metadata: input.metadata || {},
-    created_at: now,
-    updated_at: now,
-  }
-  await db("gp_customer_profile").insert(row)
-  return row
+  throw new Error("Customer profile upsert could not resolve an active profile")
 }
 
 export async function recordIdentity(

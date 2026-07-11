@@ -49,6 +49,40 @@ function concurrentStopDb(existing: Record<string, any>) {
   return { db, updates }
 }
 
+function concurrentProfileInsertDb(
+  winner: Record<string, any> | null
+) {
+  const inserts: Record<string, any>[] = []
+  const updates: Record<string, any>[] = []
+  const ignore = jest.fn(async () => undefined)
+  const onConflict = jest.fn(() => ({ ignore }))
+  let identityReads = 0
+
+  const db: any = () => {
+    const chain: any = {}
+    chain.whereNull = () => chain
+    chain.where = () => chain
+    chain.first = async () => {
+      identityReads += 1
+      // The first lookup checks both medusa_customer_id and email_lower before
+      // the insert. The second lookup observes the concurrently inserted row.
+      return identityReads > 2 ? winner : null
+    }
+    chain.insert = (row: Record<string, any>) => {
+      inserts.push(row)
+      return { onConflict }
+    }
+    chain.update = async (data: Record<string, any>) => {
+      updates.push(data)
+      return 1
+    }
+    return chain
+  }
+  db.raw = (sql: string, bindings: unknown[]) => ({ sql, bindings })
+
+  return { db, ignore, inserts, onConflict, updates }
+}
+
 describe("communications helpers", () => {
   const originalEnv = { ...process.env }
 
@@ -204,6 +238,67 @@ describe("communications helpers", () => {
     expect(updates[0].sms_consent.sql).toContain("sms_opt_out_at")
     expect(updates[0].metadata.sql).toContain("coalesce(metadata")
     expect(updates[0].sms_consent).not.toBe(true)
+  })
+
+  it("reconciles a concurrent first profile insert and merges this caller's fields", async () => {
+    const winner = {
+      id: "gpcprof_winner",
+      medusa_customer_id: "cus_1",
+      email: "shopper@example.com",
+      email_lower: "shopper@example.com",
+      phone: null,
+      first_name: null,
+      last_name: null,
+      customer_type: "dtc",
+      route_market: "unknown",
+      email_consent: false,
+      email_consent_at: null,
+      preferences: {},
+      preference_token: "pref_winner",
+      metadata: {},
+    }
+    const { db, ignore, inserts, onConflict, updates } =
+      concurrentProfileInsertDb(winner)
+
+    const result = await upsertCustomerProfile(db, {
+      medusa_customer_id: "cus_1",
+      email: "shopper@example.com",
+      first_name: "Shopper",
+      phone: "4045550100",
+    })
+
+    expect(onConflict).toHaveBeenCalledWith()
+    expect(ignore).toHaveBeenCalledTimes(1)
+    expect(inserts).toHaveLength(1)
+    expect(updates).toHaveLength(1)
+    expect(updates[0]).toMatchObject({
+      medusa_customer_id: "cus_1",
+      email_lower: "shopper@example.com",
+      first_name: "Shopper",
+      phone: "4045550100",
+      preference_token: "pref_winner",
+    })
+    expect(result).toMatchObject({
+      id: "gpcprof_winner",
+      first_name: "Shopper",
+      phone: "4045550100",
+    })
+  })
+
+  it("fails closed when an ignored insert has no matching customer identity", async () => {
+    const { db, ignore, updates } = concurrentProfileInsertDb(null)
+
+    await expect(
+      upsertCustomerProfile(db, {
+        medusa_customer_id: "cus_1",
+        email: "shopper@example.com",
+      })
+    ).rejects.toThrow(
+      "Customer profile insert conflicted but no active identity match was found"
+    )
+
+    expect(ignore).toHaveBeenCalledTimes(1)
+    expect(updates).toHaveLength(0)
   })
 
   it("does not trust public identify traits as SMS consent evidence", () => {
