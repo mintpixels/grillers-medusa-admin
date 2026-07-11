@@ -561,9 +561,10 @@ async function dropUnserviceableShippingMethodsBeforeMutation(
 }
 
 export default defineMiddlewares({
-  // Global error handler: emits an ops alert for unhandled throws from any API
-  // route, then DELEGATES to Medusa's core error handler so the client error
-  // response is unchanged. See ./middlewares/ops-error-handler.ts.
+  // Global error handler: alerts on unexpected server failures (paging only
+  // for an explicit money-mutation allowlist), suppresses expected client 4xx
+  // noise, then DELEGATES to Medusa's core handler so the response is unchanged.
+  // See ./middlewares/ops-error-handler.ts.
   errorHandler: opsErrorHandler,
   routes: [
     {
