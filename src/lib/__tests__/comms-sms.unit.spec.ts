@@ -30,24 +30,30 @@ jest.mock("../communications/queue", () => ({
 
 function fakeSmsDb(profile: Record<string, any>, messageCount = 0) {
   const writes: Array<{ table: string; data: any }> = []
+  const rawCalls: string[] = []
+  const executionOrder: string[] = []
   const db: any = (table: string) => {
     const chain: any = { _write: false, _count: false }
     for (const method of [
       "whereNull",
       "where",
       "whereIn",
-      "whereRaw",
       "select",
       "onConflict",
       "ignore",
     ]) {
       chain[method] = () => chain
     }
+    chain.whereRaw = (sql: string) => {
+      rawCalls.push(sql)
+      return chain
+    }
     chain.first = async () =>
       table === "gp_customer_profile" ? profile : undefined
     chain.insert = (data: any) => {
       chain._write = true
       writes.push({ table, data })
+      if (table === "gp_message_log") executionOrder.push("queued_claim")
       return chain
     }
     chain.update = (data: any) => {
@@ -71,8 +77,18 @@ function fakeSmsDb(profile: Record<string, any>, messageCount = 0) {
       ).then(resolve)
     return chain
   }
-  db.raw = (sql: string) => sql
-  return { db, writes }
+  db.raw = (sql: string) => {
+    rawCalls.push(sql)
+    if (sql.includes("pg_advisory_xact_lock")) executionOrder.push("lock")
+    return sql
+  }
+  db.transaction = async (callback: (trx: any) => Promise<any>) => {
+    executionOrder.push("transaction_begin")
+    const result = await callback(db)
+    executionOrder.push("transaction_commit")
+    return result
+  }
+  return { db, writes, rawCalls, executionOrder }
 }
 
 function v3ConsentMetadata(overrides: Record<string, any> = {}) {
@@ -108,6 +124,11 @@ describe("sms inbound classification", () => {
     expect(help.reply).toContain("STOP")
     expect(help.reply).toContain("(770) 454-8108")
     expect(help.reply).toContain("marketing")
+    expect(help.reply).toContain("seasonal specials")
+    expect(help.reply).toContain("product announcements")
+    expect(help.reply).toContain("promotional offers")
+    expect(help.reply).toContain("holiday sales deadlines")
+    expect(help.reply).toContain("up to 6 messages/month")
     expect(help.reply).not.toMatch(/order|delivery|shipping/i)
   })
 
@@ -348,6 +369,73 @@ describe("marketing-only SMS policy", () => {
     }
   })
 
+  it("claims under advisory locks and commits before calling Twilio", async () => {
+    const priorEnv = {
+      accountSid: process.env.TWILIO_ACCOUNT_SID,
+      authToken: process.env.TWILIO_AUTH_TOKEN,
+      apiKeySid: process.env.TWILIO_API_KEY_SID,
+      apiKeySecret: process.env.TWILIO_API_KEY_SECRET,
+      from: process.env.TWILIO_MESSAGING_FROM,
+    }
+    const priorFetch = global.fetch
+    jest.useFakeTimers().setSystemTime(new Date("2026-07-14T20:00:00.000Z"))
+    try {
+      process.env.TWILIO_ACCOUNT_SID = "AC_test"
+      process.env.TWILIO_AUTH_TOKEN = "auth_test"
+      delete process.env.TWILIO_API_KEY_SID
+      delete process.env.TWILIO_API_KEY_SECRET
+      process.env.TWILIO_MESSAGING_FROM = "+18447485332"
+      const profile = {
+        id: "gpcprof_v3",
+        email: "staff@example.com",
+        email_lower: "staff@example.com",
+        phone: "4045550100",
+        sms_consent: true,
+        sms_consent_at: "2026-07-10T12:00:00.000Z",
+        metadata: v3ConsentMetadata(),
+      }
+      const { db, rawCalls, executionOrder } = fakeSmsDb(profile, 5)
+      const container = { resolve: () => db } as any
+      global.fetch = jest.fn(async () => {
+        executionOrder.push("twilio_fetch")
+        return {
+          ok: true,
+          json: async () => ({ sid: "SM_test", status: "queued" }),
+        } as any
+      }) as any
+
+      const result = await sendTrackedSms(container, {
+        to: "+14045550100",
+        body: "Griller's Pride seasonal special. Reply STOP to unsubscribe.",
+        stream: "broadcast",
+        purpose: "broadcast",
+        template_key: "campaign-sms-test",
+        profile_id: profile.id,
+        staff_test: true,
+      })
+
+      expect(result).toEqual({ ok: true, messageSid: "SM_test" })
+      expect(
+        rawCalls.filter((sql) => sql.includes("pg_advisory_xact_lock"))
+      ).toHaveLength(2)
+      expect(rawCalls).toContain("coalesce(sent_at, queued_at) >= ?")
+      expect(executionOrder.indexOf("queued_claim")).toBeGreaterThan(
+        executionOrder.indexOf("lock")
+      )
+      expect(executionOrder.indexOf("transaction_commit")).toBeLessThan(
+        executionOrder.indexOf("twilio_fetch")
+      )
+    } finally {
+      jest.useRealTimers()
+      global.fetch = priorFetch
+      process.env.TWILIO_ACCOUNT_SID = priorEnv.accountSid
+      process.env.TWILIO_AUTH_TOKEN = priorEnv.authToken
+      process.env.TWILIO_API_KEY_SID = priorEnv.apiKeySid
+      process.env.TWILIO_API_KEY_SECRET = priorEnv.apiKeySecret
+      process.env.TWILIO_MESSAGING_FROM = priorEnv.from
+    }
+  })
+
   it("rejects malformed inbound From values before building a SQL match", async () => {
     const db = jest.fn(() => {
       throw new Error("SQL must not be reached")
@@ -398,6 +486,12 @@ describe("sms quiet hours", () => {
     expect(isInSmsQuietHours(new Date("2026-12-16T02:00:00Z"))).toBe(true)
     // 16:00 ET = 21:00Z — allowed.
     expect(isInSmsQuietHours(new Date("2026-12-15T21:00:00Z"))).toBe(false)
+  })
+
+  it("falls back to the national window for an invalid recipient timezone", () => {
+    const noonEt = new Date("2026-07-14T16:00:00Z")
+    expect(isInSmsQuietHours(noonEt, "Mars/Olympus")).toBe(true)
+    expect(isInSmsQuietHours(noonEt, "America/Los_Angeles")).toBe(false)
   })
 })
 

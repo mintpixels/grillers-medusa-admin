@@ -85,8 +85,18 @@ export function isInSmsQuietHours(
   at: Date = new Date(),
   recipientTimeZone?: string | null
 ): boolean {
-  const timeZone = recipientTimeZone || "America/New_York"
-  const conservativeNationalWindow = !recipientTimeZone
+  let timeZone = "America/New_York"
+  let conservativeNationalWindow = true
+  if (recipientTimeZone) {
+    try {
+      // Validate before selecting the wider recipient-local window.
+      zonedMinutesOfDay(at, recipientTimeZone)
+      timeZone = recipientTimeZone
+      conservativeNationalWindow = false
+    } catch {
+      // Invalid/untrusted zones stay on the conservative national window.
+    }
+  }
   const defaultStart = conservativeNationalWindow ? "15:00" : "09:00"
   const defaultEnd = conservativeNationalWindow ? "21:00" : "20:30"
   const start = parseHm(
@@ -97,12 +107,7 @@ export function isInSmsQuietHours(
     process.env.COMMS_SMS_QUIET_END || defaultEnd,
     conservativeNationalWindow ? 21 * 60 : 20 * 60 + 30
   )
-  let nowMin: number
-  try {
-    nowMin = zonedMinutesOfDay(at, timeZone)
-  } catch {
-    nowMin = zonedMinutesOfDay(at, "America/New_York")
-  }
+  const nowMin = zonedMinutesOfDay(at, timeZone)
   // Allowed window is [start, end); anything else is quiet.
   return !(nowMin >= start && nowMin < end)
 }
@@ -338,45 +343,13 @@ export async function sendTrackedSms(
       }
     }
 
-    // 4) The signed program promises no more than six messages per month.
-    // Enforce that as a non-configurable rolling 30-day hard cap; staff tests
-    // count because they are real Twilio traffic to the same phone.
-    const monthlyCap = 6
-    const since30Days = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
-    const recent30Days = await db("gp_message_log")
-      .whereNull("deleted_at")
-      .where("channel", "sms")
-      .whereIn("message_purpose", ["broadcast", "marketing_1to1"])
-      .whereRaw("metadata->>'phone' = ?", [phone])
-      .whereIn("status", ["queued", "sent", "delivered"])
-      .where("created_at", ">=", since30Days)
-      .count("id as count")
-    if (Number(recent30Days?.[0]?.count || 0) >= monthlyCap) {
-      return suppress("monthly_frequency_cap", {
-        cap: monthlyCap,
-        window_days: 30,
-      })
-    }
-
-    // 5) Existing tighter weekly cap (staff tests exempt only here).
-    const cap = Number(process.env.COMMS_SMS_WEEKLY_CAP || 2)
-    if (!input.staff_test && Number.isFinite(cap) && cap > 0) {
-      const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-      const recent = await db("gp_message_log")
-        .whereNull("deleted_at")
-        .where("channel", "sms")
-        .whereIn("message_purpose", ["broadcast", "marketing_1to1"])
-        .whereRaw("metadata->>'phone' = ?", [phone])
-        .whereIn("status", ["queued", "sent", "delivered"])
-        .where("created_at", ">=", since)
-        .count("id as count")
-      if (Number(recent?.[0]?.count || 0) >= cap) {
-        return suppress("frequency_cap", { cap })
-      }
-    }
   }
 
-  // 6) Idempotency.
+  // 4) Transactional claim. The per-phone advisory lock serializes campaign,
+  // flow, and staff sends so they cannot all observe count=5 and claim a
+  // seventh message. Idempotency lookup and the queued-row write live under
+  // the same lock. Twilio network I/O happens only after this transaction
+  // commits.
   const idempotencyKey =
     input.idempotency_key ||
     [
@@ -386,60 +359,134 @@ export async function sendTrackedSms(
       phone,
       input.order_id || input.cart_id || input.campaign_id || input.flow_enrollment_id || "",
     ].join(":")
-  const existing = await db("gp_message_log")
-    .whereNull("deleted_at")
-    .where("idempotency_key", idempotencyKey)
-    .first()
-  if (existing && ["queued", "sent", "delivered"].includes(existing.status)) {
-    return { ok: true, skipped: true, messageSid: existing.postmark_message_id || undefined }
-  }
+  type SmsClaim =
+    | { kind: "claimed"; messageId: string }
+    | { kind: "duplicate"; messageSid?: string }
+    | { kind: "suppressed"; reason: string; extra: Record<string, unknown> }
 
-  if (!config.configured) {
-    return suppress("sms_not_configured")
-  }
+  const claim = (await db.transaction(async (trx: KnexLike): Promise<SmsClaim> => {
+    await trx.raw(
+      "select pg_advisory_xact_lock(hashtextextended(?, 0))",
+      [`gp-sms-phone:${phone}`]
+    )
+    await trx.raw(
+      "select pg_advisory_xact_lock(hashtextextended(?, 0))",
+      [`gp-sms-idempotency:${idempotencyKey}`]
+    )
 
-  const messageId = existing?.id || `gpmsg_${crypto.randomBytes(8).toString("hex")}`
-  const row = {
-    id: messageId,
-    idempotency_key: idempotencyKey,
-    profile_id: profile?.id || input.profile_id || null,
-    medusa_customer_id: input.medusa_customer_id || profile?.medusa_customer_id || null,
-    email: profile?.email || "",
-    email_lower: (profile?.email_lower as string) || "",
-    channel: "sms",
-    message_stream: input.stream,
-    message_purpose: purpose,
-    topic: input.topic || null,
-    template_key: input.template_key,
-    flow_id: input.flow_id || null,
-    flow_key: input.flow_key || null,
-    flow_enrollment_id: input.flow_enrollment_id || null,
-    campaign_id: input.campaign_id || null,
-    order_id: input.order_id || null,
-    cart_id: input.cart_id || null,
-    subject: input.body.slice(0, 120),
-    status: "queued",
-    metadata: { phone, body_length: input.body.length },
-    queued_at: now,
-    created_at: now,
-    updated_at: now,
-  }
-  if (existing) {
-    await db("gp_message_log").where("id", existing.id).update({ ...row, id: undefined, created_at: undefined })
-  } else {
-    try {
-      await db("gp_message_log").insert(row)
-    } catch (err: any) {
-      // Unique violation on idempotency_key: a concurrent duplicate fire
-      // (double-clicked approve, at-least-once queue delivery) already
-      // claimed this send. Treat as skipped — the winner texts once.
-      if (String(err?.code) === "23505") {
-        return { ok: true, skipped: true }
+    const existing = await trx("gp_message_log")
+      .whereNull("deleted_at")
+      .where("idempotency_key", idempotencyKey)
+      .first()
+    if (existing && ["queued", "sent", "delivered"].includes(existing.status)) {
+      return {
+        kind: "duplicate",
+        messageSid: existing.postmark_message_id || undefined,
       }
-      throw err
     }
-  }
+    const countRecent = async (since: Date) => {
+      const rows = await trx("gp_message_log")
+        .whereNull("deleted_at")
+        .where("channel", "sms")
+        .whereIn("message_purpose", ["broadcast", "marketing_1to1"])
+        .whereRaw("metadata->>'phone' = ?", [phone])
+        .whereIn("status", ["queued", "sent", "delivered"])
+        // queued_at is refreshed when a failed row is retried; immutable
+        // created_at must not let an old retry evade the rolling window.
+        .whereRaw("coalesce(sent_at, queued_at) >= ?", [since])
+        .count("id as count")
+      return Number(rows?.[0]?.count || 0)
+    }
 
+    const monthlyCap = 6
+    const since30Days = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+    if ((await countRecent(since30Days)) >= monthlyCap) {
+      return {
+        kind: "suppressed",
+        reason: "monthly_frequency_cap",
+        extra: { cap: monthlyCap, window_days: 30 },
+      }
+    }
+
+    const weeklyCap = Number(process.env.COMMS_SMS_WEEKLY_CAP || 2)
+    if (
+      !input.staff_test &&
+      Number.isFinite(weeklyCap) &&
+      weeklyCap > 0
+    ) {
+      const since7Days = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+      if ((await countRecent(since7Days)) >= weeklyCap) {
+        return {
+          kind: "suppressed",
+          reason: "frequency_cap",
+          extra: { cap: weeklyCap },
+        }
+      }
+    }
+
+    if (!config.configured) {
+      return {
+        kind: "suppressed",
+        reason: "sms_not_configured",
+        extra: {},
+      }
+    }
+
+    const messageId =
+      existing?.id || `gpmsg_${crypto.randomBytes(8).toString("hex")}`
+    const row = {
+      id: messageId,
+      idempotency_key: idempotencyKey,
+      profile_id: profile?.id || input.profile_id || null,
+      medusa_customer_id:
+        input.medusa_customer_id || profile?.medusa_customer_id || null,
+      email: profile?.email || "",
+      email_lower: (profile?.email_lower as string) || "",
+      channel: "sms",
+      message_stream: input.stream,
+      message_purpose: purpose,
+      topic: input.topic || null,
+      template_key: input.template_key,
+      flow_id: input.flow_id || null,
+      flow_key: input.flow_key || null,
+      flow_enrollment_id: input.flow_enrollment_id || null,
+      campaign_id: input.campaign_id || null,
+      order_id: input.order_id || null,
+      cart_id: input.cart_id || null,
+      subject: input.body.slice(0, 120),
+      status: "queued",
+      metadata: { phone, body_length: input.body.length },
+      queued_at: now,
+      created_at: existing?.created_at || now,
+      updated_at: now,
+    }
+    if (existing) {
+      await trx("gp_message_log").where("id", existing.id).update({
+        ...row,
+        id: undefined,
+        created_at: undefined,
+        failed_at: null,
+        error_message: null,
+        sent_at: null,
+        delivered_at: null,
+        postmark_message_id: null,
+        provider_response: null,
+      })
+    } else {
+      await trx("gp_message_log").insert(row)
+    }
+    return { kind: "claimed", messageId }
+  })) as SmsClaim
+
+  if (claim.kind === "duplicate") {
+    return { ok: true, skipped: true, messageSid: claim.messageSid }
+  }
+  if (claim.kind === "suppressed") {
+    return suppress(claim.reason, claim.extra)
+  }
+  const messageId = claim.messageId
+
+  // External provider request intentionally occurs after the claim commits.
   try {
     const params = new URLSearchParams({
       To: phone,
@@ -527,21 +574,21 @@ export function classifyInboundSms(body: string): InboundSmsDecision {
     return {
       action: "stop",
       reply:
-        "You've been unsubscribed from Griller's Pride texts and will receive no further messages. Reply START to resubscribe.",
+        "You've been unsubscribed from Griller's Pride marketing texts and will receive no further marketing messages. Reply START to resubscribe.",
     }
   }
   if (START_WORDS.has(word)) {
     return {
       action: "start",
       reply:
-        "You're resubscribed to Griller's Pride marketing texts with specials, holiday promotions, and product availability announcements. Msg & data rates may apply. Reply STOP to unsubscribe, HELP for help.",
+        "You're resubscribed to Griller's Pride marketing texts for seasonal specials, product announcements, promotional offers, and holiday sales deadlines, up to 6 messages/month. Msg & data rates may apply. Reply STOP to unsubscribe, HELP for help.",
     }
   }
   if (word === "help" || word === "info") {
     return {
       action: "help",
       reply:
-        "Griller's Pride marketing texts include specials, holiday promotions, and product availability announcements. Msg & data rates may apply. Reply STOP to unsubscribe. Questions? (770) 454-8108.",
+        "Griller's Pride marketing texts include seasonal specials, product announcements, promotional offers, and holiday sales deadlines, up to 6 messages/month. Msg & data rates may apply. Reply STOP to unsubscribe. Questions? (770) 454-8108.",
     }
   }
   return { action: "none" }
