@@ -57,6 +57,7 @@ function fakeDb(options: {
 } = {}) {
   let messageRow = options.messageRow || null
   let suppressionRow = options.suppressionRow || null
+  let customerProfile: Record<string, any> | null = null
   const writes: Array<{ table: string; op: string; data: any }> = []
   const raws: string[] = []
 
@@ -88,6 +89,7 @@ function fakeDb(options: {
     chain.first = async () => {
       if (table === "gp_sms_program_suppression") return suppressionRow
       if (table === "gp_message_log") return messageRow
+      if (table === "gp_customer_profile") return customerProfile
       return undefined
     }
     chain.count = () => {
@@ -104,6 +106,7 @@ function fakeDb(options: {
       if (table === "gp_sms_program_suppression") {
         suppressionRow = { ...data }
       }
+      if (table === "gp_customer_profile") customerProfile = { ...data }
       return chain
     }
     chain.update = (data: any) => {
@@ -113,6 +116,9 @@ function fakeDb(options: {
       }
       if (table === "gp_sms_program_suppression" && suppressionRow) {
         suppressionRow = { ...suppressionRow, ...data }
+      }
+      if (table === "gp_customer_profile" && customerProfile) {
+        customerProfile = { ...customerProfile, ...data }
       }
       return chain
     }
