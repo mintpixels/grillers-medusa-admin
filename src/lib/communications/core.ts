@@ -133,7 +133,7 @@ export const SMS_MARKETING_PROVIDER = "twilio"
 export const SMS_MARKETING_CONSENT_PURPOSE = "marketing"
 export const SMS_MARKETING_CONSENT_METHOD = "customer_checkbox"
 export const SMS_MARKETING_DISCLOSURE =
-  "By checking this box, I agree to receive recurring automated marketing and promotional text messages from Griller's Pride, including specials, holiday promotions, and product availability announcements, at the mobile number provided. Consent is not a condition of purchase. Message frequency varies. Msg & data rates may apply. Reply STOP to opt out or HELP for help."
+  "By checking this box, I agree to receive recurring automated marketing and promotional text messages from Griller's Pride, including seasonal specials, product announcements, promotional offers, and holiday sales deadlines, at the mobile number provided. Consent is not a condition of purchase. Message frequency varies, up to 6 messages per month. Msg & data rates may apply. Reply STOP to opt out or HELP for help."
 
 export const SMS_MARKETING_CUSTOMER_SOURCES = [
   "account_signup",

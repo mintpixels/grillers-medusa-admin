@@ -37,6 +37,9 @@ describe("communications helpers", () => {
   })
 
   it("maps only exact customer-originated v3 marketing evidence onto profiles", () => {
+    expect(SMS_MARKETING_DISCLOSURE).toBe(
+      "By checking this box, I agree to receive recurring automated marketing and promotional text messages from Griller's Pride, including seasonal specials, product announcements, promotional offers, and holiday sales deadlines, at the mobile number provided. Consent is not a condition of purchase. Message frequency varies, up to 6 messages per month. Msg & data rates may apply. Reply STOP to opt out or HELP for help."
+    )
     const metadata = {
       sms_marketing_opt_in: true,
       sms_consent_at: "2026-07-10T12:00:00.000Z",
