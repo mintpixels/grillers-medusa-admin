@@ -459,7 +459,8 @@ export default class StrapiModuleService {
         `/api/products/${strapiId}`,
         {
           params: {
-            "populate[MedusaProduct][populate]": "Variants,AlternativeProducts",
+            "populate[MedusaProduct][populate][0]": "Variants",
+            "populate[MedusaProduct][populate][1]": "AlternativeProducts",
           },
         }
       );

@@ -278,6 +278,60 @@ describe("StrapiModuleService", () => {
     );
   });
 
+  it("reads nested product state with Strapi 5 indexed populate params before updating", async () => {
+    const svc = service();
+    const get = jest.fn().mockResolvedValue({
+      data: {
+        data: {
+          documentId: "strapi_doc_1",
+          Title: "Customer-safe product title",
+          MedusaProduct: {
+            ProductId: "prod_1",
+            Title: "Customer-safe product title",
+            Description: "Customer-safe product description",
+            Variants: [
+              {
+                VariantId: "variant_1",
+                Title: "Customer-safe variant title",
+                Sku: "1-00-12-0",
+              },
+            ],
+            AlternativeProducts: [],
+          },
+        },
+      },
+    });
+    const put = jest.fn().mockResolvedValue({
+      data: { data: { documentId: "strapi_doc_1" } },
+    });
+    svc.client = { get, put };
+
+    await svc.updateProduct("strapi_doc_1", {
+      id: "prod_1",
+      title: "QuickBooks product title",
+      description: "QuickBooks product description",
+      handle: "quickbooks-product-title",
+      status: "published",
+      metadata: { qbd_list_id: "QB-PRODUCT" },
+      variants: [
+        {
+          id: "variant_1",
+          title: "QuickBooks variant title",
+          sku: "1-00-12-0",
+          metadata: { qbd_list_id: "QB-VARIANT" },
+        },
+      ],
+    });
+
+    expect(get).toHaveBeenCalledWith("/api/products/strapi_doc_1", {
+      params: {
+        "populate[MedusaProduct][populate][0]": "Variants",
+        "populate[MedusaProduct][populate][1]": "AlternativeProducts",
+      },
+    });
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
   it("does not delete Strapi products unless destructive sync is explicitly enabled", async () => {
     const svc = service();
     const del = jest.fn();
