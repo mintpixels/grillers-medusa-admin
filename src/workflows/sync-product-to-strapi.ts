@@ -6,6 +6,7 @@ import {
 } from "@medusajs/framework/workflows-sdk";
 import { QueryContext } from "@medusajs/framework/utils";
 import { useQueryGraphStep } from "@medusajs/medusa/core-flows";
+import type { StoreProduct } from "@medusajs/types";
 import StrapiModuleService from "../modules/strapi/service";
 import { STRAPI_MODULE } from "../modules/strapi";
 
@@ -14,13 +15,24 @@ type SyncStepInput = { product: any };
 const REGION_ID = "reg_01JRTEDVK7H9A61M335K35JSVJ"; // get from /app/settings/regions
 const CURRENCY_CODE = "usd";
 
+export function assertResolvedProduct(
+  product: any
+): asserts product is StoreProduct & { id: string } {
+  if (!product || typeof product.id !== "string" || !product.id.trim()) {
+    throw new Error(
+      "Strapi product sync requires a resolved Medusa product with an ID"
+    );
+  }
+}
+
 export const syncProductStep = createStep(
   {
     name: "sync-product-to-strapi",
     maxRetries: 3,
-    retryInterval: 10,
   },
   async ({ product }, { container }) => {
+    assertResolvedProduct(product);
+
     const strapiSvc = container.resolve(STRAPI_MODULE) as StrapiModuleService;
 
     const existing = await strapiSvc.findProductByMedusaId(product.id);
