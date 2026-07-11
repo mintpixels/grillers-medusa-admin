@@ -530,8 +530,7 @@ async function smsAudienceForSegment(db: KnexLike, segmentKey?: string | null) {
   const audience = base
     .map((p: Record<string, any>) => ({
       ...p,
-      sms_phone:
-        preferencesObject(p.metadata).sms_consent_phone || p.phone || null,
+      sms_phone: p.phone || null,
     }))
     .filter(
       (p: Record<string, any>) =>
@@ -937,7 +936,7 @@ export async function previewSegmentDefinition(
   })
   const smsReachable = profiles.filter(
     (p: Record<string, any>) => {
-      const smsPhone = preferencesObject(p.metadata).sms_consent_phone || p.phone
+      const smsPhone = p.phone
       return Boolean(smsPhone) && hasQualifyingSmsMarketingConsent(p, smsPhone)
     }
   ).length

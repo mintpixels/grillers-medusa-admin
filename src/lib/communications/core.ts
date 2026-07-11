@@ -211,8 +211,7 @@ export function withoutSmsConsentEvidence(
 ): Record<string, any> {
   return Object.fromEntries(
     Object.entries(record).filter(
-      ([key]) =>
-        !key.startsWith("sms_consent") && key !== "sms_marketing_opt_in"
+      ([key]) => !key.toLowerCase().startsWith("sms_")
     )
   )
 }
@@ -280,8 +279,13 @@ export function hasQualifyingSmsMarketingConsent(
 
   const consentPhone = normalizedUsPhone(metadata.sms_consent_phone)
   if (!consentPhone) return false
-  const activePhone = normalizedUsPhone(sendingPhone ?? profile.phone)
-  return Boolean(activePhone && activePhone === consentPhone)
+  const profilePhone = normalizedUsPhone(profile.phone)
+  if (!profilePhone || profilePhone !== consentPhone) return false
+  if (sendingPhone !== undefined) {
+    const destinationPhone = normalizedUsPhone(sendingPhone)
+    if (!destinationPhone || destinationPhone !== consentPhone) return false
+  }
+  return true
 }
 
 /** Apply the database portion of the v3 qualification gate. */
@@ -533,36 +537,8 @@ export async function upsertCustomerProfile(
 
   if (existing) {
     const existingMetadata = jsonObject(existing.metadata)
-    const incomingSmsConsentAt = input.sms_consent_at
-      ? asDate(input.sms_consent_at)
-      : null
-    const priorSmsOptOutAt = existingMetadata.sms_opt_out_at
-      ? asDate(existingMetadata.sms_opt_out_at)
-      : null
-    const staleSmsConsentReplay = Boolean(
-      input.sms_consent &&
-        isStaleSmsConsentReplay(
-          incomingSmsConsentAt,
-          priorSmsOptOutAt,
-          Boolean(existing.sms_consent)
-        )
-    )
-    const nextSmsConsent =
-      input.sms_consent === undefined
-        ? existing.sms_consent
-        : input.sms_consent && staleSmsConsentReplay
-          ? false
-          : input.sms_consent
-    const nextSmsConsentAt =
-      nextSmsConsent && incomingSmsConsentAt
-        ? incomingSmsConsentAt
-        : nextSmsConsent && existing.sms_consent_at
-          ? existing.sms_consent_at
-          : nextSmsConsent
-            ? now
-            : existing.sms_consent_at
-
-    const patch = {
+    const incomingMetadata = jsonObject(input.metadata)
+    const resultPatch: Record<string, any> = {
       medusa_customer_id:
         input.medusa_customer_id || existing.medusa_customer_id || null,
       email: input.email || existing.email || null,
@@ -580,19 +556,70 @@ export async function upsertCustomerProfile(
         input.email_consent && !existing.email_consent_at
           ? now
           : existing.email_consent_at,
-      sms_consent: nextSmsConsent,
-      sms_consent_at: nextSmsConsentAt,
       preferences,
       preference_token: existing.preference_token || newPreferenceToken(),
       last_active_at: now,
       metadata: {
         ...existingMetadata,
-        ...jsonObject(input.metadata),
+        ...incomingMetadata,
       },
       updated_at: now,
     }
-    await db("gp_customer_profile").where("id", existing.id).update(patch)
-    return { ...existing, ...patch }
+    const dbPatch: Record<string, any> = { ...resultPatch }
+    if (Object.keys(incomingMetadata).length) {
+      // Merge against the row's CURRENT jsonb value. Replacing it with the
+      // object read above can erase a concurrent STOP's sms_opt_out_at.
+      dbPatch.metadata = db.raw(
+        "coalesce(metadata, '{}'::jsonb) || ?::jsonb",
+        [JSON.stringify(incomingMetadata)]
+      )
+    } else {
+      delete dbPatch.metadata
+    }
+
+    if (input.sms_consent === false) {
+      dbPatch.sms_consent = false
+      dbPatch.sms_consent_at = null
+      resultPatch.sms_consent = false
+      resultPatch.sms_consent_at = null
+    } else if (input.sms_consent === true) {
+      const incomingAt = asDate(input.sms_consent_at || now).toISOString()
+      // Atomic STOP-wins rule. PostgreSQL evaluates these expressions against
+      // the row version locked by UPDATE, not the stale object read above:
+      // - a STOP committed before this update leaves sms_consent=false and a
+      //   newer/equal opt-out timestamp, so stale consent cannot revive it;
+      // - a STOP committed after this update overwrites it normally;
+      // - a legitimate START already made sms_consent=true, so stale customer
+      //   metadata cannot undo that restoration.
+      dbPatch.sms_consent = db.raw(
+        `case
+          when sms_consent = true then true
+          when coalesce(metadata->>'sms_opt_out_at', '') >= ? then false
+          else true
+        end`,
+        [incomingAt]
+      )
+      dbPatch.sms_consent_at = db.raw(
+        `case
+          when sms_consent = true then coalesce(sms_consent_at, ?::timestamptz)
+          when coalesce(metadata->>'sms_opt_out_at', '') >= ? then sms_consent_at
+          else ?::timestamptz
+        end`,
+        [incomingAt, incomingAt, incomingAt]
+      )
+      resultPatch.sms_consent = true
+      resultPatch.sms_consent_at = asDate(incomingAt)
+    }
+
+    await db("gp_customer_profile").where("id", existing.id).update(dbPatch)
+    if (input.sms_consent !== undefined) {
+      const refreshed = await db("gp_customer_profile")
+        .whereNull("deleted_at")
+        .where("id", existing.id)
+        .first()
+      if (refreshed) return refreshed
+    }
+    return { ...existing, ...resultPatch }
   }
 
   if (!emailLower && !input.medusa_customer_id) return null

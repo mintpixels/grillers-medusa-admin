@@ -13,12 +13,41 @@ import {
   postmarkMetadata,
   preferenceUrl,
   smsConsentFromCustomerMetadata,
+  upsertCustomerProfile,
   verifyServiceApiKey,
   withoutSmsConsentEvidence,
 } from "../communications/core"
 import { queuesConfigured } from "../communications/queue"
 import { resolveFlowMessagePurpose } from "../communications/flows"
 import { COMMUNICATION_TEMPLATE_REGISTRY } from "../communications/templates"
+
+function concurrentStopDb(existing: Record<string, any>) {
+  const stopped = {
+    ...existing,
+    sms_consent: false,
+    sms_consent_at: null,
+    metadata: {
+      ...existing.metadata,
+      sms_opt_out_at: "2026-07-11T12:00:00.000Z",
+    },
+  }
+  const updates: Record<string, any>[] = []
+  let firstCount = 0
+  const db: any = () => {
+    const chain: any = {}
+    for (const method of ["whereNull", "where"]) {
+      chain[method] = () => chain
+    }
+    chain.first = async () => (firstCount++ === 0 ? existing : stopped)
+    chain.update = async (data: Record<string, any>) => {
+      updates.push(data)
+      return 1
+    }
+    return chain
+  }
+  db.raw = (sql: string, bindings: unknown[]) => ({ sql, bindings })
+  return { db, updates }
+}
 
 describe("communications helpers", () => {
   const originalEnv = { ...process.env }
@@ -115,7 +144,7 @@ describe("communications helpers", () => {
     expect(
       hasQualifyingSmsMarketingConsent(
         { phone: "4045559999", ...mapped },
-        "+14045559999"
+        "+14045550100"
       )
     ).toBe(false)
   })
@@ -146,6 +175,37 @@ describe("communications helpers", () => {
     ).toBe(false)
   })
 
+  it("uses an atomic STOP-wins update for concurrent consent replay", async () => {
+    const existing = {
+      id: "gpcprof_1",
+      medusa_customer_id: "cus_1",
+      email: "shopper@example.com",
+      email_lower: "shopper@example.com",
+      phone: "4045550100",
+      sms_consent: true,
+      sms_consent_at: new Date("2026-07-10T12:00:00.000Z"),
+      email_consent: false,
+      metadata: {},
+      preferences: {},
+      preference_token: "pref_1",
+    }
+    const { db, updates } = concurrentStopDb(existing)
+    const result = await upsertCustomerProfile(db, {
+      medusa_customer_id: "cus_1",
+      phone: "4045550100",
+      sms_consent: true,
+      sms_consent_at: "2026-07-10T12:00:00.000Z",
+      metadata: {
+        sms_consent_at: "2026-07-10T12:00:00.000Z",
+      },
+    })
+
+    expect(result?.sms_consent).toBe(false)
+    expect(updates[0].sms_consent.sql).toContain("sms_opt_out_at")
+    expect(updates[0].metadata.sql).toContain("coalesce(metadata")
+    expect(updates[0].sms_consent).not.toBe(true)
+  })
+
   it("does not trust public identify traits as SMS consent evidence", () => {
     expect(
       withoutSmsConsentEvidence({
@@ -155,6 +215,10 @@ describe("communications helpers", () => {
         sms_consent: true,
         sms_consent_at: "2026-07-10T12:00:00.000Z",
         sms_consent_version: SMS_MARKETING_CONSENT_VERSION,
+        sms_program: SMS_MARKETING_PROGRAM,
+        sms_opt_out_at: "2026-07-11T12:00:00.000Z",
+        sms_capability_basis: "public-payload-must-not-overwrite",
+        SMS_CONSENT_PROVIDER: "case-insensitive-bypass",
       })
     ).toEqual({
       email: "customer@example.com",

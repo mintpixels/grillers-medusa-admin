@@ -1,5 +1,6 @@
 import crypto from "crypto"
 import {
+  applyInboundSmsConsentChange,
   canRestoreSmsMarketingConsentByKeyword,
   classifyInboundSms,
   isInSmsQuietHours,
@@ -27,10 +28,10 @@ jest.mock("../communications/queue", () => ({
   enqueueCommunicationEvent: jest.fn(async () => true),
 }))
 
-function fakeSmsDb(profile: Record<string, any>) {
+function fakeSmsDb(profile: Record<string, any>, messageCount = 0) {
   const writes: Array<{ table: string; data: any }> = []
   const db: any = (table: string) => {
-    const chain: any = { _write: false }
+    const chain: any = { _write: false, _count: false }
     for (const method of [
       "whereNull",
       "where",
@@ -54,10 +55,16 @@ function fakeSmsDb(profile: Record<string, any>) {
       writes.push({ table, data })
       return chain
     }
+    chain.count = () => {
+      chain._count = true
+      return chain
+    }
     chain.then = (resolve: (value: any) => void) =>
       Promise.resolve(
         chain._write
           ? []
+          : chain._count
+            ? [{ count: messageCount }]
           : table === "gp_customer_profile"
             ? [profile]
             : []
@@ -138,6 +145,60 @@ describe("marketing-only SMS policy", () => {
     )
   })
 
+  it.each([
+    "Your refund was issued.",
+    "Your order was refunded.",
+    "Your purchase was canceled.",
+    "Your purchase was cancelled.",
+    "Your cancellation is complete.",
+    "Your payment was received.",
+    "Your invoice is ready.",
+    "Reset your password.",
+    "Complete account verification.",
+    "Your OTP is 123456.",
+    "Your verification code is 123456.",
+    "Code: 123456",
+    "Your return was approved.",
+  ])("rejects transactional SMS mislabeled as marketing: %s", (copy) => {
+    expect(
+      validateSmsMarketingContent(
+        `Griller's Pride: ${copy} Reply STOP to unsubscribe.`
+      )
+    ).toBe("sms_use_case_mismatch")
+  })
+
+  it("keeps coupon-code marketing copy eligible", () => {
+    expect(
+      validateSmsMarketingContent(
+        "Griller's Pride seasonal special: use promo code SUMMER10. Reply STOP to unsubscribe."
+      )
+    ).toBeNull()
+  })
+
+  it("rejects public URL shorteners", () => {
+    expect(
+      validateSmsMarketingContent(
+        "Griller's Pride seasonal special: https://bit.ly/gp-deal Reply STOP to unsubscribe."
+      )
+    ).toBe("sms_public_shortener_not_allowed")
+  })
+
+  it("requires affirmative marketing language", () => {
+    expect(
+      validateSmsMarketingContent(
+        "Griller's Pride has an important update. Reply STOP to unsubscribe."
+      )
+    ).toBe("sms_marketing_intent_missing")
+  })
+
+  it("requires an actual STOP instruction", () => {
+    expect(
+      validateSmsMarketingContent(
+        "STOP by our store for a Griller's Pride holiday special."
+      )
+    ).toBe("sms_opt_out_instruction_missing")
+  })
+
   it("lets START restore only a prior qualifying v3 customer opt-in", () => {
     const profile = {
       phone: "4045550100",
@@ -210,6 +271,96 @@ describe("marketing-only SMS policy", () => {
       writes.find((write) => write.table === "gp_message_log")
     ).toBeUndefined()
   })
+
+  it("does not let a consented staff test bypass SMS quiet hours", async () => {
+    jest.useFakeTimers().setSystemTime(new Date("2026-07-14T11:00:00.000Z"))
+    try {
+      const profile = {
+        id: "gpcprof_v3",
+        email: "staff@example.com",
+        email_lower: "staff@example.com",
+        phone: "4045550100",
+        sms_consent: true,
+        sms_consent_at: "2026-07-10T12:00:00.000Z",
+        metadata: v3ConsentMetadata(),
+      }
+      const { db, writes } = fakeSmsDb(profile)
+      const container = { resolve: () => db } as any
+
+      const result = await sendTrackedSms(container, {
+        to: "+14045550100",
+        body: "Griller's Pride holiday specials. Reply STOP to unsubscribe.",
+        stream: "broadcast",
+        purpose: "broadcast",
+        template_key: "campaign-sms-test",
+        profile_id: profile.id,
+        staff_test: true,
+      })
+
+      expect(result).toEqual({
+        ok: false,
+        deferred: true,
+        error: "sms_quiet_hours",
+      })
+      expect(
+        writes.find((write) => write.table === "gp_message_log")
+      ).toBeUndefined()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it("counts consented staff tests against the rolling 30-day cap", async () => {
+    jest.useFakeTimers().setSystemTime(new Date("2026-07-14T20:00:00.000Z"))
+    try {
+      const profile = {
+        id: "gpcprof_v3",
+        email: "staff@example.com",
+        email_lower: "staff@example.com",
+        phone: "4045550100",
+        sms_consent: true,
+        sms_consent_at: "2026-07-10T12:00:00.000Z",
+        metadata: v3ConsentMetadata(),
+      }
+      const { db, writes } = fakeSmsDb(profile, 6)
+      const container = { resolve: () => db } as any
+
+      const result = await sendTrackedSms(container, {
+        to: "+14045550100",
+        body: "Griller's Pride seasonal special. Reply STOP to unsubscribe.",
+        stream: "broadcast",
+        purpose: "broadcast",
+        template_key: "campaign-sms-test",
+        profile_id: profile.id,
+        staff_test: true,
+      })
+
+      expect(result).toEqual({ ok: true, skipped: true })
+      expect(
+        writes.find((write) => write.table === "gp_communication_event")?.data
+          ?.properties?.reason
+      ).toBe("monthly_frequency_cap")
+      expect(
+        writes.find((write) => write.table === "gp_message_log")
+      ).toBeUndefined()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it("rejects malformed inbound From values before building a SQL match", async () => {
+    const db = jest.fn(() => {
+      throw new Error("SQL must not be reached")
+    })
+
+    await expect(applyInboundSmsConsentChange(db, "", "stop")).resolves.toEqual({
+      updated: 0,
+    })
+    await expect(
+      applyInboundSmsConsentChange(db, "+1 (000) 000-0000", "start")
+    ).resolves.toEqual({ updated: 0 })
+    expect(db).not.toHaveBeenCalled()
+  })
 })
 
 describe("toE164", () => {
@@ -226,7 +377,7 @@ describe("toE164", () => {
   })
 })
 
-describe("sms quiet hours (America/New_York)", () => {
+describe("sms quiet hours", () => {
   const prevStart = process.env.COMMS_SMS_QUIET_START
   const prevEnd = process.env.COMMS_SMS_QUIET_END
   afterEach(() => {
@@ -234,19 +385,19 @@ describe("sms quiet hours (America/New_York)", () => {
     process.env.COMMS_SMS_QUIET_END = prevEnd
   })
 
-  it("blocks 7am ET and allows 10am ET (summer)", () => {
+  it("uses the conservative all-US 3pm-9pm ET window by default", () => {
     delete process.env.COMMS_SMS_QUIET_START
     delete process.env.COMMS_SMS_QUIET_END
-    // 2026-07-14: EDT (UTC-4). 07:00 ET = 11:00Z; 10:00 ET = 14:00Z.
-    expect(isInSmsQuietHours(new Date("2026-07-14T11:00:00Z"))).toBe(true)
-    expect(isInSmsQuietHours(new Date("2026-07-14T14:00:00Z"))).toBe(false)
+    // 2026-07-14: EDT (UTC-4). 14:00 ET = 18:00Z; 16:00 ET = 20:00Z.
+    expect(isInSmsQuietHours(new Date("2026-07-14T18:00:00Z"))).toBe(true)
+    expect(isInSmsQuietHours(new Date("2026-07-14T20:00:00Z"))).toBe(false)
   })
 
-  it("blocks 9pm ET (past the 20:30 cutoff), winter too", () => {
+  it("blocks 9pm ET at the national-window cutoff", () => {
     // 2026-12-15: EST (UTC-5). 21:00 ET = 02:00Z next day.
     expect(isInSmsQuietHours(new Date("2026-12-16T02:00:00Z"))).toBe(true)
-    // 12:00 ET = 17:00Z — allowed.
-    expect(isInSmsQuietHours(new Date("2026-12-15T17:00:00Z"))).toBe(false)
+    // 16:00 ET = 21:00Z — allowed.
+    expect(isInSmsQuietHours(new Date("2026-12-15T21:00:00Z"))).toBe(false)
   })
 })
 

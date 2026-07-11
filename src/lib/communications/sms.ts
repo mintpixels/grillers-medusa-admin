@@ -19,14 +19,14 @@ type KnexLike = any
  *  - Marketing/lifecycle texts require profile.sms_consent — the versioned
  *    record written by signup/checkout/first-login verification. Checked AT
  *    SEND TIME, so a STOP that landed a second ago wins.
- *  - STOP/UNSUBSCRIBE (webhook below) flips consent off, writes a
- *    suppression row for audit, and Twilio's own carrier-level block is a
- *    second net under ours.
- *  - Quiet hours: no marketing SMS outside COMMS_SMS_QUIET_* (default
- *    09:00–20:30 America/New_York) — conservative inside TCPA's 8am–9pm.
+ *  - STOP/UNSUBSCRIBE (webhook below) atomically flips consent off and stores
+ *    opt-out audit metadata; Twilio's carrier-level block is a second net.
+ *  - Quiet hours: without a trusted recipient timezone, marketing SMS sends
+ *    only 15:00–21:00 America/New_York, a window that stays inside 9am–9pm
+ *    across every US timezone. Staff tests obey it too.
  *  - Shabbat/Yom Tov blackout applies platform-wide, same as email.
- *  - Weekly cap: COMMS_SMS_WEEKLY_CAP (default 2) per recipient across all
- *    campaigns/flows.
+ *  - Hard cap: six marketing texts per phone in any rolling 30 days,
+ *    including staff tests. The existing weekly cap remains a tighter guard.
  */
 
 const TWILIO_API = "https://api.twilio.com/2010-04-01"
@@ -61,11 +61,11 @@ export function toE164(value: string | null | undefined): string | null {
   return `+1${ten}`
 }
 
-// ─── Quiet hours (America/New_York) ──────────────────────────────────
+// ─── Quiet hours (recipient zone or conservative national window) ───
 
-function etMinutesOfDay(at: Date): number {
+function zonedMinutesOfDay(at: Date, timeZone: string): number {
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
+    timeZone,
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
@@ -81,10 +81,28 @@ function parseHm(value: string, fallbackMinutes: number): number {
   return Number(m[1]) * 60 + Number(m[2])
 }
 
-export function isInSmsQuietHours(at: Date = new Date()): boolean {
-  const start = parseHm(process.env.COMMS_SMS_QUIET_START || "09:00", 9 * 60)
-  const end = parseHm(process.env.COMMS_SMS_QUIET_END || "20:30", 20 * 60 + 30)
-  const nowMin = etMinutesOfDay(at)
+export function isInSmsQuietHours(
+  at: Date = new Date(),
+  recipientTimeZone?: string | null
+): boolean {
+  const timeZone = recipientTimeZone || "America/New_York"
+  const conservativeNationalWindow = !recipientTimeZone
+  const defaultStart = conservativeNationalWindow ? "15:00" : "09:00"
+  const defaultEnd = conservativeNationalWindow ? "21:00" : "20:30"
+  const start = parseHm(
+    process.env.COMMS_SMS_QUIET_START || defaultStart,
+    conservativeNationalWindow ? 15 * 60 : 9 * 60
+  )
+  const end = parseHm(
+    process.env.COMMS_SMS_QUIET_END || defaultEnd,
+    conservativeNationalWindow ? 21 * 60 : 20 * 60 + 30
+  )
+  let nowMin: number
+  try {
+    nowMin = zonedMinutesOfDay(at, timeZone)
+  } catch {
+    nowMin = zonedMinutesOfDay(at, "America/New_York")
+  }
   // Allowed window is [start, end); anything else is quiet.
   return !(nowMin >= start && nowMin < end)
 }
@@ -107,8 +125,8 @@ export type SendTrackedSmsInput = {
   idempotency_key?: string | null
   /**
    * Staff-initiated test to an explicitly typed number. Consent still
-   * applies; quiet hours and the weekly cap are skipped for template
-   * iteration. The Shabbat/Yom Tov blackout still applies.
+   * applies, as do quiet hours, blackout, and the rolling 30-day hard cap.
+   * Only the tighter weekly cap is skipped for template iteration.
    */
   staff_test?: boolean
 }
@@ -137,7 +155,38 @@ export function isSmsMarketingPurpose(purpose: CommunicationPurpose): boolean {
 }
 
 const NON_MARKETING_SMS_LANGUAGE =
-  /\b(order|delivery|shipping|shipment|tracking|pickup|receipt|confirmation)\b/i
+  /\b(order|delivery|shipping|shipment|tracking|pickup|receipt|confirmation|refund(?:ed|s|ing)?|cancel(?:l?ed|l?ing|lations?|s)?|payments?|invoices?|passwords?|account\s+verification|verification|otps?|passcodes?|(?:one[- ]time|security|authentication|login|access)\s+(?:pass)?codes?|your\s+(?:verification\s+)?code|code(?:\s+is)?\s*[:#-]?\s*\d{4,8}|return(?:ed|s|ing)?)\b/i
+
+const MARKETING_SMS_LANGUAGE =
+  /\b(seasonal|specials?|sales?|promotions?|promotional|offers?|deals?|discounts?|coupons?|new\s+products?|product\s+(?:announcements?|availability)|holiday\s+(?:sales?|promotions?|specials?)|back\s+in\s+stock)\b/i
+
+const PUBLIC_URL_SHORTENER_HOSTS = new Set([
+  "bit.ly",
+  "buff.ly",
+  "cutt.ly",
+  "goo.gl",
+  "is.gd",
+  "lnkd.in",
+  "ow.ly",
+  "rb.gy",
+  "rebrand.ly",
+  "shorturl.at",
+  "t.co",
+  "tinyurl.com",
+  "v.gd",
+])
+
+function containsPublicUrlShortener(text: string): boolean {
+  const domains = text.matchAll(
+    /(?:https?:\/\/)?(?:www\.)?([a-z0-9.-]+\.[a-z]{2,})(?:[/:?#]|\b)/gi
+  )
+  for (const match of domains) {
+    if (PUBLIC_URL_SHORTENER_HOSTS.has(String(match[1] || "").toLowerCase())) {
+      return true
+    }
+  }
+  return false
+}
 
 export function validateSmsMarketingContent(body: unknown): string | null {
   const text = String(body || "").trim()
@@ -146,7 +195,14 @@ export function validateSmsMarketingContent(body: unknown): string | null {
     return "sms_use_case_mismatch"
   }
   if (!/griller'?s pride/i.test(text)) return "sms_brand_missing"
-  if (!/\bstop\b/i.test(text)) return "sms_opt_out_instruction_missing"
+  if (containsPublicUrlShortener(text)) return "sms_public_shortener_not_allowed"
+  if (!MARKETING_SMS_LANGUAGE.test(text)) return "sms_marketing_intent_missing"
+  if (
+    !/\b(?:reply|text)\s+stop\b/i.test(text) ||
+    !/\b(?:opt\s*out|unsubscribe)\b/i.test(text)
+  ) {
+    return "sms_opt_out_instruction_missing"
+  }
   return null
 }
 
@@ -269,9 +325,12 @@ export async function sendTrackedSms(
       }
     }
 
-    // 3) Quiet hours (TCPA): defer to the next window opening. Staff
-    // tests to the operator's own phone are exempt.
-    if (!input.staff_test && isInSmsQuietHours(now)) {
+    // 3) Quiet hours (TCPA): defer every marketing send, including staff
+    // tests. A test flag is never permission to send during quiet hours.
+    const recipientTimeZone = String(
+      metadataObject(profile?.metadata).sms_recipient_timezone || ""
+    ).trim()
+    if (isInSmsQuietHours(now, recipientTimeZone || null)) {
       return {
         ok: false,
         deferred: true,
@@ -279,7 +338,27 @@ export async function sendTrackedSms(
       }
     }
 
-    // 4) Weekly cap (staff tests exempt).
+    // 4) The signed program promises no more than six messages per month.
+    // Enforce that as a non-configurable rolling 30-day hard cap; staff tests
+    // count because they are real Twilio traffic to the same phone.
+    const monthlyCap = 6
+    const since30Days = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+    const recent30Days = await db("gp_message_log")
+      .whereNull("deleted_at")
+      .where("channel", "sms")
+      .whereIn("message_purpose", ["broadcast", "marketing_1to1"])
+      .whereRaw("metadata->>'phone' = ?", [phone])
+      .whereIn("status", ["queued", "sent", "delivered"])
+      .where("created_at", ">=", since30Days)
+      .count("id as count")
+    if (Number(recent30Days?.[0]?.count || 0) >= monthlyCap) {
+      return suppress("monthly_frequency_cap", {
+        cap: monthlyCap,
+        window_days: 30,
+      })
+    }
+
+    // 5) Existing tighter weekly cap (staff tests exempt only here).
     const cap = Number(process.env.COMMS_SMS_WEEKLY_CAP || 2)
     if (!input.staff_test && Number.isFinite(cap) && cap > 0) {
       const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
@@ -297,7 +376,7 @@ export async function sendTrackedSms(
     }
   }
 
-  // 5) Idempotency.
+  // 6) Idempotency.
   const idempotencyKey =
     input.idempotency_key ||
     [
@@ -481,8 +560,12 @@ export async function applyInboundSmsConsentChange(
   phoneE164: string,
   action: "stop" | "start"
 ): Promise<{ updated: number }> {
-  const digits = phoneE164.replace(/\D/g, "")
-  const ten = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits
+  const normalizedPhone = toE164(phoneE164)
+  if (!normalizedPhone) return { updated: 0 }
+  const ten = normalizedPhone.slice(-10)
+  // NANP area/exchange codes cannot begin with 0 or 1. This prevents a
+  // syntactically ten-digit but non-addressable value from entering SQL.
+  if (!/^[2-9]\d{2}[2-9]\d{6}$/.test(ten)) return { updated: 0 }
   const profiles = await db("gp_customer_profile")
     .whereNull("deleted_at")
     .whereRaw("regexp_replace(coalesce(phone, ''), '\\D', '', 'g') like ?", [
@@ -500,7 +583,6 @@ export async function applyInboundSmsConsentChange(
 
   let updated = 0
   for (const profile of profiles) {
-    const metadata = metadataObject(profile.metadata)
     if (action === "start") {
       if (!canRestoreSmsMarketingConsentByKeyword(profile, phoneE164)) {
         // START may restore a previously documented v3 marketing opt-in; it
@@ -510,23 +592,24 @@ export async function applyInboundSmsConsentChange(
       }
     }
     const changedAt = new Date()
+    const consentChangeMetadata =
+      action === "start"
+        ? {
+            sms_consent_status: "subscribed",
+            sms_consent_restart_at: changedAt.toISOString(),
+            sms_consent_restart_source: "twilio_inbound_start",
+          }
+        : {
+            sms_consent_status: "unsubscribed",
+            sms_opt_out_at: changedAt.toISOString(),
+            sms_opt_out_source: "twilio_inbound_stop",
+          }
     await db("gp_customer_profile").where("id", profile.id).update({
       sms_consent: action === "start",
       sms_consent_at: action === "start" ? changedAt : null,
-      metadata: {
-        ...metadata,
-        sms_consent_status:
-          action === "start" ? "subscribed" : "unsubscribed",
-        ...(action === "start"
-          ? {
-              sms_consent_restart_at: changedAt.toISOString(),
-              sms_consent_restart_source: "twilio_inbound_start",
-            }
-          : {
-              sms_opt_out_at: changedAt.toISOString(),
-              sms_opt_out_source: "twilio_inbound_stop",
-            }),
-      },
+      metadata: db.raw("coalesce(metadata, '{}'::jsonb) || ?::jsonb", [
+        JSON.stringify(consentChangeMetadata),
+      ]),
       updated_at: changedAt,
     })
     await recordCommunicationEvent(db, {

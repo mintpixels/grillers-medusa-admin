@@ -20,6 +20,22 @@ function headerMap(req: MedusaRequest): Record<string, string> {
   }
 }
 
+const PUBLIC_IDENTIFY_METADATA_KEYS = new Set([
+  "experiment_context",
+  "language",
+  "locale",
+  "timezone",
+])
+
+function publicIdentifyMetadata(traits: Record<string, any>) {
+  const sanitized = withoutSmsConsentEvidence(traits)
+  return Object.fromEntries(
+    Object.entries(sanitized).filter(([key]) =>
+      PUBLIC_IDENTIFY_METADATA_KEYS.has(key)
+    )
+  )
+}
+
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   if (!verifyServiceApiKey(headerMap(req))) {
     res.status(401).json({ ok: false, error: "unauthorized" })
@@ -33,18 +49,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
     const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
     const profile = await upsertCustomerProfile(db, {
-      medusa_customer_id: body.user_id || body.customer_id,
       email: traits.email || body.email,
-      phone: traits.phone || body.phone,
-      first_name: traits.first_name,
-      last_name: traits.last_name,
-      customer_type: traits.customer_type,
-      route_market: traits.route_market,
       // The identify key is intentionally public for storefront analytics,
       // so this endpoint is never authoritative evidence of written SMS
       // consent. Customer-created/updated subscribers read the authenticated
       // Medusa customer record and promote qualifying v3 evidence instead.
-      metadata: withoutSmsConsentEvidence(traits),
+      metadata: publicIdentifyMetadata(traits),
     })
 
     if (profile) {
@@ -52,7 +62,6 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         anonymous_id: body.anonymous_id,
         session_id: body.session_id,
         cart_id: body.cart_id,
-        medusa_customer_id: body.user_id || body.customer_id,
         email: traits.email || body.email,
       })
     }
@@ -61,12 +70,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       event_name: "identify",
       source: "storefront",
       profile_id: profile?.id,
-      medusa_customer_id: body.user_id || body.customer_id,
       anonymous_id: body.anonymous_id,
       session_id: body.session_id,
       cart_id: body.cart_id,
       email: traits.email || body.email,
-      properties: traits,
+      properties: publicIdentifyMetadata(traits),
     })
 
     res.status(202).json({ ok: true, profile_id: profile?.id || null })

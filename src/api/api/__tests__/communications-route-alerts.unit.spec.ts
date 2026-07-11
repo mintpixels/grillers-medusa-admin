@@ -21,7 +21,12 @@ jest.mock("../../../lib/communications/core", () => ({
   subscribeProfile: jest.fn(),
   upsertCustomerProfile: jest.fn(),
   verifyServiceApiKey: jest.fn(() => true),
-  withoutSmsConsentEvidence: (value: Record<string, any>) => value,
+  withoutSmsConsentEvidence: (value: Record<string, any>) =>
+    Object.fromEntries(
+      Object.entries(value).filter(
+        ([key]) => !key.toLowerCase().startsWith("sms_")
+      )
+    ),
 }))
 
 jest.mock("../../../lib/ops-alert", () => ({
@@ -281,6 +286,48 @@ describe("communications public API route alerting", () => {
       has_email: true,
       error_message: "identity upsert failed for [redacted-email]",
     })
+  })
+
+  it("keeps public identify away from authoritative phone and customer identity", async () => {
+    const { req } = makeReq({
+      body: {
+        user_id: "cus_claimed",
+        anonymous_id: "anon_1",
+        traits: {
+          email: "shopper@example.com",
+          phone: "+14045550100",
+          first_name: "Overwritten",
+          sms_consent: true,
+          sms_program: "forged",
+          locale: "en-US",
+          timezone: "America/New_York",
+        },
+      },
+    })
+    const res = makeRes()
+
+    await identifyRoute.POST(req, res)
+
+    expect(res.statusCode).toBe(202)
+    expect(upsertCustomerProfile).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        email: "shopper@example.com",
+        metadata: {
+          locale: "en-US",
+          timezone: "America/New_York",
+        },
+      }
+    )
+    expect(recordIdentity).toHaveBeenCalledWith(
+      expect.anything(),
+      "gpcprof_1",
+      expect.not.objectContaining({ medusa_customer_id: expect.anything() })
+    )
+    expect(recordCommunicationEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.not.objectContaining({ medusa_customer_id: expect.anything() })
+    )
   })
 
   it("alerts when /api/subscribe cannot persist signup state", async () => {
