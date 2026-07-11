@@ -1,6 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { createCampaign } from "../../../../../lib/communications/admin"
+import { validateSmsMarketingContent } from "../../../../../lib/communications/sms"
 import {
   emitAdminCommunicationsRouteFailureAlert,
   respondAdminCommunicationsRouteFailure,
@@ -33,6 +34,17 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   if (!body.name || !body.subject) {
     res.status(400).json({ error: "name and subject are required" })
     return
+  }
+  if (body.channel === "sms") {
+    const smsError = validateSmsMarketingContent(body.sms_body)
+    if (smsError) {
+      res.status(400).json({
+        error: smsError,
+        message:
+          "SMS campaigns must be marketing-only, identify Griller's Pride, include STOP instructions, and omit order or delivery language.",
+      })
+      return
+    }
   }
   const actor = (req as any).auth_context?.actor_id || null
   try {

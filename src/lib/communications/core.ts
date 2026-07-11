@@ -118,6 +118,33 @@ export const MARKETING_SUPPRESSION_SCOPES = [
   "marketing_1to1",
 ]
 
+/**
+ * Toll-free SMS is registered as one marketing-only program.  These values
+ * intentionally mirror the customer-facing storefront disclosure so the
+ * durable profile record can prove exactly what the customer agreed to.
+ *
+ * Do not loosen this to a version prefix: a future disclosure/version should
+ * be reviewed and deployed deliberately before it starts qualifying people
+ * for marketing sends.
+ */
+export const SMS_MARKETING_CONSENT_VERSION = "sms-v3-2026-07-10"
+export const SMS_MARKETING_PROGRAM = "grillers_pride_marketing"
+export const SMS_MARKETING_PROVIDER = "twilio"
+export const SMS_MARKETING_CONSENT_PURPOSE = "marketing"
+export const SMS_MARKETING_CONSENT_METHOD = "customer_checkbox"
+export const SMS_MARKETING_DISCLOSURE =
+  "By checking this box, I agree to receive recurring automated marketing and promotional text messages from Griller's Pride, including specials, holiday promotions, and product availability announcements, at the mobile number provided. Consent is not a condition of purchase. Message frequency varies. Msg & data rates may apply. Reply STOP to opt out or HELP for help."
+
+export const SMS_MARKETING_CUSTOMER_SOURCES = [
+  "account_signup",
+  "checkout_account_creation",
+  "first_login_verification",
+] as const
+
+const SMS_MARKETING_CUSTOMER_SOURCE_SET = new Set<string>(
+  SMS_MARKETING_CUSTOMER_SOURCES
+)
+
 const tableId = (prefix: string) => `${prefix}_${crypto.randomUUID()}`
 
 export function normalizeEmail(value: unknown): string {
@@ -178,6 +205,112 @@ function truthyConsentValue(value: unknown): boolean {
   )
 }
 
+/** Public analytics identify calls may carry traits, never consent evidence. */
+export function withoutSmsConsentEvidence(
+  record: Record<string, any>
+): Record<string, any> {
+  return Object.fromEntries(
+    Object.entries(record).filter(
+      ([key]) =>
+        !key.startsWith("sms_consent") && key !== "sms_marketing_opt_in"
+    )
+  )
+}
+
+function normalizedUsPhone(value: unknown): string | null {
+  const digits = String(value || "").replace(/\D/g, "")
+  const ten =
+    digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits
+  return ten.length === 10 ? ten : null
+}
+
+function validConsentDate(value: unknown): value is Date | string {
+  if (!(value instanceof Date) && typeof value !== "string") return false
+  const date = value instanceof Date ? value : new Date(value)
+  return !Number.isNaN(date.getTime())
+}
+
+export function isStaleSmsConsentReplay(
+  incomingConsentAt: unknown,
+  priorOptOutAt: unknown,
+  currentlyConsented: boolean
+): boolean {
+  if (currentlyConsented) return false
+  if (!validConsentDate(incomingConsentAt) || !validConsentDate(priorOptOutAt)) {
+    return false
+  }
+  const incomingMs =
+    incomingConsentAt instanceof Date
+      ? incomingConsentAt.getTime()
+      : new Date(incomingConsentAt).getTime()
+  const optOutMs =
+    priorOptOutAt instanceof Date
+      ? priorOptOutAt.getTime()
+      : new Date(priorOptOutAt).getTime()
+  return incomingMs <= optOutMs
+}
+
+/**
+ * True only for the explicit, customer-originated v3 marketing checkbox.
+ * Legacy v1/v2 mixed-use, prechecked, and staff-attested records remain in
+ * storage for audit/history but fail this predicate and therefore cannot be
+ * used for an audience or a send.
+ */
+export function hasQualifyingSmsMarketingConsent(
+  profile: Record<string, any> | null | undefined,
+  sendingPhone?: unknown
+): boolean {
+  if (!profile || !truthyConsentValue(profile.sms_consent)) return false
+  if (!validConsentDate(profile.sms_consent_at)) return false
+
+  const metadata = jsonObject(profile.metadata)
+  if (
+    metadata.sms_consent_version !== SMS_MARKETING_CONSENT_VERSION ||
+    metadata.sms_program !== SMS_MARKETING_PROGRAM ||
+    metadata.sms_consent_provider !== SMS_MARKETING_PROVIDER ||
+    metadata.sms_consent_purpose !== SMS_MARKETING_CONSENT_PURPOSE ||
+    metadata.sms_consent_method !== SMS_MARKETING_CONSENT_METHOD ||
+    String(metadata.sms_consent_text || "").trim() !== SMS_MARKETING_DISCLOSURE ||
+    !SMS_MARKETING_CUSTOMER_SOURCE_SET.has(
+      String(metadata.sms_consent_source || "")
+    )
+  ) {
+    return false
+  }
+
+  const consentPhone = normalizedUsPhone(metadata.sms_consent_phone)
+  if (!consentPhone) return false
+  const activePhone = normalizedUsPhone(sendingPhone ?? profile.phone)
+  return Boolean(activePhone && activePhone === consentPhone)
+}
+
+/** Apply the database portion of the v3 qualification gate. */
+export function applySmsMarketingConsentWhere(query: KnexLike): KnexLike {
+  return query
+    .where("sms_consent", true)
+    .whereNotNull("sms_consent_at")
+    .whereRaw("metadata->>'sms_consent_version' = ?", [
+      SMS_MARKETING_CONSENT_VERSION,
+    ])
+    .whereRaw("metadata->>'sms_program' = ?", [SMS_MARKETING_PROGRAM])
+    .whereRaw("metadata->>'sms_consent_provider' = ?", [
+      SMS_MARKETING_PROVIDER,
+    ])
+    .whereRaw("metadata->>'sms_consent_purpose' = ?", [
+      SMS_MARKETING_CONSENT_PURPOSE,
+    ])
+    .whereRaw("metadata->>'sms_consent_method' = ?", [
+      SMS_MARKETING_CONSENT_METHOD,
+    ])
+    .whereRaw("metadata->>'sms_consent_text' = ?", [SMS_MARKETING_DISCLOSURE])
+    .whereRaw(
+      `metadata->>'sms_consent_source' in (${SMS_MARKETING_CUSTOMER_SOURCES.map(
+        () => "?"
+      ).join(", ")})`,
+      [...SMS_MARKETING_CUSTOMER_SOURCES]
+    )
+}
+
 export function smsConsentFromCustomerMetadata(
   metadata: unknown
 ): Partial<CustomerProfileInput> {
@@ -189,20 +322,31 @@ export function smsConsentFromCustomerMetadata(
 
   if (!consented) return {}
 
+  const candidate = {
+    sms_consent: true,
+    sms_consent_at: record.sms_consent_at,
+    phone: record.sms_consent_phone,
+    metadata: record,
+  }
+  if (!hasQualifyingSmsMarketingConsent(candidate, record.sms_consent_phone)) {
+    // Quarantine by omission. Do not rewrite or delete legacy evidence; the
+    // original Medusa customer metadata remains available for audit.
+    return {}
+  }
+
   return {
     sms_consent: true,
-    sms_consent_at:
-      typeof record.sms_consent_at === "string" ||
-      record.sms_consent_at instanceof Date
-        ? record.sms_consent_at
-        : undefined,
+    sms_consent_at: record.sms_consent_at,
     metadata: {
-      sms_consent_source: record.sms_consent_source || null,
-      sms_consent_version: record.sms_consent_version || null,
-      sms_consent_text: record.sms_consent_text || null,
-      sms_consent_phone: record.sms_consent_phone || null,
-      sms_consent_provider: record.sms_consent_provider || null,
-      sms_program: record.sms_program || null,
+      sms_consent_at: record.sms_consent_at,
+      sms_consent_source: record.sms_consent_source,
+      sms_consent_version: record.sms_consent_version,
+      sms_consent_text: record.sms_consent_text,
+      sms_consent_phone: record.sms_consent_phone,
+      sms_consent_provider: record.sms_consent_provider,
+      sms_program: record.sms_program,
+      sms_consent_purpose: record.sms_consent_purpose,
+      sms_consent_method: record.sms_consent_method,
     },
   }
 }
@@ -388,6 +532,36 @@ export async function upsertCustomerProfile(
   }
 
   if (existing) {
+    const existingMetadata = jsonObject(existing.metadata)
+    const incomingSmsConsentAt = input.sms_consent_at
+      ? asDate(input.sms_consent_at)
+      : null
+    const priorSmsOptOutAt = existingMetadata.sms_opt_out_at
+      ? asDate(existingMetadata.sms_opt_out_at)
+      : null
+    const staleSmsConsentReplay = Boolean(
+      input.sms_consent &&
+        isStaleSmsConsentReplay(
+          incomingSmsConsentAt,
+          priorSmsOptOutAt,
+          Boolean(existing.sms_consent)
+        )
+    )
+    const nextSmsConsent =
+      input.sms_consent === undefined
+        ? existing.sms_consent
+        : input.sms_consent && staleSmsConsentReplay
+          ? false
+          : input.sms_consent
+    const nextSmsConsentAt =
+      nextSmsConsent && incomingSmsConsentAt
+        ? incomingSmsConsentAt
+        : nextSmsConsent && existing.sms_consent_at
+          ? existing.sms_consent_at
+          : nextSmsConsent
+            ? now
+            : existing.sms_consent_at
+
     const patch = {
       medusa_customer_id:
         input.medusa_customer_id || existing.medusa_customer_id || null,
@@ -406,17 +580,13 @@ export async function upsertCustomerProfile(
         input.email_consent && !existing.email_consent_at
           ? now
           : existing.email_consent_at,
-      sms_consent:
-        input.sms_consent === undefined ? existing.sms_consent : input.sms_consent,
-      sms_consent_at:
-        input.sms_consent && !existing.sms_consent_at
-          ? asDate(input.sms_consent_at || now)
-          : existing.sms_consent_at,
+      sms_consent: nextSmsConsent,
+      sms_consent_at: nextSmsConsentAt,
       preferences,
       preference_token: existing.preference_token || newPreferenceToken(),
       last_active_at: now,
       metadata: {
-        ...jsonObject(existing.metadata),
+        ...existingMetadata,
         ...jsonObject(input.metadata),
       },
       updated_at: now,

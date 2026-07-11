@@ -5,6 +5,7 @@ import {
   recordIdentity,
   upsertCustomerProfile,
   verifyServiceApiKey,
+  withoutSmsConsentEvidence,
 } from "../../../lib/communications/core"
 import {
   communicationsApiLogger,
@@ -39,9 +40,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       last_name: traits.last_name,
       customer_type: traits.customer_type,
       route_market: traits.route_market,
-      sms_consent: traits.sms_consent,
-      sms_consent_at: traits.sms_consent_at,
-      metadata: traits,
+      // The identify key is intentionally public for storefront analytics,
+      // so this endpoint is never authoritative evidence of written SMS
+      // consent. Customer-created/updated subscribers read the authenticated
+      // Medusa customer record and promote qualifying v3 evidence instead.
+      metadata: withoutSmsConsentEvidence(traits),
     })
 
     if (profile) {

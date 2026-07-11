@@ -13,6 +13,7 @@ import {
   nextAllowedSendTime,
   resolveCalendarAnchor,
 } from "./hebrew-calendar"
+import { validateSmsMarketingContent } from "./sms"
 
 type KnexLike = any
 
@@ -47,6 +48,18 @@ type FlowStep =
       same_cart?: boolean
       same_order?: boolean
     }
+
+export function resolveFlowMessagePurpose(
+  stepPurpose: CommunicationPurpose | undefined,
+  flowPurpose: CommunicationPurpose | null | undefined,
+  flowStream: CommunicationStream
+): CommunicationPurpose {
+  if (stepPurpose) return stepPurpose
+  if (flowPurpose) return flowPurpose
+  if (flowStream === "broadcast") return "broadcast"
+  if (flowStream === "transactional") return "transactional"
+  return "marketing_1to1"
+}
 
 const now = () => new Date()
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID()}`
@@ -674,7 +687,10 @@ const FLOW_STEP_VALIDATORS: Record<string, (step: Record<string, any>) => string
   },
   sms: (step) => {
     if (!String(step.template_key || "").trim()) return "sms steps need a template_key"
-    if (!String(step.body || "").trim()) return "sms steps need a body"
+    const policyError = validateSmsMarketingContent(step.body)
+    if (policyError) {
+      return `sms marketing policy failed: ${policyError}`
+    }
     return null
   },
   exit_if_event: (step) => {
@@ -1048,7 +1064,11 @@ export async function runDueFlowEnrollments(
             profile.first_name || "there"
           ),
           stream: step.stream || (flow.message_stream as CommunicationStream) || "lifecycle",
-          purpose: step.purpose,
+          purpose: resolveFlowMessagePurpose(
+            step.purpose,
+            flow.message_purpose as CommunicationPurpose | undefined,
+            flow.message_stream as CommunicationStream
+          ),
           template_key: step.template_key,
           topic: step.topic || "promotions",
           profile_id: profile.id,
@@ -1108,14 +1128,11 @@ export async function runDueFlowEnrollments(
       const send = await sendTrackedEmail(container, {
         to: profile.email,
         stream: step.stream || (flow.message_stream as CommunicationStream),
-        purpose:
-          step.purpose ||
-          ((flow.message_purpose ||
-            (flow.message_stream === "broadcast"
-              ? "broadcast"
-              : flow.message_stream === "transactional"
-              ? "transactional"
-              : "marketing_1to1")) as CommunicationPurpose),
+        purpose: resolveFlowMessagePurpose(
+          step.purpose,
+          flow.message_purpose as CommunicationPurpose | undefined,
+          flow.message_stream as CommunicationStream
+        ),
         template_key: step.template_key,
         subject: email.subject,
         html: email.html,

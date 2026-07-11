@@ -21,6 +21,7 @@ jest.mock("../../../lib/communications/core", () => ({
   subscribeProfile: jest.fn(),
   upsertCustomerProfile: jest.fn(),
   verifyServiceApiKey: jest.fn(() => true),
+  withoutSmsConsentEvidence: (value: Record<string, any>) => value,
 }))
 
 jest.mock("../../../lib/ops-alert", () => ({

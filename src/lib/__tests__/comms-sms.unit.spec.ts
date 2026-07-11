@@ -1,10 +1,87 @@
 import crypto from "crypto"
 import {
+  canRestoreSmsMarketingConsentByKeyword,
   classifyInboundSms,
   isInSmsQuietHours,
+  resolveSmsPurpose,
+  smsWebOptInRequiredReply,
+  sendTrackedSms,
   toE164,
+  validateSmsMarketingContent,
   verifyTwilioSignature,
 } from "../communications/sms"
+import {
+  SMS_MARKETING_CONSENT_METHOD,
+  SMS_MARKETING_CONSENT_PURPOSE,
+  SMS_MARKETING_CONSENT_VERSION,
+  SMS_MARKETING_DISCLOSURE,
+  SMS_MARKETING_PROGRAM,
+  SMS_MARKETING_PROVIDER,
+} from "../communications/core"
+
+jest.mock("../communications/destinations", () => ({
+  writeEventDestinations: jest.fn(async () => undefined),
+}))
+
+jest.mock("../communications/queue", () => ({
+  enqueueCommunicationEvent: jest.fn(async () => true),
+}))
+
+function fakeSmsDb(profile: Record<string, any>) {
+  const writes: Array<{ table: string; data: any }> = []
+  const db: any = (table: string) => {
+    const chain: any = { _write: false }
+    for (const method of [
+      "whereNull",
+      "where",
+      "whereIn",
+      "whereRaw",
+      "select",
+      "onConflict",
+      "ignore",
+    ]) {
+      chain[method] = () => chain
+    }
+    chain.first = async () =>
+      table === "gp_customer_profile" ? profile : undefined
+    chain.insert = (data: any) => {
+      chain._write = true
+      writes.push({ table, data })
+      return chain
+    }
+    chain.update = (data: any) => {
+      chain._write = true
+      writes.push({ table, data })
+      return chain
+    }
+    chain.then = (resolve: (value: any) => void) =>
+      Promise.resolve(
+        chain._write
+          ? []
+          : table === "gp_customer_profile"
+            ? [profile]
+            : []
+      ).then(resolve)
+    return chain
+  }
+  db.raw = (sql: string) => sql
+  return { db, writes }
+}
+
+function v3ConsentMetadata(overrides: Record<string, any> = {}) {
+  return {
+    sms_consent_at: "2026-07-10T12:00:00.000Z",
+    sms_consent_source: "account_signup",
+    sms_consent_version: SMS_MARKETING_CONSENT_VERSION,
+    sms_consent_text: SMS_MARKETING_DISCLOSURE,
+    sms_consent_phone: "4045550100",
+    sms_consent_provider: SMS_MARKETING_PROVIDER,
+    sms_program: SMS_MARKETING_PROGRAM,
+    sms_consent_purpose: SMS_MARKETING_CONSENT_PURPOSE,
+    sms_consent_method: SMS_MARKETING_CONSENT_METHOD,
+    ...overrides,
+  }
+}
 
 describe("sms inbound classification", () => {
   it("recognizes the carrier STOP words", () => {
@@ -23,11 +100,115 @@ describe("sms inbound classification", () => {
     expect(help.action).toBe("help")
     expect(help.reply).toContain("STOP")
     expect(help.reply).toContain("(770) 454-8108")
+    expect(help.reply).toContain("marketing")
+    expect(help.reply).not.toMatch(/order|delivery|shipping/i)
   })
 
   it("ignores ordinary replies", () => {
     expect(classifyInboundSms("Thanks! See you Friday").action).toBe("none")
     expect(classifyInboundSms("").action).toBe("none")
+  })
+})
+
+describe("marketing-only SMS policy", () => {
+  it("uses semantic purpose rather than physical stream", () => {
+    expect(resolveSmsPurpose("transactional", "marketing_1to1")).toBe(
+      "marketing_1to1"
+    )
+    expect(resolveSmsPurpose("broadcast")).toBe("broadcast")
+    expect(resolveSmsPurpose("transactional")).toBe("transactional")
+  })
+
+  it("rejects use-case drift and incomplete marketing copy", () => {
+    expect(
+      validateSmsMarketingContent(
+        "Griller's Pride holiday specials. Reply STOP to unsubscribe."
+      )
+    ).toBeNull()
+    expect(
+      validateSmsMarketingContent(
+        "Griller's Pride: your order is ready. Reply STOP to unsubscribe."
+      )
+    ).toBe("sms_use_case_mismatch")
+    expect(validateSmsMarketingContent("Holiday specials. Reply STOP.")).toBe(
+      "sms_brand_missing"
+    )
+    expect(validateSmsMarketingContent("Griller's Pride holiday specials.")).toBe(
+      "sms_opt_out_instruction_missing"
+    )
+  })
+
+  it("lets START restore only a prior qualifying v3 customer opt-in", () => {
+    const profile = {
+      phone: "4045550100",
+      sms_consent: false,
+      sms_consent_at: null,
+      metadata: v3ConsentMetadata(),
+    }
+    expect(
+      canRestoreSmsMarketingConsentByKeyword(profile, "+14045550100")
+    ).toBe(true)
+    expect(
+      canRestoreSmsMarketingConsentByKeyword(
+        {
+          ...profile,
+          metadata: v3ConsentMetadata({
+            sms_consent_version: "sms-v2-2026-07-09",
+          }),
+        },
+        "+14045550100"
+      )
+    ).toBe(false)
+    expect(
+      canRestoreSmsMarketingConsentByKeyword(
+        {
+          ...profile,
+          metadata: v3ConsentMetadata({
+            sms_consent_source: "staff_phone_order",
+          }),
+        },
+        "+14045550100"
+      )
+    ).toBe(false)
+    expect(smsWebOptInRequiredReply()).toContain(
+      "unchecked marketing-text checkbox"
+    )
+    expect(smsWebOptInRequiredReply()).not.toContain("preferences")
+  })
+
+  it("does not let a staff test bypass qualified v3 consent", async () => {
+    const legacyProfile = {
+      id: "gpcprof_legacy",
+      email: "staff@example.com",
+      email_lower: "staff@example.com",
+      phone: "4045550100",
+      sms_consent: true,
+      sms_consent_at: "2026-07-09T12:00:00.000Z",
+      metadata: v3ConsentMetadata({
+        sms_consent_version: "sms-v2-2026-07-09",
+      }),
+    }
+    const { db, writes } = fakeSmsDb(legacyProfile)
+    const container = { resolve: () => db } as any
+
+    const result = await sendTrackedSms(container, {
+      to: "+14045550100",
+      body: "Griller's Pride holiday specials. Reply STOP to unsubscribe.",
+      stream: "broadcast",
+      purpose: "broadcast",
+      template_key: "campaign-sms-test",
+      profile_id: legacyProfile.id,
+      staff_test: true,
+    })
+
+    expect(result).toEqual({ ok: true, skipped: true })
+    expect(
+      writes.find((write) => write.table === "gp_communication_event")?.data
+        ?.properties?.reason
+    ).toBe("missing_qualified_sms_marketing_consent")
+    expect(
+      writes.find((write) => write.table === "gp_message_log")
+    ).toBeUndefined()
   })
 })
 

@@ -18,6 +18,24 @@ import { emitOpsAlert } from "../../../../lib/ops-alert"
  */
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const body = (req.body || {}) as CreateCustomerInput
+  const rawBody = body as CreateCustomerInput & Record<string, any>
+  const requestedSmsConsent =
+    rawBody.sms_marketing_opt_in === true ||
+    rawBody.sms_marketing_opt_in === "true" ||
+    rawBody.sms_marketing_opt_in === "on" ||
+    rawBody.sms_consent === true ||
+    rawBody.sms_consent === "true" ||
+    rawBody.customer_agreed_to_sms === true
+  if (requestedSmsConsent) {
+    return res.status(400).json({
+      type: "invalid_data",
+      message:
+        "Staff cannot create SMS marketing consent. The customer must use the unchecked customer opt-in form themselves.",
+      errors: {
+        sms_consent: "Only the customer can provide SMS marketing consent.",
+      },
+    })
+  }
   const result = validateCreateCustomer(body)
 
   if (!result.valid) {

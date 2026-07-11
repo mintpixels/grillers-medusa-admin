@@ -12,7 +12,12 @@ describe("validateFlowSteps", () => {
           subject: "Hi",
           heading: "Welcome",
         },
-        { type: "sms", template_key: "sms-1", body: "Hi {{first_name}}" },
+        {
+          type: "sms",
+          template_key: "sms-1",
+          body:
+            "Griller's Pride holiday specials for {{first_name}}. Reply STOP to unsubscribe.",
+        },
       ])
     ).toBeNull()
   })
@@ -36,5 +41,18 @@ describe("validateFlowSteps", () => {
 
   it("rejects an empty flow", () => {
     expect(validateFlowSteps([])).toContain("at least one step")
+  })
+
+  it("rejects SMS flow copy that drifts into transactional use cases", () => {
+    expect(
+      validateFlowSteps([
+        {
+          type: "sms",
+          template_key: "order-update",
+          body:
+            "Griller's Pride: your order is ready. Reply STOP to unsubscribe.",
+        },
+      ])
+    ).toContain("sms_use_case_mismatch")
   })
 })

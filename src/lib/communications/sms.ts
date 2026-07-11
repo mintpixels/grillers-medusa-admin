@@ -3,6 +3,7 @@ import type { MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { emitOpsAlert } from "../ops-alert"
 import {
+  hasQualifyingSmsMarketingConsent,
   recordCommunicationEvent,
   type CommunicationPurpose,
   type CommunicationStream,
@@ -105,9 +106,9 @@ export type SendTrackedSmsInput = {
   cart_id?: string | null
   idempotency_key?: string | null
   /**
-   * Staff-initiated test to an explicitly typed number. Skips consent,
-   * quiet hours, and the weekly cap (a designer testing their own copy);
-   * the Shabbat/Yom Tov blackout still applies.
+   * Staff-initiated test to an explicitly typed number. Consent still
+   * applies; quiet hours and the weekly cap are skipped for template
+   * iteration. The Shabbat/Yom Tov blackout still applies.
    */
   staff_test?: boolean
 }
@@ -121,8 +122,54 @@ export type SendTrackedSmsResult = {
   error?: string
 }
 
-function requiresSmsConsent(stream: CommunicationStream): boolean {
-  return stream === "broadcast" || stream === "lifecycle"
+export function resolveSmsPurpose(
+  stream: CommunicationStream,
+  purpose?: CommunicationPurpose
+): CommunicationPurpose {
+  if (purpose) return purpose
+  if (stream === "broadcast") return "broadcast"
+  if (stream === "lifecycle") return "marketing_1to1"
+  return "transactional"
+}
+
+export function isSmsMarketingPurpose(purpose: CommunicationPurpose): boolean {
+  return purpose === "marketing_1to1" || purpose === "broadcast"
+}
+
+const NON_MARKETING_SMS_LANGUAGE =
+  /\b(order|delivery|shipping|shipment|tracking|pickup|receipt|confirmation)\b/i
+
+export function validateSmsMarketingContent(body: unknown): string | null {
+  const text = String(body || "").trim()
+  if (!text) return "sms_body_missing"
+  if (NON_MARKETING_SMS_LANGUAGE.test(text)) {
+    return "sms_use_case_mismatch"
+  }
+  if (!/griller'?s pride/i.test(text)) return "sms_brand_missing"
+  if (!/\bstop\b/i.test(text)) return "sms_opt_out_instruction_missing"
+  return null
+}
+
+function metadataObject(value: unknown): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, any>)
+    : {}
+}
+
+export function canRestoreSmsMarketingConsentByKeyword(
+  profile: Record<string, any>,
+  phone: unknown
+): boolean {
+  const metadata = metadataObject(profile.metadata)
+  return hasQualifyingSmsMarketingConsent(
+    {
+      ...profile,
+      sms_consent: true,
+      sms_consent_at: metadata.sms_consent_at,
+      metadata,
+    },
+    phone
+  )
 }
 
 export async function sendTrackedSms(
@@ -134,8 +181,9 @@ export async function sendTrackedSms(
   ) as KnexLike
   const now = new Date()
   const config = twilioConfig()
+  const purpose = resolveSmsPurpose(input.stream, input.purpose)
 
-  const profile = input.profile_id
+  let profile = input.profile_id
     ? await db("gp_customer_profile")
         .whereNull("deleted_at")
         .where("id", input.profile_id)
@@ -145,6 +193,15 @@ export async function sendTrackedSms(
   const phone = toE164(input.to || profile?.phone)
   if (!phone) {
     return { ok: false, error: "missing_or_invalid_phone" }
+  }
+  if (!profile) {
+    const ten = phone.slice(-10)
+    profile = await db("gp_customer_profile")
+      .whereNull("deleted_at")
+      .whereRaw("regexp_replace(coalesce(phone, ''), '\\D', '', 'g') like ?", [
+        `%${ten}`,
+      ])
+      .first()
   }
 
   const suppress = async (reason: string, extra: Record<string, unknown> = {}) => {
@@ -160,6 +217,7 @@ export async function sendTrackedSms(
       properties: {
         channel: "sms",
         stream: input.stream,
+        purpose,
         topic: input.topic || null,
         phone_last4: phone.slice(-4),
         reason,
@@ -169,17 +227,26 @@ export async function sendTrackedSms(
     return { ok: true, skipped: true } as SendTrackedSmsResult
   }
 
-  // 1) Consent at send time (marketing/lifecycle only). Staff tests to a
-  // typed number are exempt.
-  if (!input.staff_test && requiresSmsConsent(input.stream)) {
-    if (!profile || !profile.sms_consent || !profile.sms_consent_at) {
-      return suppress("missing_sms_consent")
-    }
+  // Toll-free verification covers marketing only. Do not silently use the
+  // number for order, delivery, or other transactional/service programs.
+  if (!isSmsMarketingPurpose(purpose)) {
+    return suppress("sms_purpose_not_approved", { purpose })
   }
 
-  // 2) Shabbat/Yom Tov blackout — platform rule for every stream except
-  // truly transactional (customer-triggered) texts.
-  if (input.stream === "broadcast" || input.stream === "lifecycle") {
+  const contentError = validateSmsMarketingContent(input.body)
+  if (contentError) return suppress(contentError)
+
+  // 1) Consent at send time is keyed to message PURPOSE, not Twilio stream.
+  // A one-to-one marketing flow may ride the transactional stream for
+  // delivery, but it still needs the exact customer-originated v3 evidence.
+  if (!hasQualifyingSmsMarketingConsent(profile, phone)) {
+    return suppress("missing_qualified_sms_marketing_consent")
+  }
+
+  // 2) Shabbat/Yom Tov, quiet hours, and caps are marketing rules and must
+  // follow the semantic purpose even when the physical stream is named
+  // "transactional".
+  if (isSmsMarketingPurpose(purpose)) {
     const blackout = isInSendBlackout(now)
     if (blackout.blocked) {
       await recordCommunicationEvent(db, {
@@ -219,6 +286,7 @@ export async function sendTrackedSms(
       const recent = await db("gp_message_log")
         .whereNull("deleted_at")
         .where("channel", "sms")
+        .whereIn("message_purpose", ["broadcast", "marketing_1to1"])
         .whereRaw("metadata->>'phone' = ?", [phone])
         .whereIn("status", ["queued", "sent", "delivered"])
         .where("created_at", ">=", since)
@@ -261,7 +329,7 @@ export async function sendTrackedSms(
     email_lower: (profile?.email_lower as string) || "",
     channel: "sms",
     message_stream: input.stream,
-    message_purpose: input.purpose || (input.stream === "transactional" ? "transactional" : "marketing_1to1"),
+    message_purpose: purpose,
     topic: input.topic || null,
     template_key: input.template_key,
     flow_id: input.flow_id || null,
@@ -334,6 +402,7 @@ export async function sendTrackedSms(
       properties: {
         channel: "sms",
         stream: input.stream,
+        purpose,
         phone_last4: phone.slice(-4),
         message_sid: body?.sid || null,
       },
@@ -355,6 +424,7 @@ export async function sendTrackedSms(
       meta: {
         template_key: input.template_key,
         stream: input.stream,
+        purpose,
         message: String(error?.message || error).slice(0, 200),
       },
     }).catch(() => {})
@@ -385,17 +455,24 @@ export function classifyInboundSms(body: string): InboundSmsDecision {
     return {
       action: "start",
       reply:
-        "You're resubscribed to Griller's Pride texts. Msg & data rates may apply. Reply STOP to unsubscribe, HELP for help.",
+        "You're resubscribed to Griller's Pride marketing texts with specials, holiday promotions, and product availability announcements. Msg & data rates may apply. Reply STOP to unsubscribe, HELP for help.",
     }
   }
   if (word === "help" || word === "info") {
     return {
       action: "help",
       reply:
-        "Griller's Pride: order updates & occasional offers. Msg & data rates may apply. Reply STOP to unsubscribe. Questions? (770) 454-8108.",
+        "Griller's Pride marketing texts include specials, holiday promotions, and product availability announcements. Msg & data rates may apply. Reply STOP to unsubscribe. Questions? (770) 454-8108.",
     }
   }
   return { action: "none" }
+}
+
+export function smsWebOptInRequiredReply(): string {
+  const storefront =
+    process.env.STOREFRONT_BASE_URL ||
+    "https://grillers-medusa-frontend.vercel.app"
+  return `Griller's Pride could not restore marketing consent by text. To opt in, use the unchecked marketing-text checkbox during storefront account signup or first-login contact verification at ${storefront}/us/account. If that form is not shown, call (770) 454-8108. Reply HELP for help.`
 }
 
 /** Apply a STOP/START to the matching profile(s) by phone. */
@@ -411,13 +488,46 @@ export async function applyInboundSmsConsentChange(
     .whereRaw("regexp_replace(coalesce(phone, ''), '\\D', '', 'g') like ?", [
       `%${ten}`,
     ])
-    .select("id", "email", "email_lower")
+    .select(
+      "id",
+      "email",
+      "email_lower",
+      "phone",
+      "sms_consent",
+      "sms_consent_at",
+      "metadata"
+    )
 
+  let updated = 0
   for (const profile of profiles) {
+    const metadata = metadataObject(profile.metadata)
+    if (action === "start") {
+      if (!canRestoreSmsMarketingConsentByKeyword(profile, phoneE164)) {
+        // START may restore a previously documented v3 marketing opt-in; it
+        // must never upgrade a mixed/legacy/staff-attested record into valid
+        // express written consent.
+        continue
+      }
+    }
+    const changedAt = new Date()
     await db("gp_customer_profile").where("id", profile.id).update({
       sms_consent: action === "start",
-      sms_consent_at: action === "start" ? new Date() : null,
-      updated_at: new Date(),
+      sms_consent_at: action === "start" ? changedAt : null,
+      metadata: {
+        ...metadata,
+        sms_consent_status:
+          action === "start" ? "subscribed" : "unsubscribed",
+        ...(action === "start"
+          ? {
+              sms_consent_restart_at: changedAt.toISOString(),
+              sms_consent_restart_source: "twilio_inbound_start",
+            }
+          : {
+              sms_opt_out_at: changedAt.toISOString(),
+              sms_opt_out_source: "twilio_inbound_stop",
+            }),
+      },
+      updated_at: changedAt,
     })
     await recordCommunicationEvent(db, {
       event_name: action === "stop" ? "sms_opt_out" : "sms_opt_in_restored",
@@ -425,8 +535,9 @@ export async function applyInboundSmsConsentChange(
       profile_id: profile.id,
       properties: { channel: "sms", phone_last4: ten.slice(-4), source: "twilio_inbound" },
     })
+    updated += 1
   }
-  return { updated: profiles.length }
+  return { updated }
 }
 
 /**

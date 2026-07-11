@@ -3,6 +3,7 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import {
   applyInboundSmsConsentChange,
   classifyInboundSms,
+  smsWebOptInRequiredReply,
   verifyTwilioSignature,
 } from "../../../../lib/communications/sms"
 
@@ -84,6 +85,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const from = String(params.From || "")
     const body = String(params.Body || "")
     const decision = classifyInboundSms(body)
+    let reply = decision.reply
 
     if (decision.action === "stop" || decision.action === "start") {
       const db = req.scope.resolve(ContainerRegistrationKeys.PG_CONNECTION)
@@ -95,10 +97,13 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       logger?.info?.(
         `[twilio-sms] ${decision.action} from ${from.slice(-4)} → ${result.updated} profile(s)`
       )
+      if (decision.action === "start" && result.updated === 0) {
+        reply = smsWebOptInRequiredReply()
+      }
     }
 
     res.setHeader("Content-Type", "text/xml")
-    res.status(200).send(twiml(decision.reply))
+    res.status(200).send(twiml(reply))
   } catch (error) {
     logger?.error?.(
       `[twilio-sms] handler error: ${error instanceof Error ? error.message : String(error)}`

@@ -3,6 +3,8 @@ import type { MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { buildSimpleMessageEmail } from "../emails/templates/simple-message"
 import {
+  applySmsMarketingConsentWhere,
+  hasQualifyingSmsMarketingConsent,
   normalizeEmail,
   recordCommunicationEvent,
   recordSuppression,
@@ -106,9 +108,9 @@ export async function communicationOverview(container: MedusaContainer) {
       .where("email_consent", true)
       .count({ count: "*" })
       .first(),
-    db("gp_customer_profile")
-      .whereNull("deleted_at")
-      .where("sms_consent", true)
+    applySmsMarketingConsentWhere(
+      db("gp_customer_profile").whereNull("deleted_at")
+    )
       .count({ count: "*" })
       .first(),
     db("gp_message_log")
@@ -404,7 +406,9 @@ async function profilesForDefinition(
     )
   }
   if (definition.holiday_buyer === true) query = query.where("holiday_buyer", true)
-  if (definition.sms_consent === true) query = query.where("sms_consent", true)
+  if (definition.sms_consent === true) {
+    query = applySmsMarketingConsentWhere(query)
+  }
   if (definition.engagement_score_gte) {
     query = query.where("engagement_score", ">=", Number(definition.engagement_score_gte))
   }
@@ -499,8 +503,8 @@ async function audienceForSegment(db: KnexLike, segmentKey?: string | null) {
 
 /**
  * SMS-reachable audience for a segment: same membership as email, but
- * gated on sms_consent and a usable phone (the number captured at opt-in
- * wins; the profile phone is the fallback).
+ * gated on qualifying customer-originated v3 marketing consent. The number
+ * captured at opt-in wins and must still match the active sending number.
  */
 function preferencesObject(value: unknown): Record<string, any> {
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -524,13 +528,16 @@ async function smsAudienceForSegment(db: KnexLike, segmentKey?: string | null) {
   // closed rather than silently text a partial list.
   const baseOverflow = base.length > audienceLimit()
   const audience = base
-    .filter((p: Record<string, any>) => p.sms_consent && p.sms_consent_at)
     .map((p: Record<string, any>) => ({
       ...p,
       sms_phone:
-        preferencesObject(p.preferences).sms_consent_phone || p.phone || null,
+        preferencesObject(p.metadata).sms_consent_phone || p.phone || null,
     }))
-    .filter((p: Record<string, any>) => Boolean(p.sms_phone))
+    .filter(
+      (p: Record<string, any>) =>
+        Boolean(p.sms_phone) &&
+        hasQualifyingSmsMarketingConsent(p, p.sms_phone)
+    )
   return { audience, baseOverflow }
 }
 
@@ -929,9 +936,10 @@ export async function previewSegmentDefinition(
     limit: audienceLimit() + 1,
   })
   const smsReachable = profiles.filter(
-    (p: Record<string, any>) =>
-      p.sms_consent &&
-      ((p.preferences && (p.preferences as any).sms_consent_phone) || p.phone)
+    (p: Record<string, any>) => {
+      const smsPhone = preferencesObject(p.metadata).sms_consent_phone || p.phone
+      return Boolean(smsPhone) && hasQualifyingSmsMarketingConsent(p, smsPhone)
+    }
   ).length
   return {
     count: profiles.length,

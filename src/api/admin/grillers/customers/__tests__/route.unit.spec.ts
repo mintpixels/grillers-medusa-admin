@@ -65,6 +65,24 @@ describe("staff create-customer route (#277)", () => {
     expect(customerModule.createCustomers).not.toHaveBeenCalled()
   })
 
+  it("refuses staff-attested SMS marketing consent", async () => {
+    const customerModule = {
+      listCustomers: jest.fn(),
+      createCustomers: jest.fn(),
+    }
+    const res = makeRes()
+    await POST(
+      makeReq(
+        { ...validBody, sms_marketing_opt_in: true, customer_agreed_to_sms: true },
+        customerModule
+      ),
+      res
+    )
+    expect(res.statusCode).toBe(400)
+    expect(res.body.errors.sms_consent).toContain("Only the customer")
+    expect(customerModule.createCustomers).not.toHaveBeenCalled()
+  })
+
   it("returns 409 for a duplicate email instead of a generic server error", async () => {
     const customerModule = {
       listCustomers: jest.fn(async () => [
