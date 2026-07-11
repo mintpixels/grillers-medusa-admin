@@ -1,5 +1,5 @@
 import { WorkflowManager } from "@medusajs/framework/orchestration";
-import { assertResolvedProduct } from "../sync-product-to-strapi";
+import { assertResolvedProduct } from "../../workflows/sync-product-to-strapi";
 
 describe("syncProductWorkflow", () => {
   it("retries synchronously so the resolved step input and original error stay in memory", () => {
