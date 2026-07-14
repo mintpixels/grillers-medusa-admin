@@ -106,7 +106,7 @@ describe("communications helpers", () => {
     const metadata = {
       sms_marketing_opt_in: true,
       sms_consent_at: "2026-07-10T12:00:00.000Z",
-      sms_consent_source: "account_signup",
+      sms_consent_source: "account_profile",
       sms_consent_version: SMS_MARKETING_CONSENT_VERSION,
       sms_consent_text: SMS_MARKETING_DISCLOSURE,
       sms_consent_phone: "4045550100",
@@ -121,7 +121,7 @@ describe("communications helpers", () => {
       sms_consent_at: "2026-07-10T12:00:00.000Z",
       metadata: {
         sms_consent_at: "2026-07-10T12:00:00.000Z",
-        sms_consent_source: "account_signup",
+        sms_consent_source: "account_profile",
         sms_consent_version: SMS_MARKETING_CONSENT_VERSION,
         sms_consent_text: SMS_MARKETING_DISCLOSURE,
         sms_consent_phone: "4045550100",
@@ -167,6 +167,19 @@ describe("communications helpers", () => {
         sms_consent_source: "staff_phone_order",
       })
     ).toEqual({})
+    for (const staffSource of [
+      "staff",
+      "staff_impersonation",
+      "staff_phone_order",
+      "admin_staff_reorder",
+    ]) {
+      expect(
+        smsConsentFromCustomerMetadata({
+          ...valid,
+          sms_consent_source: staffSource,
+        })
+      ).toEqual({})
+    }
     expect(
       smsConsentFromCustomerMetadata({
         ...valid,

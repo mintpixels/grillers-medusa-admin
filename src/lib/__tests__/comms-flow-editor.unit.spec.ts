@@ -1,4 +1,7 @@
-import { validateFlowSteps } from "../communications/flows"
+import {
+  isFlowTriggerableEvent,
+  validateFlowSteps,
+} from "../communications/flows"
 
 describe("validateFlowSteps", () => {
   it("accepts the runner's step shapes", () => {
@@ -54,5 +57,28 @@ describe("validateFlowSteps", () => {
         },
       ])
     ).toContain("sms_use_case_mismatch")
+  })
+})
+
+describe("flow trigger telemetry denylist", () => {
+  it.each([
+    "sms_accepted",
+    "sms_queued",
+    "sms_sent",
+    "sms_delivered",
+    "sms_undelivered",
+    "sms_failed",
+    "transactional_sms_queued",
+    "transactional_sms_sent",
+    "transactional_sms_delivered",
+    "transactional_sms_undelivered",
+    "transactional_sms_failed",
+  ])("does not let delivery telemetry trigger a flow: %s", (eventName) => {
+    expect(isFlowTriggerableEvent(eventName)).toBe(false)
+  })
+
+  it("keeps customer business events triggerable", () => {
+    expect(isFlowTriggerableEvent("email_signup")).toBe(true)
+    expect(isFlowTriggerableEvent("order_completed")).toBe(true)
   })
 })

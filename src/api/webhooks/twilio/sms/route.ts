@@ -3,7 +3,8 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import {
   applyInboundSmsConsentChange,
   classifyInboundSms,
-  smsWebOptInRequiredReply,
+  marketingSmsInboundWebhookUrl,
+  validateMarketingTwilioWebhookTarget,
   verifyTwilioSignature,
 } from "../../../../lib/communications/sms"
 
@@ -19,12 +20,9 @@ import {
  * send, so the next queued message already sees it); Twilio's own
  * carrier-level opt-out list is the second net underneath.
  *
- * Responds with TwiML so Twilio sends our compliance replies.
+ * Twilio/carrier-owned STOP/START/Advanced-Opt-Out replies receive empty
+ * TwiML; the application still persists the consent change before acking.
  */
-
-const PUBLIC_URL =
-  process.env.TWILIO_SMS_WEBHOOK_URL ||
-  "https://grillers-medusa-admin-production.up.railway.app/webhooks/twilio/sms"
 
 function twiml(message?: string): string {
   if (!message) return `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`
@@ -33,6 +31,37 @@ function twiml(message?: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escaped}</Message></Response>`
+}
+
+export function marketingInboundClassificationInput(
+  params: Record<string, string>
+): string {
+  const managedOptOutType = String(params.OptOutType || "")
+    .trim()
+    .toLowerCase()
+  const bodyKeyword = String(params.Body || "").trim().toLowerCase()
+  if (managedOptOutType === "stop") return "stop"
+  if (managedOptOutType === "help") return "help"
+  if (
+    managedOptOutType === "start" &&
+    (bodyKeyword === "start" || bodyKeyword === "unstop")
+  ) {
+    return bodyKeyword
+  }
+  return params.Body || ""
+}
+
+export function marketingKeywordReplyOwnedByTwilio(
+  params: Record<string, string>,
+  action: "stop" | "start" | "help" | "none"
+): boolean {
+  // OptOutType means Advanced Opt-Out already matched and replied. Toll-free
+  // STOP/START network replies are carrier-owned even without OptOutType.
+  return (
+    Boolean(String(params.OptOutType || "").trim()) ||
+    action === "stop" ||
+    action === "start"
+  )
 }
 
 function bodyParams(req: MedusaRequest): Record<string, string> {
@@ -73,18 +102,28 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       ""
   )
 
-  if (!verifyTwilioSignature({ signature, url: PUBLIC_URL, params })) {
+  if (
+    !verifyTwilioSignature({
+      signature,
+      url: marketingSmsInboundWebhookUrl(),
+      params,
+    })
+  ) {
     logger?.warn?.("[twilio-sms] rejected inbound: bad signature")
     res.status(401).send("unauthorized")
     return
   }
+  if (!validateMarketingTwilioWebhookTarget(params, "inbound")) {
+    logger?.warn?.("[twilio-sms] rejected inbound: wrong Twilio target")
+    res.status(401).send("unauthorized")
+    return
+  }
 
-  // Past the signature gate: always 200 with TwiML so Twilio never retries
-  // into an error loop.
   try {
     const from = String(params.From || "")
-    const body = String(params.Body || "")
-    const decision = classifyInboundSms(body)
+    const decision = classifyInboundSms(
+      marketingInboundClassificationInput(params)
+    )
     let reply = decision.reply
 
     if (decision.action === "stop" || decision.action === "start") {
@@ -92,14 +131,20 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       const result = await applyInboundSmsConsentChange(
         db,
         from,
-        decision.action
+        decision.action,
+        { messageSid: params.MessageSid || null }
       )
       logger?.info?.(
-        `[twilio-sms] ${decision.action} from ${from.slice(-4)} → ${result.updated} profile(s)`
+        `[twilio-sms] ${decision.action} from ${from.slice(-4)} → ${result.updated} profile(s)${
+          result.nonRestorationReason
+            ? `; not restored: ${result.nonRestorationReason}`
+            : ""
+        }`
       )
-      if (decision.action === "start" && result.updated === 0) {
-        reply = smsWebOptInRequiredReply()
-      }
+    }
+
+    if (marketingKeywordReplyOwnedByTwilio(params, decision.action)) {
+      reply = undefined
     }
 
     res.setHeader("Content-Type", "text/xml")
@@ -108,7 +153,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     logger?.error?.(
       `[twilio-sms] handler error: ${error instanceof Error ? error.message : String(error)}`
     )
+    // Twilio retries verified 5xx webhooks. Acknowledging a failed STOP write
+    // would lose the local suppression even though the carrier already blocked.
     res.setHeader("Content-Type", "text/xml")
-    res.status(200).send(twiml())
+    res.status(500).send(twiml())
   }
 }

@@ -787,10 +787,20 @@ export const FLOW_TRIGGER_DENYLIST = new Set([
   "email_bounced",
   "email_complained",
   "email_failed",
+  "sms_accepted",
+  "sms_queued",
   "sms_sent",
+  "sms_delivered",
+  "sms_undelivered",
   "sms_suppressed",
   "sms_deferred_blackout",
   "sms_failed",
+  "transactional_sms_queued",
+  "transactional_sms_sent",
+  "transactional_sms_delivered",
+  "transactional_sms_undelivered",
+  "transactional_sms_failed",
+  "transactional_sms_suppressed",
 ])
 
 export function isFlowTriggerableEvent(eventName: unknown): boolean {

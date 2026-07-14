@@ -612,6 +612,13 @@ export default defineMiddlewares({
       middlewares: [authenticate("customer", ["session", "bearer"])],
     },
     {
+      // Marketing SMS state is customer-private and must be read from the
+      // communications source of truth, never from caller-supplied identity.
+      matcher: "/store/grillers/communications/sms-marketing-status",
+      method: ["GET"],
+      middlewares: [authenticate("customer", ["session", "bearer"])],
+    },
+    {
       matcher: "/store/carts/:id/line-items",
       method: ["POST"],
       // Heal stale unserviceable methods first (always runs, fail-open), then

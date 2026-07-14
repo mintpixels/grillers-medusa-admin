@@ -735,8 +735,13 @@ async function sendOrderTransactionalSms(
       throw transportError
     }
     const responseBody: any = await response.json().catch(() => ({}))
-    providerErrorCode = String(responseBody?.error_code || "").trim() || null
-    if (!response.ok || responseBody?.error_code) {
+    // Message resources expose `error_code`; Twilio REST error envelopes use
+    // top-level `code`. Normalize both so carrier opt-outs (21610) cannot be
+    // missed on a synchronous 4xx response.
+    providerErrorCode =
+      String(responseBody?.error_code ?? responseBody?.code ?? "").trim() ||
+      null
+    if (!response.ok || providerErrorCode) {
       if (response.status >= 500) providerOutcomeAmbiguous = true
       throw new Error(
         String(responseBody?.message || `twilio_http_${response.status}`)

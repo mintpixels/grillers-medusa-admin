@@ -556,7 +556,7 @@ describe("transactional Twilio transport", () => {
       status: 400,
       headers: { get: () => null },
       json: async () => ({
-        error_code: 21610,
+        code: 21610,
         message: "Attempt to send to unsubscribed recipient",
       }),
     }) as any

@@ -137,6 +137,7 @@ export const SMS_MARKETING_DISCLOSURE =
 
 export const SMS_MARKETING_CUSTOMER_SOURCES = [
   "account_signup",
+  "account_profile",
   "checkout_account_creation",
   "first_login_verification",
 ] as const
@@ -250,7 +251,9 @@ export function isStaleSmsConsentReplay(
 }
 
 /**
- * True only for the explicit, customer-originated v3 marketing checkbox.
+ * True only for the explicit, customer-originated v3 marketing checkbox on
+ * signup, checkout account creation, first-login verification, or the
+ * authenticated customer account profile.
  * Legacy v1/v2 mixed-use, prechecked, and staff-attested records remain in
  * storage for audit/history but fail this predicate and therefore cannot be
  * used for an audience or a send.
