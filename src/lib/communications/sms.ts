@@ -1465,8 +1465,11 @@ export async function applyInboundSmsConsentChange(
           'sms_carrier_opt_outs',
           coalesce(metadata->'sms_carrier_opt_outs', '{}'::jsonb) ||
             jsonb_build_object(
-              ?,
-              coalesce(metadata->'sms_carrier_opt_outs'->?, '{}'::jsonb) || ?::jsonb
+              cast(? as text),
+              coalesce(
+                metadata->'sms_carrier_opt_outs'->cast(? as text),
+                '{}'::jsonb
+              ) || ?::jsonb
             )
         )`,
         [

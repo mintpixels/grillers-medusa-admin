@@ -720,6 +720,7 @@ describe("marketing-only SMS policy", () => {
     const metadataWrite = rawBindingCalls.find((call) =>
       call.sql.includes("coalesce(metadata, '{}'::jsonb)")
     )
+    expect(metadataWrite?.sql.match(/cast\(\? as text\)/g)).toHaveLength(2)
     expect(JSON.parse(String(metadataWrite?.bindings?.[0]?.[0]))).toEqual(
       expect.objectContaining({
         sms_opt_out_source: "twilio_inbound_stop",
