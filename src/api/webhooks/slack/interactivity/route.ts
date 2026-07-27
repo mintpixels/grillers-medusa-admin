@@ -326,9 +326,55 @@ async function postResponseUrl(
 
 // ───────────────────────── order hold/release apply ─────────────────────────
 
+const CREDIT_HOLD_REASONS = new Set([
+  "credit_limit_exceeded",
+  "credit_check_unavailable",
+])
+
+const nestedMetadataObject = (
+  value: unknown
+): Record<string, any> | null =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, any>)
+    : null
+
+const creditHoldReason = (value: unknown): boolean =>
+  typeof value === "string" &&
+  CREDIT_HOLD_REASONS.has(value.trim().toLowerCase())
+
+/**
+ * Whether releasing this order is the second approval for an invoice-credit
+ * hold and therefore requires an explicitly configured Slack approver.
+ *
+ * The canonical checkout shape has both hold objects active with the same
+ * recognized reason. Authorization deliberately fails closed around damaged
+ * or partially migrated metadata: any active gp_credit_hold is protected, and
+ * an active fulfillment_hold is protected when it carries a recognized credit
+ * reason. A normal advisory Slack hold has only fulfillment_hold with reason
+ * slack_review, so it keeps its existing open-to-signed-callers behavior.
+ */
+export function creditReleaseRequiresApprover(metadataInput: unknown): boolean {
+  const metadata = metadataObject(metadataInput)
+  const creditHold = nestedMetadataObject(metadata.gp_credit_hold)
+  const fulfillmentHold = nestedMetadataObject(metadata.fulfillment_hold)
+
+  if (creditHold?.held === true) return true
+  return Boolean(
+    fulfillmentHold?.held === true &&
+      creditHoldReason(fulfillmentHold.reason)
+  )
+}
+
 export type ApplyOrderHoldResult =
   /** The order was found and its metadata.fulfillment_hold was written. */
   | { applied: true; found: true }
+  /** A protected credit release was denied before any metadata mutation. */
+  | {
+      applied: false
+      found: true
+      authorizationDenied: true
+      reason: "credit_approver_required"
+    }
   /** No order resolved for this id — nothing was written (conservative no-op). */
   | { applied: false; found: false }
 
@@ -371,6 +417,22 @@ export async function applyOrderHold(
   }
 
   const metadata = metadataObject(order.metadata)
+  const protectedCreditRelease =
+    action.action === "release" &&
+    creditReleaseRequiresApprover(metadata)
+
+  if (protectedCreditRelease && !allowedApprovers().has(action.byUser)) {
+    logger?.warn?.(
+      `[slack-interactivity] denied credit-hold release for order ${action.orderId} by non-approver ${action.byUser || "unknown"}`
+    )
+    return {
+      applied: false,
+      found: true,
+      authorizationDenied: true,
+      reason: "credit_approver_required",
+    }
+  }
+
   const now = Date.now()
 
   if (action.action === "hold") {
@@ -387,15 +449,28 @@ export async function applyOrderHold(
     // fulfillment_hold may be a nested reference — spread it to avoid mutating
     // the source.
     const existingHold =
-      metadata.fulfillment_hold && typeof metadata.fulfillment_hold === "object"
-        ? metadata.fulfillment_hold
-        : {}
+      nestedMetadataObject(metadata.fulfillment_hold) ?? {}
     metadata.fulfillment_hold = {
       ...existingHold,
       held: false,
       released_by_user: action.byUser,
       released_by_name: action.byName ?? null,
       released_at_ms: now,
+    }
+
+    // The checkout path persists the operational fulfillment block and its
+    // credit-review record separately. An authorized Approve & release must
+    // close both in the same order metadata update; it does not alter the
+    // exposure snapshot or authoritative QuickBooks A/R balance.
+    const existingCreditHold = nestedMetadataObject(metadata.gp_credit_hold)
+    if (protectedCreditRelease && existingCreditHold) {
+      metadata.gp_credit_hold = {
+        ...existingCreditHold,
+        held: false,
+        released_by_user: action.byUser,
+        released_by_name: action.byName ?? null,
+        released_at_ms: now,
+      }
     }
   }
 
@@ -413,9 +488,11 @@ export async function applyOrderHold(
  * Slack app → Interactivity & Shortcuts → Request URL:
  *   https://grillers-medusa-admin-production.up.railway.app/webhooks/slack/interactivity
  *
- * Secured ONLY by the Slack signing secret (route is outside /admin and /store
- * so it bypasses Medusa auth). preserveRawBody is registered for this path in
- * src/api/middlewares.ts so we have the exact urlencoded bytes for the HMAC.
+ * Secured by the Slack signing secret (route is outside /admin and /store so it
+ * bypasses Medusa auth). Credit-hold releases additionally require the Slack
+ * caller id in SLACK_GP_ALLOWED_USER_IDS. preserveRawBody is registered for
+ * this path in src/api/middlewares.ts so we have the exact urlencoded bytes for
+ * the HMAC.
  *
  * Routes by action_id:
  *  - "✅ Ack" (action_id `ops_ack`, value = alert fingerprint) → emit an
@@ -423,9 +500,9 @@ export async function applyOrderHold(
  *    ClickHouse and stops re-paging the matching fingerprint.
  *  - "⏸️ Hold" / "✅ Release" (action_id `order_hold` / `order_release`, value =
  *    order_id) → set/clear `order.metadata.fulfillment_hold.held` and emit an
- *    `order_fulfillment_hold` / `order_fulfillment_release` audit event. The
- *    fulfillment middleware in src/api/middlewares.ts blocks fulfillment only
- *    while `held === true` (advisory by design — nothing is auto-held).
+ *    `order_fulfillment_hold` / `order_fulfillment_release` audit event. Normal
+ *    review cards remain advisory; invoice credit-limit/check-unavailable
+ *    orders are already held and require an allow-listed second approver.
  *
  * Fail-soft: always returns 200 past the signature gate.
  */
@@ -497,6 +574,22 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       // The point of the click: write the hold/release to order metadata. AWAIT
       // it — if the order id doesn't resolve, applyOrderHold no-ops (no write).
       const applyResult = await applyOrderHold(req, orderAction, logger)
+
+      if (
+        "authorizationDenied" in applyResult &&
+        applyResult.authorizationDenied
+      ) {
+        // Do not replace the shared review card: an actual approver still needs
+        // its action button. Most importantly, return before the release audit
+        // emitter so a denied click cannot look like an approved release.
+        res.status(200).json({
+          response_type: "ephemeral",
+          replace_original: false,
+          text:
+            "You’re not configured to approve credit-held orders. Ask an approved credit reviewer to use Approve & release.",
+        })
+        return
+      }
 
       // Emit the audit event (who held/released which order). AWAIT it
       // (timeout-bounded, fail-soft) so a dropped event is at least logged.

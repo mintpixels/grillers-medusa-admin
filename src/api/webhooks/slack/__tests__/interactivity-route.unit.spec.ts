@@ -11,6 +11,7 @@ import {
   ORDER_RELEASE_ACTION_ID,
   buildAckedMessage,
   buildOrderHoldMessage,
+  creditReleaseRequiresApprover,
   extractAckAction,
   extractOrderAction,
   parseInteractivityPayload,
@@ -498,6 +499,108 @@ describe("buildOrderHoldMessage", () => {
   })
 })
 
+describe("creditReleaseRequiresApprover", () => {
+  it.each([
+    [
+      "canonical credit-limit hold",
+      {
+        payment_workflow: "invoice_ar",
+        gp_credit_hold: {
+          held: true,
+          reason: "credit_limit_exceeded",
+        },
+        fulfillment_hold: {
+          held: true,
+          reason: "credit_limit_exceeded",
+        },
+      },
+    ],
+    [
+      "canonical check-unavailable hold",
+      {
+        gp_credit_hold: {
+          held: true,
+          reason: "credit_check_unavailable",
+        },
+        fulfillment_hold: {
+          held: true,
+          reason: "credit_check_unavailable",
+        },
+      },
+    ],
+    [
+      "mismatched active credit markers",
+      {
+        gp_credit_hold: {
+          held: true,
+          reason: "credit_limit_exceeded",
+        },
+        fulfillment_hold: {
+          held: true,
+          reason: "credit_check_unavailable",
+        },
+      },
+    ],
+    [
+      "malformed gp marker with a valid fulfillment credit hold",
+      {
+        gp_credit_hold: "corrupt",
+        fulfillment_hold: {
+          held: true,
+          reason: "credit_limit_exceeded",
+        },
+      },
+    ],
+    [
+      "active gp marker with a missing reason",
+      {
+        gp_credit_hold: { held: true },
+        fulfillment_hold: {
+          held: true,
+          reason: "slack_review",
+        },
+      },
+    ],
+  ])("protects %s", (_label, metadata) => {
+    expect(creditReleaseRequiresApprover(metadata)).toBe(true)
+  })
+
+  it.each([
+    ["normal advisory hold", {
+      fulfillment_hold: { held: true, reason: "slack_review" },
+    }],
+    ["already released credit markers", {
+      gp_credit_hold: {
+        held: false,
+        reason: "credit_limit_exceeded",
+      },
+      fulfillment_hold: {
+        held: false,
+        reason: "credit_limit_exceeded",
+      },
+    }],
+    ["non-boolean malformed held flags", {
+      gp_credit_hold: {
+        held: "true",
+        reason: "credit_limit_exceeded",
+      },
+      fulfillment_hold: {
+        held: "true",
+        reason: "credit_limit_exceeded",
+      },
+    }],
+    ["unrelated malformed metadata", {
+      gp_credit_hold: "corrupt",
+      fulfillment_hold: {
+        held: true,
+        reason: "slack_review",
+      },
+    }],
+  ])("does not over-gate %s", (_label, metadata) => {
+    expect(creditReleaseRequiresApprover(metadata)).toBe(false)
+  })
+})
+
 describe("interactivity POST handler — order hold/release routing", () => {
   const originalEnv = process.env
   const originalFetch = global.fetch
@@ -598,6 +701,7 @@ describe("interactivity POST handler — order hold/release routing", () => {
       SLACK_SIGNING_SECRET: SIGNING_SECRET,
       GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com",
       GP_ANALYTICS_SERVER_KEY: "k",
+      SLACK_GP_ALLOWED_USER_IDS: "",
     }
     signedFetchCapture()
     const heldMetadata = {
@@ -633,6 +737,318 @@ describe("interactivity POST handler — order hold/release routing", () => {
     expect(hold.released_by_user).toBe("U8")
     expect(hold.released_by_name).toBe("dan")
     expect(typeof hold.released_at_ms).toBe("number")
+  })
+
+  it("allows a configured approver to release both active credit-hold markers and emits the release audit", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com",
+      GP_ANALYTICS_SERVER_KEY: "k",
+      SLACK_GP_ALLOWED_USER_IDS: "U_APPROVER, U_OTHER_APPROVER",
+    }
+    const calls = signedFetchCapture()
+    const metadata = {
+      payment_workflow: "invoice_ar",
+      gp_credit_hold: {
+        held: true,
+        reason: "credit_limit_exceeded",
+        credit_limit: 5000,
+        projected_exposure: 5500,
+      },
+      fulfillment_hold: {
+        held: true,
+        reason: "credit_limit_exceeded",
+        over_by: 500,
+      },
+    }
+    const rawBody = orderRawBody(ORDER_RELEASE_ACTION_ID, "order_credit", {
+      userId: "U_APPROVER",
+      username: "avi",
+    })
+    const ts = Math.floor(Date.now() / 1000)
+    const { req, updateOrders } = makeOrderReq(
+      rawBody,
+      signedHeaders(rawBody, ts),
+      {
+        order: { id: "order_credit", metadata },
+      }
+    )
+    const res = makeRes()
+
+    await POST(req, res)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(updateOrders).toHaveBeenCalledTimes(1)
+    const updatedMetadata = updateOrders.mock.calls[0][1].metadata
+    expect(updatedMetadata.fulfillment_hold).toMatchObject({
+      held: false,
+      reason: "credit_limit_exceeded",
+      released_by_user: "U_APPROVER",
+      released_by_name: "avi",
+    })
+    expect(updatedMetadata.gp_credit_hold).toMatchObject({
+      held: false,
+      reason: "credit_limit_exceeded",
+      credit_limit: 5000,
+      projected_exposure: 5500,
+      released_by_user: "U_APPROVER",
+      released_by_name: "avi",
+    })
+    expect(typeof updatedMetadata.gp_credit_hold.released_at_ms).toBe("number")
+    const trackCall = calls.find((call) => call.url.endsWith("/v1/track"))
+    expect(trackCall?.body.event).toBe("order_fulfillment_release")
+    expect(res.body).toEqual(
+      expect.objectContaining({
+        replace_original: true,
+      })
+    )
+  })
+
+  it("denies a non-approver credit release before mutation or release-audit emission", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com",
+      GP_ANALYTICS_SERVER_KEY: "k",
+      SLACK_GP_ALLOWED_USER_IDS: "U_APPROVER",
+    }
+    const calls = signedFetchCapture()
+    const metadata = {
+      gp_credit_hold: {
+        held: true,
+        reason: "credit_limit_exceeded",
+      },
+      fulfillment_hold: {
+        held: true,
+        reason: "credit_limit_exceeded",
+      },
+    }
+    const rawBody = orderRawBody(ORDER_RELEASE_ACTION_ID, "order_credit", {
+      userId: "U_NOT_ALLOWED",
+      username: "mallory",
+    })
+    const ts = Math.floor(Date.now() / 1000)
+    const { req, updateOrders } = makeOrderReq(
+      rawBody,
+      signedHeaders(rawBody, ts),
+      {
+        order: { id: "order_credit", metadata },
+      }
+    )
+    const res = makeRes()
+
+    await POST(req, res)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(updateOrders).not.toHaveBeenCalled()
+    expect(metadata.gp_credit_hold.held).toBe(true)
+    expect(metadata.fulfillment_hold.held).toBe(true)
+    expect(calls.some((call) => call.url.endsWith("/v1/track"))).toBe(false)
+    expect(res.body).toEqual({
+      response_type: "ephemeral",
+      replace_original: false,
+      text:
+        "You’re not configured to approve credit-held orders. Ask an approved credit reviewer to use Approve & release.",
+    })
+  })
+
+  it("fails closed with an empty approver allowlist and emits no release audit", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com",
+      GP_ANALYTICS_SERVER_KEY: "k",
+      SLACK_GP_ALLOWED_USER_IDS: " , ",
+    }
+    const calls = signedFetchCapture()
+    const rawBody = orderRawBody(
+      ORDER_RELEASE_ACTION_ID,
+      "order_credit_check_unavailable",
+      { userId: "U_ANY", username: "anyone" }
+    )
+    const ts = Math.floor(Date.now() / 1000)
+    const { req, updateOrders } = makeOrderReq(
+      rawBody,
+      signedHeaders(rawBody, ts),
+      {
+        order: {
+          id: "order_credit_check_unavailable",
+          metadata: {
+            gp_credit_hold: {
+              held: true,
+              reason: "credit_check_unavailable",
+            },
+            fulfillment_hold: {
+              held: true,
+              reason: "credit_check_unavailable",
+            },
+          },
+        },
+      }
+    )
+    const res = makeRes()
+
+    await POST(req, res)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(updateOrders).not.toHaveBeenCalled()
+    expect(calls.some((call) => call.url.endsWith("/v1/track"))).toBe(false)
+    expect(res.body).toEqual(
+      expect.objectContaining({
+        response_type: "ephemeral",
+        replace_original: false,
+      })
+    )
+  })
+
+  it.each([
+    [
+      "mismatched reasons",
+      {
+        gp_credit_hold: {
+          held: true,
+          reason: "credit_limit_exceeded",
+        },
+        fulfillment_hold: {
+          held: true,
+          reason: "credit_check_unavailable",
+        },
+      },
+    ],
+    [
+      "malformed gp marker with valid fulfillment marker",
+      {
+        gp_credit_hold: "corrupt",
+        fulfillment_hold: {
+          held: true,
+          reason: "credit_limit_exceeded",
+        },
+      },
+    ],
+  ])(
+    "fails closed before mutation for %s",
+    async (_label, metadata) => {
+      process.env = {
+        ...originalEnv,
+        SLACK_SIGNING_SECRET: SIGNING_SECRET,
+        GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com",
+        GP_ANALYTICS_SERVER_KEY: "k",
+        SLACK_GP_ALLOWED_USER_IDS: "U_APPROVER",
+      }
+      const calls = signedFetchCapture()
+      const rawBody = orderRawBody(
+        ORDER_RELEASE_ACTION_ID,
+        "order_malformed_credit",
+        { userId: "U_NOT_ALLOWED", username: "mallory" }
+      )
+      const ts = Math.floor(Date.now() / 1000)
+      const { req, updateOrders } = makeOrderReq(
+        rawBody,
+        signedHeaders(rawBody, ts),
+        {
+          order: { id: "order_malformed_credit", metadata },
+        }
+      )
+      const res = makeRes()
+
+      await POST(req, res)
+      await new Promise((r) => setTimeout(r, 0))
+
+      expect(updateOrders).not.toHaveBeenCalled()
+      expect(calls.some((call) => call.url.endsWith("/v1/track"))).toBe(false)
+      expect(res.body).toEqual(
+        expect.objectContaining({
+          response_type: "ephemeral",
+        })
+      )
+    }
+  )
+
+  it("preserves normal advisory release behavior when unrelated credit metadata is malformed", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "https://ingestion.example.com",
+      GP_ANALYTICS_SERVER_KEY: "k",
+      SLACK_GP_ALLOWED_USER_IDS: "",
+    }
+    const calls = signedFetchCapture()
+    const rawBody = orderRawBody(ORDER_RELEASE_ACTION_ID, "order_advisory", {
+      userId: "U_ANY",
+      username: "reviewer",
+    })
+    const ts = Math.floor(Date.now() / 1000)
+    const { req, updateOrders } = makeOrderReq(
+      rawBody,
+      signedHeaders(rawBody, ts),
+      {
+        order: {
+          id: "order_advisory",
+          metadata: {
+            gp_credit_hold: "corrupt",
+            fulfillment_hold: {
+              held: true,
+              reason: "slack_review",
+            },
+          },
+        },
+      }
+    )
+    const res = makeRes()
+
+    await POST(req, res)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(updateOrders).toHaveBeenCalledTimes(1)
+    expect(
+      updateOrders.mock.calls[0][1].metadata.fulfillment_hold.held
+    ).toBe(false)
+    expect(calls.find((call) => call.url.endsWith("/v1/track"))?.body.event).toBe(
+      "order_fulfillment_release"
+    )
+  })
+
+  it("keeps an unknown-order release as a conservative no-op even when the allowlist is empty", async () => {
+    process.env = {
+      ...originalEnv,
+      SLACK_SIGNING_SECRET: SIGNING_SECRET,
+      GP_ANALYTICS_ENDPOINT: "",
+      GP_ANALYTICS_SERVER_KEY: "",
+      SLACK_GP_ALLOWED_USER_IDS: "",
+    }
+    signedFetchCapture()
+    const rawBody = orderRawBody(
+      ORDER_RELEASE_ACTION_ID,
+      "order_missing_release",
+      { userId: "U_ANY" }
+    )
+    const ts = Math.floor(Date.now() / 1000)
+    const { req, updateOrders } = makeOrderReq(
+      rawBody,
+      signedHeaders(rawBody, ts),
+      { notFound: true }
+    )
+    const res = makeRes()
+
+    await POST(req, res)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(updateOrders).not.toHaveBeenCalled()
+    expect(res.body).toEqual(
+      expect.objectContaining({
+        replace_original: true,
+      })
+    )
+    expect(emitOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alertKind: "slack_order_hold_order_missing",
+        meta: expect.objectContaining({
+          slack_action: "order_release",
+          order_id: "order_missing_release",
+        }),
+      })
+    )
   })
 
   it("emits order_fulfillment_hold (not ops_alert_ack) on a hold", async () => {
