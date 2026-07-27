@@ -1,4 +1,3 @@
-import { createHmac, timingSafeEqual } from "node:crypto"
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import {
@@ -10,70 +9,11 @@ import {
   emitStripePaymentFailedWebhookMissingSecretAlert,
   emitStripePaymentFailedWebhookProcessingFailedAlert,
 } from "../../../../lib/final-charge-ops-alerts"
-
-// Stripe signs webhooks as: t=<unix>,v1=<hex hmac-sha256(`${t}.${rawBody}`, secret)>
-// Tolerance window (seconds) to reject very old/replayed timestamps.
-const SIGNATURE_TOLERANCE_SECONDS = 300
-
-function rawBodyString(req: MedusaRequest): string {
-  const raw = (req as any).rawBody
-  if (typeof raw === "string") return raw
-  if (raw && typeof raw.toString === "function") return raw.toString("utf8")
-  // Fallback: re-serialize the parsed body. Signature verification will only
-  // pass against this if the upstream secret is unset (dev), which is fine.
-  return req.body ? JSON.stringify(req.body) : ""
-}
-
-function header(req: MedusaRequest, name: string): string {
-  const headers = (req.headers || {}) as any
-  return (
-    headers[name] ||
-    headers[name.toLowerCase()] ||
-    (typeof headers.get === "function" ? headers.get(name) : "") ||
-    ""
-  )
-}
-
-function constantTimeEquals(a: string, b: string): boolean {
-  const bufA = Buffer.from(a)
-  const bufB = Buffer.from(b)
-  if (bufA.length !== bufB.length) return false
-  return timingSafeEqual(bufA, bufB)
-}
-
-/**
- * Verify the Stripe-Signature header. Returns true when the signature is valid
- * for at least one v1 scheme entry within the tolerance window.
- */
-function verifyStripeSignature(
-  req: MedusaRequest,
-  rawBody: string,
-  secret: string
-): boolean {
-  const sigHeader = header(req, "stripe-signature")
-  if (!sigHeader) return false
-
-  let timestamp = ""
-  const signatures: string[] = []
-  for (const part of sigHeader.split(",")) {
-    const [key, value] = part.split("=")
-    if (key === "t") timestamp = value
-    else if (key === "v1" && value) signatures.push(value)
-  }
-  if (!timestamp || !signatures.length) return false
-
-  const tsNum = Number(timestamp)
-  if (Number.isFinite(tsNum)) {
-    const age = Math.abs(Date.now() / 1000 - tsNum)
-    if (age > SIGNATURE_TOLERANCE_SECONDS) return false
-  }
-
-  const expected = createHmac("sha256", secret)
-    .update(`${timestamp}.${rawBody}`, "utf8")
-    .digest("hex")
-
-  return signatures.some((candidate) => constantTimeEquals(candidate, expected))
-}
+import {
+  rawStripeWebhookBody,
+  stripeSignatureHeader,
+  verifyStripeWebhookSignature,
+} from "../../../../lib/stripe-webhook-signature"
 
 /**
  * Stripe `payment_intent.payment_failed` webhook.
@@ -86,7 +26,7 @@ function verifyStripeSignature(
  * Stripe dashboard webhook URL to configure:
  *   https://<medusa-admin-host>/webhooks/stripe/payment-failed
  *   Event: payment_intent.payment_failed
- *   Signing secret -> STRIPE_WEBHOOK_SECRET env var.
+ *   Signing secret -> STRIPE_PAYMENT_FAILED_WEBHOOK_SECRET env var.
  */
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   let logger: any
@@ -96,12 +36,15 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     logger = undefined
   }
 
-  const rawBody = rawBodyString(req)
-  const webhookSecret = (process.env.STRIPE_WEBHOOK_SECRET || "").trim()
+  const rawBody = rawStripeWebhookBody(req)
+  const signatureHeader = stripeSignatureHeader(req.headers)
+  const webhookSecret = (
+    process.env.STRIPE_PAYMENT_FAILED_WEBHOOK_SECRET || ""
+  ).trim()
 
   if (!webhookSecret) {
     logger?.error?.(
-      "[stripe-webhook] STRIPE_WEBHOOK_SECRET not set — rejecting unsigned webhook"
+      "[stripe-webhook] dedicated payment-failed signing secret is not configured — rejecting webhook"
     )
     void emitStripePaymentFailedWebhookMissingSecretAlert({ logger }).catch(
       () => {
@@ -112,10 +55,17 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
 
-  if (!verifyStripeSignature(req, rawBody, webhookSecret)) {
+  const signatureVerdict = verifyStripeWebhookSignature({
+    rawBody,
+    signatureHeader,
+    secret: webhookSecret,
+  })
+  if (!signatureVerdict.ok) {
     void emitStripePaymentFailedWebhookInvalidSignatureAlert({
       logger,
-      hasSignatureHeader: Boolean(header(req, "stripe-signature")),
+      hasSignatureHeader: Boolean(signatureHeader),
+      hasRawBody: rawBody !== null,
+      reason: signatureVerdict.reason,
     }).catch(() => {
       // Alerting must not change webhook response semantics.
     })

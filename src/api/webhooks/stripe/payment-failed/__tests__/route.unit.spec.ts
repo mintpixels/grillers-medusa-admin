@@ -27,10 +27,15 @@ jest.mock("../../../../../lib/final-charge-ops-alerts", () => ({
 
 import { POST } from "../route"
 
-const SECRET = "whsec_test_secret"
+const PAYMENT_FAILED_SECRET = "whsec_payment_failed_test_secret"
+const NATIVE_SECRET = "whsec_native_medusa_test_secret"
 
-function signature(rawBody: string, timestamp: number) {
-  const digest = createHmac("sha256", SECRET)
+function signature(
+  rawBody: string,
+  timestamp: number,
+  secret = PAYMENT_FAILED_SECRET
+) {
+  const digest = createHmac("sha256", secret)
     .update(`${timestamp}.${rawBody}`, "utf8")
     .digest("hex")
   return `t=${timestamp},v1=${digest}`
@@ -72,18 +77,30 @@ function makeReq({
 }
 
 describe("Stripe payment-failed webhook telemetry", () => {
-  const originalSecret = process.env.STRIPE_WEBHOOK_SECRET
+  const originalPaymentFailedSecret =
+    process.env.STRIPE_PAYMENT_FAILED_WEBHOOK_SECRET
+  const originalNativeSecret = process.env.STRIPE_WEBHOOK_SECRET
   const originalNow = Date.now
 
   beforeEach(() => {
     jest.clearAllMocks()
-    process.env.STRIPE_WEBHOOK_SECRET = SECRET
+    process.env.STRIPE_PAYMENT_FAILED_WEBHOOK_SECRET = PAYMENT_FAILED_SECRET
+    process.env.STRIPE_WEBHOOK_SECRET = NATIVE_SECRET
     Date.now = jest.fn(() => 1_700_000_000_000)
   })
 
   afterEach(() => {
-    if (originalSecret === undefined) delete process.env.STRIPE_WEBHOOK_SECRET
-    else process.env.STRIPE_WEBHOOK_SECRET = originalSecret
+    if (originalPaymentFailedSecret === undefined) {
+      delete process.env.STRIPE_PAYMENT_FAILED_WEBHOOK_SECRET
+    } else {
+      process.env.STRIPE_PAYMENT_FAILED_WEBHOOK_SECRET =
+        originalPaymentFailedSecret
+    }
+    if (originalNativeSecret === undefined) {
+      delete process.env.STRIPE_WEBHOOK_SECRET
+    } else {
+      process.env.STRIPE_WEBHOOK_SECRET = originalNativeSecret
+    }
     Date.now = originalNow
   })
 
@@ -116,8 +133,35 @@ describe("Stripe payment-failed webhook telemetry", () => {
     expect(mockEmitChargeFailedPostShipAlert).not.toHaveBeenCalled()
   })
 
-  it("fails closed and pages when the signing secret is missing", async () => {
-    delete process.env.STRIPE_WEBHOOK_SECRET
+  it("rejects a signature made with the native Medusa endpoint secret", async () => {
+    const body = {
+      type: "payment_intent.payment_failed",
+      data: { object: { id: "pi_123" } },
+    }
+    const rawBody = JSON.stringify(body)
+    const req = makeReq({
+      body,
+      rawBody,
+      stripeSignature: signature(
+        rawBody,
+        1_700_000_000,
+        NATIVE_SECRET
+      ),
+    })
+    const res = makeRes()
+
+    await POST(req, res)
+
+    expect(res.status).toHaveBeenCalledWith(400)
+    expect(res.json).toHaveBeenCalledWith({
+      ok: false,
+      error: "invalid_signature",
+    })
+    expect(mockEmitChargeFailedPostShipAlert).not.toHaveBeenCalled()
+  })
+
+  it("fails closed when the dedicated signing secret is missing even if the native secret is set", async () => {
+    delete process.env.STRIPE_PAYMENT_FAILED_WEBHOOK_SECRET
     const body = {
       type: "payment_intent.payment_failed",
       data: { object: { id: "pi_123" } },

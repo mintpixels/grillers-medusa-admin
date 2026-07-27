@@ -152,7 +152,8 @@ describe("final charge ops alerts", () => {
         path: "src/api/webhooks/stripe/payment-failed/route.ts",
         severity: "page",
         meta: expect.objectContaining({
-          reason: "STRIPE_WEBHOOK_SECRET is not configured",
+          reason:
+            "STRIPE_PAYMENT_FAILED_WEBHOOK_SECRET is not configured",
         }),
       })
     )

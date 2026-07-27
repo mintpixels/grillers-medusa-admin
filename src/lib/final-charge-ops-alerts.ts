@@ -105,9 +105,13 @@ export async function emitChargeFailedPostShipAlert({
 export async function emitStripePaymentFailedWebhookInvalidSignatureAlert({
   logger,
   hasSignatureHeader,
+  hasRawBody,
+  reason,
 }: {
   logger?: LoggerLike
   hasSignatureHeader: boolean
+  hasRawBody?: boolean
+  reason?: string
 }) {
   return emitOpsAlert({
     alertKind: "stripe_payment_failed_webhook_invalid_signature",
@@ -118,6 +122,8 @@ export async function emitStripePaymentFailedWebhookInvalidSignatureAlert({
     logger,
     meta: {
       has_signature_header: hasSignatureHeader,
+      has_raw_body: hasRawBody ?? null,
+      rejection_reason: reason || null,
     },
   })
 }
@@ -135,7 +141,7 @@ export async function emitStripePaymentFailedWebhookMissingSecretAlert({
     severity: "page",
     logger,
     meta: {
-      reason: "STRIPE_WEBHOOK_SECRET is not configured",
+      reason: "STRIPE_PAYMENT_FAILED_WEBHOOK_SECRET is not configured",
     },
   })
 }

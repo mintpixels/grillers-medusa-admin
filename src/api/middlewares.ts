@@ -18,8 +18,84 @@ import {
 } from "../modules/fulfillment/serviceability"
 import { emitOpsAlert, type OpsAlertSeverity } from "../lib/ops-alert"
 import { opsErrorHandler } from "./middlewares/ops-error-handler"
+import {
+  rawStripeWebhookBody,
+  stripeSignatureHeader,
+  verifyStripeWebhookSignature,
+} from "../lib/stripe-webhook-signature"
 
 const MIDDLEWARES_PATH = "src/api/middlewares.ts"
+
+/**
+ * Medusa validates Stripe signatures inside its delayed payment-webhook
+ * subscriber. This front-line guard also validates before the built-in route
+ * returns 200, so a missing/wrong native endpoint secret fails closed
+ * synchronously instead of acknowledging an event that will fail later.
+ */
+export async function verifyNativeStripeWebhookSignature(
+  req: MedusaRequest,
+  res: MedusaResponse,
+  next: MedusaNextFunction
+) {
+  let logger: any
+  try {
+    logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
+  } catch {
+    logger = undefined
+  }
+
+  const secret = (process.env.STRIPE_WEBHOOK_SECRET || "").trim()
+  if (!secret) {
+    logger?.error?.(
+      "[stripe-native-webhook] native signing secret is not configured — rejecting webhook"
+    )
+    void emitOpsAlert({
+      alertKind: "stripe_native_webhook_secret_missing",
+      title: "Stripe native Medusa webhook signing secret is missing",
+      path: MIDDLEWARES_PATH,
+      source: "medusa",
+      severity: "page",
+      logger,
+      meta: {
+        reason: "STRIPE_WEBHOOK_SECRET is not configured",
+      },
+    }).catch(() => {
+      // Alerting must not change webhook response semantics.
+    })
+    res.status(503).json({ ok: false, error: "webhook_secret_missing" })
+    return
+  }
+
+  const rawBody = rawStripeWebhookBody(req)
+  const signatureHeader = stripeSignatureHeader(req.headers)
+  const verdict = verifyStripeWebhookSignature({
+    rawBody,
+    signatureHeader,
+    secret,
+  })
+
+  if (!verdict.ok) {
+    void emitOpsAlert({
+      alertKind: "stripe_native_webhook_invalid_signature",
+      title: "Stripe native Medusa webhook rejected an invalid signature",
+      path: MIDDLEWARES_PATH,
+      source: "medusa",
+      severity: "warn",
+      logger,
+      meta: {
+        has_signature_header: Boolean(signatureHeader),
+        has_raw_body: rawBody !== null,
+        rejection_reason: verdict.reason,
+      },
+    }).catch(() => {
+      // Alerting must not change webhook response semantics.
+    })
+    res.status(400).json({ ok: false, error: "invalid_signature" })
+    return
+  }
+
+  return next()
+}
 
 // Fail-open guards stay fail-open: they emit an ops alert AND continue. The
 // consumer's dedup window absorbs hot-path volume, so no extra throttling here.
@@ -701,6 +777,14 @@ export default defineMiddlewares({
         blockFulfillmentBeforeFinalCharge,
         blockFulfillmentOnSlackHold,
       ],
+    },
+    {
+      // Medusa's native Stripe provider webhook. Validate its endpoint-specific
+      // signing secret before the built-in route acknowledges and queues work.
+      matcher: "/hooks/payment/stripe_stripe",
+      method: ["POST"],
+      middlewares: [verifyNativeStripeWebhookSignature],
+      bodyParser: { preserveRawBody: true },
     },
     {
       // Stripe webhook (payment_intent.payment_failed). Not under /admin or
