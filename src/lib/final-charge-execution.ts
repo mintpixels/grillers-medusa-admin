@@ -6,15 +6,17 @@ import {
   FINALIZATION_PACKED_PENDING_CHARGE,
   appendStaffAudit,
   assertStripeFinalPaymentIntentSucceeded,
+  claimFinalChargeAttempt,
   createStripeFinalPaymentIntent,
+  finalChargeAttemptIdempotencyKey,
   finalChargeOrderMetadata,
   finalChargeSucceeded,
   finalizedCatchWeightOrderMetadata,
   isInvoiceOrder,
   metadataObject,
   previewFinalization,
-  recordFinalChargeAttempt,
   retrieveStripeFinalPaymentIntent,
+  settleFinalChargeAttempt,
   type CatchWeightDb,
 } from "./catch-weight-finalization"
 import {
@@ -44,14 +46,32 @@ const stripeChargeId = (paymentIntent: {
   charges?: { data?: Array<{ id?: string }> }
 }) => paymentIntent.latest_charge || paymentIntent.charges?.data?.[0]?.id || null
 
-// Stable per (order, finalization) — the linchpin double-charge protection. Two
-// concurrent/duplicate invocations (manual click + auto-charge, retried event)
-// send the SAME key to Stripe, so Stripe returns the SAME PaymentIntent and only
-// one charge is ever created.
+// Stable per (order, finalization, confirmed-decline generation) — the linchpin
+// double-charge protection. The generation stays at zero through timeouts,
+// unknown outcomes, recording failures, and concurrent replays. It advances
+// only after Stripe has identified a genuine declined PaymentIntent.
 export const stableFinalChargeIdempotencyKey = (
   orderId: string,
-  finalizationId: string
-) => `final-charge:${orderId}:${finalizationId}`
+  finalizationId: string,
+  confirmedDeclineCount = 0
+) =>
+  finalChargeAttemptIdempotencyKey(
+    `final-charge:${orderId}:${finalizationId}`,
+    confirmedDeclineCount
+  )
+
+export const isConfirmedStripeFinalChargeDecline = (
+  stripeError: Record<string, any> | null | undefined
+) => {
+  const paymentIntent = stripeError?.payment_intent || {}
+  const lastPaymentError = paymentIntent.last_payment_error || {}
+  return Boolean(
+    paymentIntent.id &&
+      paymentIntent.status === "requires_payment_method" &&
+      (stripeError?.code === "card_declined" ||
+        lastPaymentError.code === "card_declined")
+  )
+}
 
 export type FinalChargeServices = {
   db: CatchWeightDb
@@ -73,6 +93,7 @@ export type FinalChargeOutcomeResult =
   | "already_charged"
   | "preflight_rejected"
   | "preflight_exception"
+  | "charge_in_progress"
   | "charged"
   | "charge_failed"
   | "charge_recording_failed"
@@ -122,16 +143,26 @@ export async function runFinalChargeAndRelease(
   let wwexQuote: Awaited<ReturnType<typeof quoteWwexFinalizationShipping>>
   let effectiveTotals: Record<string, any>
   let finalOrderTotal: number
+  let chargeAmount: number
+  let chargeCurrencyCode: string
   let idempotencyKey: string
   let paymentIntent: Awaited<
     ReturnType<typeof createStripeFinalPaymentIntent>
   > | null = null
   let persistedPaymentIntentId: string | null = null
   let persistedChargeId: string | null = null
-  let attempt: Awaited<ReturnType<typeof recordFinalChargeAttempt>> | null = null
+  let attempt!: Record<string, any>
+  let mayAdoptPersistedFinalizationPaymentIntent = false
 
   try {
-    preview = await previewFinalization(db, order, { persist: true })
+    preview = await previewFinalization(db, order, {
+      persist: true,
+      // Charging must validate the status staff actually approved. A normal
+      // persisted preview promotes clean packing work to packed_pending_charge;
+      // doing that here would erase charge_attempting/failed/recovery state
+      // before the attempt claim can make its concurrency decision.
+      preserveWorkflowStatus: true,
+    })
 
     if (preview.errors.length) {
       return {
@@ -147,7 +178,9 @@ export async function runFinalChargeAndRelease(
     if (
       preview.finalization.status !== FINALIZATION_PACKED_PENDING_CHARGE &&
       preview.finalization.status !== FINALIZATION_CHARGE_FAILED_HOLD &&
-      preview.finalization.status !== FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED
+      preview.finalization.status !==
+        FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED &&
+      preview.finalization.status !== FINALIZATION_CHARGE_ATTEMPTING
     ) {
       return {
         result: "preflight_rejected",
@@ -195,17 +228,97 @@ export async function runFinalChargeAndRelease(
       }
     }
 
-    idempotencyKey = stableFinalChargeIdempotencyKey(
-      order.id,
-      preview.finalization.id
+    const attemptClaim = await claimFinalChargeAttempt(db, {
+      orderId: order.id,
+      finalizationId: preview.finalization.id,
+      finalizationStatus: preview.finalization.status,
+      amount: finalOrderTotal,
+      currencyCode:
+        preview.finalization.currency_code || order.currency_code || "usd",
+      stripeCustomerId: preview.payment_setup.stripe_customer_id,
+      stripePaymentMethodId: preview.payment_setup.stripe_payment_method_id,
+      baseIdempotencyKey: stableFinalChargeIdempotencyKey(
+        order.id,
+        preview.finalization.id
+      ),
+      requestedBy: staffActor,
+    })
+    attempt = attemptClaim.attempt
+    idempotencyKey = String(attempt.idempotency_key || "").trim()
+    if (!idempotencyKey) {
+      throw new Error(
+        "Final charge attempt is missing its Stripe idempotency key."
+      )
+    }
+    if (!attemptClaim.claimed) {
+      return {
+        result: "charge_in_progress",
+        status: 409,
+        body: {
+          message:
+            "A final card charge is already in progress or has just settled. Refresh the order before retrying.",
+          charge_attempt_id: attempt.id,
+          payment_intent_id: attempt.stripe_payment_intent_id || null,
+        },
+      }
+    }
+    const attemptedAmount = Number(attempt.amount)
+    chargeAmount = Number.isFinite(attemptedAmount)
+      ? attemptedAmount
+      : finalOrderTotal
+    chargeCurrencyCode = String(
+      attempt.currency_code ||
+        preview.finalization.currency_code ||
+        order.currency_code ||
+        "usd"
     )
+    const orderMetadata = metadataObject(order.metadata)
+    const recoveringRecordedPaymentIntent =
+      preview.finalization.status ===
+        FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED ||
+      orderMetadata.final_charge_status === "succeeded_recording_failed"
+    const previousFinalizationAttemptId = String(
+      preview.finalization.charge_attempt_id || ""
+    ).trim()
+    const confirmedDeclineGeneration = Number(
+      metadataObject(attempt.metadata).confirmed_decline_generation || 0
+    )
+    mayAdoptPersistedFinalizationPaymentIntent =
+      recoveringRecordedPaymentIntent ||
+      previousFinalizationAttemptId === String(attempt.id) ||
+      confirmedDeclineGeneration === 0
+    const attemptPaymentIntentId = String(
+      attempt.stripe_payment_intent_id || ""
+    ).trim()
+    const persistedFinalizationPaymentIntentId =
+      mayAdoptPersistedFinalizationPaymentIntent
+        ? String(
+            preview.finalization.stripe_payment_intent_id ||
+              (recoveringRecordedPaymentIntent
+                ? orderMetadata.stripe_payment_intent_id
+                : "") ||
+              ""
+          ).trim()
+        : ""
 
     await db("gp_order_finalization")
       .where({ id: preview.finalization.id })
       .update({
         status: FINALIZATION_CHARGE_ATTEMPTING,
+        charge_attempt_id: attempt.id,
         charge_attempted_at: new Date(),
         charged_by: staffActor,
+        // A fresh post-decline generation must not inherit the prior declined
+        // PI. Every other recovery keeps a known PI durably linked to the
+        // claimed attempt so a later replay adopts it instead of re-charging.
+        stripe_payment_intent_id:
+          attemptPaymentIntentId || persistedFinalizationPaymentIntentId || null,
+        stripe_charge_id:
+          attempt.stripe_charge_id ||
+          (mayAdoptPersistedFinalizationPaymentIntent
+            ? preview.finalization.stripe_charge_id
+            : null) ||
+          null,
         updated_at: new Date(),
       })
   } catch (error) {
@@ -224,32 +337,47 @@ export async function runFinalChargeAndRelease(
 
   try {
     const orderMetadata = metadataObject(order.metadata)
-    const shouldAdoptExistingPaymentIntent =
+    const shouldRecoverRecordedPaymentIntent =
       preview.finalization.status ===
         FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED ||
       orderMetadata.final_charge_status === "succeeded_recording_failed"
-    const existingPaymentIntentId = shouldAdoptExistingPaymentIntent
-      ? String(
-          preview.finalization.stripe_payment_intent_id ||
-            orderMetadata.stripe_payment_intent_id ||
-            ""
-        ).trim()
-      : ""
-    paymentIntent = existingPaymentIntentId
-      ? await retrieveStripeFinalPaymentIntent(existingPaymentIntentId)
-      : await createStripeFinalPaymentIntent({
-          amount: finalOrderTotal,
-          currencyCode:
-            preview.finalization.currency_code || order.currency_code || "usd",
-          stripeCustomerId: preview.payment_setup.stripe_customer_id,
-          stripePaymentMethodId: preview.payment_setup.stripe_payment_method_id,
-          idempotencyKey,
-          orderId: order.id,
-          finalizationId: preview.finalization.id,
-          displayId: (order as any).display_id
-            ? String((order as any).display_id)
-            : null,
-        })
+    const existingPaymentIntentId = String(
+      attempt.stripe_payment_intent_id ||
+        (mayAdoptPersistedFinalizationPaymentIntent
+          ? preview.finalization.stripe_payment_intent_id ||
+            (shouldRecoverRecordedPaymentIntent
+              ? orderMetadata.stripe_payment_intent_id
+              : "")
+          : "") ||
+        ""
+    ).trim()
+    if (existingPaymentIntentId) {
+      // Any durable PI identity turns a retry into reconciliation. This covers
+      // processing/unknown outcomes as well as the explicit
+      // succeeded-recording-failed recovery state. Never create a second PI
+      // while an unresolved one is known.
+      persistedPaymentIntentId = existingPaymentIntentId
+      paymentIntent = await retrieveStripeFinalPaymentIntent(
+        existingPaymentIntentId
+      )
+    } else {
+      paymentIntent = await createStripeFinalPaymentIntent({
+        amount: chargeAmount,
+        currencyCode: chargeCurrencyCode,
+        stripeCustomerId:
+          attempt.stripe_customer_id ||
+          preview.payment_setup.stripe_customer_id,
+        stripePaymentMethodId:
+          attempt.stripe_payment_method_id ||
+          preview.payment_setup.stripe_payment_method_id,
+        idempotencyKey,
+        orderId: order.id,
+        finalizationId: preview.finalization.id,
+        displayId: (order as any).display_id
+          ? String((order as any).display_id)
+          : null,
+      })
+    }
     persistedPaymentIntentId = paymentIntent.id
     persistedChargeId = stripeChargeId(paymentIntent)
     await db("gp_order_finalization")
@@ -269,7 +397,7 @@ export async function runFinalChargeAndRelease(
         finalizationId: preview.finalization.id,
         paymentIntentId: paymentIntent.id,
         paymentIntentStatus: paymentIntent.status,
-        amount: finalOrderTotal,
+        amount: chargeAmount,
       })
       // MONEY-CRITICAL guard (Section A): the order is about to be marked
       // charged_ready_to_ship (lifts fulfillment gate + queues QBD invoice +
@@ -293,27 +421,30 @@ export async function runFinalChargeAndRelease(
         finalizationId: preview.finalization.id,
         paymentIntentId: paymentIntent.id,
         paymentIntentStatus: paymentIntent.status,
-        amount: finalOrderTotal,
+        amount: chargeAmount,
         blocked: assertEnforcesBlock || blockNonSucceeded,
       })
     }
     assertStripeFinalPaymentIntentSucceeded(paymentIntent)
     const chargeId = stripeChargeId(paymentIntent)
-    attempt = await recordFinalChargeAttempt(db, {
-      orderId: order.id,
-      finalizationId: preview.finalization.id,
-      amount: finalOrderTotal,
-      currencyCode:
-        preview.finalization.currency_code || order.currency_code || "usd",
-      stripeCustomerId: preview.payment_setup.stripe_customer_id,
-      stripePaymentMethodId: preview.payment_setup.stripe_payment_method_id,
+    attempt = await settleFinalChargeAttempt(db, attempt, {
       stripePaymentIntentId: paymentIntent.id,
       stripeChargeId: chargeId,
       stripeStatus: paymentIntent.status || null,
       status: "succeeded",
-      idempotencyKey,
-      requestedBy: staffActor,
     })
+    if (attempt.claim_lost === true) {
+      return {
+        result: "charge_in_progress",
+        status: 409,
+        body: {
+          message:
+            "A newer caller owns this shared Stripe attempt and is recording its result. Refresh the order; do not retry the customer charge.",
+          charge_attempt_id: attempt.id,
+          payment_intent_id: attempt.stripe_payment_intent_id || null,
+        },
+      }
+    }
 
     const finalizationForMetadata = {
       ...preview.finalization,
@@ -367,9 +498,8 @@ export async function runFinalChargeAndRelease(
     if (!existingTransactions.length) {
       await orderModule.addOrderTransactions({
         order_id: order.id,
-        amount: finalOrderTotal,
-        currency_code:
-          preview.finalization.currency_code || order.currency_code || "usd",
+        amount: chargeAmount,
+        currency_code: chargeCurrencyCode,
         reference: "final_charge",
         reference_id: paymentIntent.id,
       })
@@ -401,9 +531,8 @@ export async function runFinalChargeAndRelease(
         order_id: order.id,
         finalization_id: preview.finalization.id,
         payment_intent_id: paymentIntent.id,
-        amount: finalOrderTotal,
-        currency_code:
-          preview.finalization.currency_code || order.currency_code || "usd",
+        amount: chargeAmount,
+        currency_code: chargeCurrencyCode,
       },
     })
 
@@ -432,31 +561,48 @@ export async function runFinalChargeAndRelease(
       paymentIntent?.status === "succeeded" ? paymentIntent : null
     const failureMessage =
       error instanceof Error ? error.message : "Stripe final charge failed."
-    if (!attempt) {
-      attempt = await recordFinalChargeAttempt(db, {
-        orderId: order.id,
-        finalizationId: preview.finalization.id,
-        amount: finalOrderTotal,
-        currencyCode:
-          preview.finalization.currency_code || order.currency_code || "usd",
-        stripeCustomerId: preview.payment_setup.stripe_customer_id,
-        stripePaymentMethodId: preview.payment_setup.stripe_payment_method_id,
-        stripePaymentIntentId:
-          persistedPaymentIntentId ||
-          stripeError.payment_intent?.id ||
-          null,
-        stripeChargeId:
-          persistedChargeId || stripeChargeId(stripeError.payment_intent || {}),
-        stripeStatus:
-          paymentIntent?.status ||
-          stripeError.payment_intent?.status ||
-          null,
-        status: succeededPaymentIntent ? "succeeded" : "failed",
-        failureCode: succeededPaymentIntent ? null : stripeError.code || null,
-        failureMessage: succeededPaymentIntent ? null : failureMessage,
-        idempotencyKey,
-        requestedBy: staffActor,
-      })
+    const confirmedStripeDecline =
+      !succeededPaymentIntent &&
+      isConfirmedStripeFinalChargeDecline(stripeError)
+    attempt = await settleFinalChargeAttempt(db, attempt, {
+      stripePaymentIntentId:
+        persistedPaymentIntentId || stripeError.payment_intent?.id || null,
+      stripeChargeId:
+        persistedChargeId || stripeChargeId(stripeError.payment_intent || {}),
+      stripeStatus:
+        paymentIntent?.status || stripeError.payment_intent?.status || null,
+      status: succeededPaymentIntent ? "succeeded" : "failed",
+      failureCode: succeededPaymentIntent ? null : stripeError.code || null,
+      failureMessage: succeededPaymentIntent ? null : failureMessage,
+      metadata: confirmedStripeDecline
+        ? {
+            confirmed_stripe_decline: true,
+            stripe_error_type: stripeError.type || null,
+            stripe_decline_code:
+              stripeError.decline_code ||
+              stripeError.payment_intent?.last_payment_error?.decline_code ||
+              null,
+          }
+        : undefined,
+    })
+
+    if (
+      attempt.claim_lost === true ||
+      (!succeededPaymentIntent && attempt.status === "succeeded")
+    ) {
+      // A concurrent replay has already verified this shared attempt as
+      // succeeded, or a stale caller has lost its attempt lease. Do not let
+      // this caller race or downgrade the owner recording the release.
+      return {
+        result: "charge_in_progress",
+        status: 409,
+        body: {
+          message:
+            "The shared Stripe attempt is owned by a newer caller or already succeeded and is being reconciled. Refresh the order; do not retry the customer charge.",
+          charge_attempt_id: attempt.id,
+          payment_intent_id: attempt.stripe_payment_intent_id || null,
+        },
+      }
     }
     const failedStatus = succeededPaymentIntent
       ? FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED
@@ -484,7 +630,9 @@ export async function runFinalChargeAndRelease(
           persistedPaymentIntentId || stripeError.payment_intent?.id || null,
         stripe_charge_id:
           persistedChargeId || stripeChargeId(stripeError.payment_intent || {}),
-        stripe_failure_code: succeededPaymentIntent ? null : stripeError.code || null,
+        stripe_failure_code: succeededPaymentIntent
+          ? null
+          : stripeError.code || null,
         stripe_failure_message: succeededPaymentIntent ? null : failureMessage,
         final_charge_recording_failure_message: succeededPaymentIntent
           ? failureMessage
@@ -513,7 +661,9 @@ export async function runFinalChargeAndRelease(
           persistedPaymentIntentId || stripeError.payment_intent?.id || null,
         stripe_charge_id:
           persistedChargeId || stripeChargeId(stripeError.payment_intent || {}),
-        stripe_failure_code: succeededPaymentIntent ? null : stripeError.code || null,
+        stripe_failure_code: succeededPaymentIntent
+          ? null
+          : stripeError.code || null,
         stripe_failure_message: succeededPaymentIntent ? null : failureMessage,
         blocked_reason: succeededPaymentIntent
           ? "stripe_final_charge_succeeded_recording_failed"

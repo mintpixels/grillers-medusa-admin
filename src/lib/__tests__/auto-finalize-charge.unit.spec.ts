@@ -284,10 +284,16 @@ describe("runFinalizationAutoCharge", () => {
 })
 
 describe("stableFinalChargeIdempotencyKey (double-charge linchpin)", () => {
-  it("is stable for the same (order, finalization) so a race dedupes at Stripe", () => {
+  it("is stable within an attempt and changes only with a confirmed-decline generation", () => {
     const a = stableFinalChargeIdempotencyKey("order_123", "fin_123")
     const b = stableFinalChargeIdempotencyKey("order_123", "fin_123")
     expect(a).toBe(b)
     expect(a).toBe("final-charge:order_123:fin_123")
+    expect(
+      stableFinalChargeIdempotencyKey("order_123", "fin_123", 1)
+    ).toBe("final-charge:order_123:fin_123:decline:1")
+    expect(
+      stableFinalChargeIdempotencyKey("order_123", "fin_123", 2)
+    ).toBe("final-charge:order_123:fin_123:decline:2")
   })
 })

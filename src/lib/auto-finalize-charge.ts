@@ -139,8 +139,9 @@ export type AutoChargeRunResult = {
  * Orchestration invoked by the subscriber. Flag-gates, reads the finalization
  * (persist:false — a pure eligibility read, never releases), decides eligibility,
  * and only for an eligible fixed-price order routes through runFinalChargeAndRelease.
- * The charge itself carries the stable idempotency key, so a duplicate event or a
- * concurrent manual charge cannot double-charge.
+ * The charge itself carries the claimed attempt's stable idempotency key, so a
+ * duplicate event or concurrent manual charge cannot double-charge. A fresh key
+ * is available only after Stripe durably confirms a genuine card decline.
  */
 export async function runFinalizationAutoCharge(
   services: FinalChargeServices,

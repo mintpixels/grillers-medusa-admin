@@ -5,7 +5,8 @@ import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 const mockCreateStripeFinalPaymentIntent = jest.fn()
 const mockRetrieveStripeFinalPaymentIntent = jest.fn()
 const mockPreviewFinalization = jest.fn()
-const mockRecordFinalChargeAttempt = jest.fn()
+const mockClaimFinalChargeAttempt = jest.fn()
+const mockSettleFinalChargeAttempt = jest.fn()
 const mockQuoteWwexFinalizationShipping = jest.fn(async () => null)
 const mockBookWwexFinalizationShipment = jest.fn(async () => ({ metadata: {} }))
 const mockEmitFinalizationRouteFailureAlert = jest.fn(async (_input: any) => ({
@@ -23,8 +24,10 @@ jest.mock("../../../../../../../../lib/catch-weight-finalization", () => {
     retrieveStripeFinalPaymentIntent: (...args: any[]) =>
       mockRetrieveStripeFinalPaymentIntent(...args),
     previewFinalization: (...args: any[]) => mockPreviewFinalization(...args),
-    recordFinalChargeAttempt: (...args: any[]) =>
-      mockRecordFinalChargeAttempt(...args),
+    claimFinalChargeAttempt: (...args: any[]) =>
+      mockClaimFinalChargeAttempt(...args),
+    settleFinalChargeAttempt: (...args: any[]) =>
+      mockSettleFinalChargeAttempt(...args),
   }
 })
 
@@ -59,6 +62,8 @@ jest.mock("../../../../../../../../lib/final-charge-ops-alerts", () => ({
 
 import { POST } from "../route"
 import {
+  FINALIZATION_CHARGE_ATTEMPTING,
+  FINALIZATION_CHARGE_FAILED_HOLD,
   FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED,
   FINALIZATION_CHARGED_READY_TO_SHIP,
   FINALIZATION_PACKED_PENDING_CHARGE,
@@ -126,6 +131,28 @@ function basePreview() {
   }
 }
 
+function baseAttempt(overrides: Record<string, any> = {}) {
+  return {
+    id: "attempt_123",
+    order_id: "order_123",
+    finalization_id: "fin_123",
+    attempt_number: 1,
+    amount: 5000,
+    currency_code: "usd",
+    stripe_customer_id: "cus_123",
+    stripe_payment_method_id: "pm_123",
+    stripe_payment_intent_id: null,
+    stripe_charge_id: null,
+    stripe_status: null,
+    status: "pending",
+    failure_code: null,
+    failure_message: null,
+    idempotency_key: "final-charge:order_123:fin_123",
+    metadata: { confirmed_decline_generation: 0 },
+    ...overrides,
+  }
+}
+
 describe("charge-and-release PI gate", () => {
   beforeEach(() => {
     jest.clearAllMocks()
@@ -136,7 +163,35 @@ describe("charge-and-release PI gate", () => {
       metadata: {},
     })
     mockPreviewFinalization.mockResolvedValue(basePreview())
-    mockRecordFinalChargeAttempt.mockResolvedValue({ id: "attempt_123" })
+    mockClaimFinalChargeAttempt.mockResolvedValue({
+      attempt: baseAttempt(),
+      claimed: true,
+    })
+    mockSettleFinalChargeAttempt.mockImplementation(
+      async (
+        _db: any,
+        attempt: Record<string, any>,
+        input: Record<string, any>
+      ) => ({
+        ...attempt,
+        status: input.status,
+        stripe_payment_intent_id:
+          input.stripePaymentIntentId ||
+          attempt.stripe_payment_intent_id ||
+          null,
+        stripe_charge_id:
+          input.stripeChargeId || attempt.stripe_charge_id || null,
+        stripe_status: input.stripeStatus || attempt.stripe_status || null,
+        failure_code:
+          input.status === "succeeded" ? null : input.failureCode || null,
+        failure_message:
+          input.status === "succeeded" ? null : input.failureMessage || null,
+        metadata: {
+          ...(attempt.metadata || {}),
+          ...(input.metadata || {}),
+        },
+      })
+    )
   })
 
   it("does NOT alert and proceeds when the PaymentIntent succeeded", async () => {
@@ -162,6 +217,25 @@ describe("charge-and-release PI gate", () => {
       )
     )
     expect(updatedToReady).toBe(true)
+    expect(mockPreviewFinalization).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: "order_123" }),
+      {
+        persist: true,
+        preserveWorkflowStatus: true,
+      }
+    )
+    const updates = db.mock.results.flatMap((r: any) =>
+      r.value.update.mock.calls.map((call: any[]) => call[0])
+    )
+    expect(updates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: FINALIZATION_CHARGE_ATTEMPTING,
+          charge_attempt_id: "attempt_123",
+        }),
+      ])
+    )
     expect(mockCreateStripeFinalPaymentIntent).toHaveBeenCalledWith(
       expect.objectContaining({
         idempotencyKey: "final-charge:order_123:fin_123",
@@ -216,9 +290,10 @@ describe("charge-and-release PI gate", () => {
 
     await POST(req, res)
 
-    expect(mockRecordFinalChargeAttempt).toHaveBeenCalledTimes(1)
-    expect(mockRecordFinalChargeAttempt).toHaveBeenCalledWith(
+    expect(mockSettleFinalChargeAttempt).toHaveBeenCalledTimes(2)
+    expect(mockSettleFinalChargeAttempt).toHaveBeenCalledWith(
       expect.anything(),
+      expect.objectContaining({ id: "attempt_123" }),
       expect.objectContaining({
         stripePaymentIntentId: "pi_ok_recording_failure",
         stripeChargeId: "ch_recording_failure",
@@ -248,6 +323,353 @@ describe("charge-and-release PI gate", () => {
           status: "succeeded",
         }),
       })
+    )
+  })
+
+  it("opens a fresh idempotency generation only after a confirmed decline and uses the repaired payment method", async () => {
+    const declinedAttempt = baseAttempt()
+    const retryAttempt = baseAttempt({
+      id: "attempt_124",
+      attempt_number: 2,
+      stripe_payment_method_id: "pm_fixed",
+      idempotency_key: "final-charge:order_123:fin_123:decline:1",
+      metadata: { confirmed_decline_generation: 1 },
+    })
+    mockPreviewFinalization
+      .mockResolvedValueOnce(basePreview())
+      .mockResolvedValueOnce({
+        ...basePreview(),
+        finalization: {
+          ...basePreview().finalization,
+          status: FINALIZATION_CHARGE_FAILED_HOLD,
+          charge_attempt_id: "attempt_123",
+          stripe_payment_intent_id: "pi_declined",
+        },
+        payment_setup: {
+          ...basePreview().payment_setup,
+          stripe_payment_method_id: "pm_fixed",
+        },
+      })
+    mockClaimFinalChargeAttempt
+      .mockResolvedValueOnce({ attempt: declinedAttempt, claimed: true })
+      .mockResolvedValueOnce({ attempt: retryAttempt, claimed: true })
+    const decline = Object.assign(new Error("Your card was declined."), {
+      stripe_error: {
+        type: "card_error",
+        code: "card_declined",
+        decline_code: "generic_decline",
+        payment_intent: {
+          id: "pi_declined",
+          status: "requires_payment_method",
+        },
+      },
+    })
+    mockCreateStripeFinalPaymentIntent
+      .mockRejectedValueOnce(decline)
+      .mockResolvedValueOnce({
+        id: "pi_retry_ok",
+        status: "succeeded",
+        latest_charge: "ch_retry_ok",
+      })
+
+    const firstDb = makeDb()
+    const first = makeScope(firstDb)
+    const firstRes = makeRes()
+    await POST(
+      {
+        params: { id: "order_123" },
+        body: {},
+        scope: first.scope,
+      } as any,
+      firstRes
+    )
+
+    const secondDb = makeDb()
+    const second = makeScope(secondDb)
+    const secondRes = makeRes()
+    await POST(
+      {
+        params: { id: "order_123" },
+        body: {},
+        scope: second.scope,
+      } as any,
+      secondRes
+    )
+
+    expect(firstRes.status).toHaveBeenCalledWith(402)
+    expect(secondRes.status).toHaveBeenCalledWith(200)
+    expect(mockSettleFinalChargeAttempt).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({ id: "attempt_123" }),
+      expect.objectContaining({
+        status: "failed",
+        stripePaymentIntentId: "pi_declined",
+        failureCode: "card_declined",
+        metadata: expect.objectContaining({
+          confirmed_stripe_decline: true,
+          stripe_decline_code: "generic_decline",
+        }),
+      })
+    )
+    expect(mockClaimFinalChargeAttempt).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({
+        stripePaymentMethodId: "pm_fixed",
+      })
+    )
+    expect(mockCreateStripeFinalPaymentIntent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        idempotencyKey: "final-charge:order_123:fin_123",
+        stripePaymentMethodId: "pm_123",
+      })
+    )
+    expect(mockCreateStripeFinalPaymentIntent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        idempotencyKey: "final-charge:order_123:fin_123:decline:1",
+        stripePaymentMethodId: "pm_fixed",
+      })
+    )
+    expect(mockRetrieveStripeFinalPaymentIntent).not.toHaveBeenCalled()
+  })
+
+  it("replays an ambiguous attempt with the same Stripe key when no PaymentIntent id was returned", async () => {
+    const sharedAttempt = baseAttempt()
+    mockPreviewFinalization
+      .mockResolvedValueOnce(basePreview())
+      .mockResolvedValueOnce({
+        ...basePreview(),
+        finalization: {
+          ...basePreview().finalization,
+          status: FINALIZATION_CHARGE_FAILED_HOLD,
+        },
+      })
+    mockClaimFinalChargeAttempt
+      .mockResolvedValueOnce({ attempt: sharedAttempt, claimed: true })
+      .mockResolvedValueOnce({
+        attempt: { ...sharedAttempt, status: "pending" },
+        claimed: true,
+      })
+    mockCreateStripeFinalPaymentIntent
+      .mockRejectedValueOnce(new Error("Stripe request timed out"))
+      .mockResolvedValueOnce({
+        id: "pi_same_attempt",
+        status: "succeeded",
+        latest_charge: "ch_same_attempt",
+      })
+
+    const first = makeScope(makeDb())
+    const firstRes = makeRes()
+    await POST(
+      { params: { id: "order_123" }, body: {}, scope: first.scope } as any,
+      firstRes
+    )
+    const second = makeScope(makeDb())
+    const secondRes = makeRes()
+    await POST(
+      { params: { id: "order_123" }, body: {}, scope: second.scope } as any,
+      secondRes
+    )
+
+    expect(firstRes.status).toHaveBeenCalledWith(402)
+    expect(secondRes.status).toHaveBeenCalledWith(200)
+    expect(mockCreateStripeFinalPaymentIntent).toHaveBeenCalledTimes(2)
+    expect(
+      mockCreateStripeFinalPaymentIntent.mock.calls.map(
+        (call: any[]) => call[0].idempotencyKey
+      )
+    ).toEqual([
+      "final-charge:order_123:fin_123",
+      "final-charge:order_123:fin_123",
+    ])
+  })
+
+  it("adopts a known PaymentIntent after an unknown outcome instead of creating another one", async () => {
+    const initialAttempt = baseAttempt()
+    const retryAttempt = baseAttempt({
+      status: "pending",
+      stripe_payment_intent_id: "pi_ambiguous",
+      stripe_status: "processing",
+    })
+    mockPreviewFinalization
+      .mockResolvedValueOnce(basePreview())
+      .mockResolvedValueOnce({
+        ...basePreview(),
+        finalization: {
+          ...basePreview().finalization,
+          status: FINALIZATION_CHARGE_FAILED_HOLD,
+          stripe_payment_intent_id: "pi_ambiguous",
+        },
+      })
+    mockClaimFinalChargeAttempt
+      .mockResolvedValueOnce({ attempt: initialAttempt, claimed: true })
+      .mockResolvedValueOnce({ attempt: retryAttempt, claimed: true })
+    mockCreateStripeFinalPaymentIntent.mockRejectedValueOnce(
+      Object.assign(new Error("Stripe response was interrupted"), {
+        stripe_error: {
+          type: "api_error",
+          code: "api_connection_error",
+          payment_intent: {
+            id: "pi_ambiguous",
+            status: "processing",
+          },
+        },
+      })
+    )
+    mockRetrieveStripeFinalPaymentIntent.mockResolvedValueOnce({
+      id: "pi_ambiguous",
+      status: "succeeded",
+      latest_charge: "ch_ambiguous",
+    })
+
+    const first = makeScope(makeDb())
+    const firstRes = makeRes()
+    await POST(
+      { params: { id: "order_123" }, body: {}, scope: first.scope } as any,
+      firstRes
+    )
+    const second = makeScope(makeDb())
+    const secondRes = makeRes()
+    await POST(
+      { params: { id: "order_123" }, body: {}, scope: second.scope } as any,
+      secondRes
+    )
+
+    expect(firstRes.status).toHaveBeenCalledWith(402)
+    expect(secondRes.status).toHaveBeenCalledWith(200)
+    expect(mockCreateStripeFinalPaymentIntent).toHaveBeenCalledTimes(1)
+    expect(mockRetrieveStripeFinalPaymentIntent).toHaveBeenCalledTimes(1)
+    expect(mockRetrieveStripeFinalPaymentIntent).toHaveBeenCalledWith(
+      "pi_ambiguous"
+    )
+  })
+
+  it("adopts a PaymentIntent durably linked on the finalization when attempt settlement was interrupted", async () => {
+    mockPreviewFinalization.mockResolvedValueOnce({
+      ...basePreview(),
+      finalization: {
+        ...basePreview().finalization,
+        status: FINALIZATION_CHARGE_ATTEMPTING,
+        charge_attempt_id: "attempt_123",
+        stripe_payment_intent_id: "pi_linked",
+      },
+    })
+    mockClaimFinalChargeAttempt.mockResolvedValueOnce({
+      attempt: baseAttempt({ status: "pending" }),
+      claimed: true,
+    })
+    mockRetrieveStripeFinalPaymentIntent.mockResolvedValueOnce({
+      id: "pi_linked",
+      status: "succeeded",
+      latest_charge: "ch_linked",
+    })
+
+    const { scope } = makeScope(makeDb())
+    const res = makeRes()
+    await POST(
+      { params: { id: "order_123" }, body: {}, scope } as any,
+      res
+    )
+
+    expect(mockCreateStripeFinalPaymentIntent).not.toHaveBeenCalled()
+    expect(mockRetrieveStripeFinalPaymentIntent).toHaveBeenCalledWith(
+      "pi_linked"
+    )
+    expect(res.status).toHaveBeenCalledWith(200)
+  })
+
+  it("lets only one concurrent caller own the shared pending attempt", async () => {
+    const sharedAttempt = baseAttempt()
+    mockClaimFinalChargeAttempt
+      .mockResolvedValueOnce({ attempt: sharedAttempt, claimed: true })
+      .mockResolvedValueOnce({ attempt: sharedAttempt, claimed: false })
+    mockCreateStripeFinalPaymentIntent.mockResolvedValueOnce({
+      id: "pi_concurrent",
+      status: "succeeded",
+      latest_charge: "ch_concurrent",
+    })
+
+    const first = makeScope(makeDb())
+    const second = makeScope(makeDb())
+    const firstRes = makeRes()
+    const secondRes = makeRes()
+    await Promise.all([
+      POST(
+        { params: { id: "order_123" }, body: {}, scope: first.scope } as any,
+        firstRes
+      ),
+      POST(
+        { params: { id: "order_123" }, body: {}, scope: second.scope } as any,
+        secondRes
+      ),
+    ])
+
+    expect(mockCreateStripeFinalPaymentIntent).toHaveBeenCalledTimes(1)
+    expect(firstRes.status).toHaveBeenCalledWith(200)
+    expect(secondRes.status).toHaveBeenCalledWith(409)
+    expect(secondRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        charge_attempt_id: "attempt_123",
+      })
+    )
+  })
+
+  it("does not run release side effects when a stale caller loses the attempt lease after Stripe succeeds", async () => {
+    mockCreateStripeFinalPaymentIntent.mockResolvedValueOnce({
+      id: "pi_shared_success",
+      status: "succeeded",
+      latest_charge: "ch_shared_success",
+    })
+    mockSettleFinalChargeAttempt.mockResolvedValueOnce({
+      ...baseAttempt(),
+      claim_lost: true,
+    })
+
+    const { scope, orderModule, eventBus } = makeScope(makeDb())
+    const res = makeRes()
+    await POST(
+      { params: { id: "order_123" }, body: {}, scope } as any,
+      res
+    )
+
+    expect(res.status).toHaveBeenCalledWith(409)
+    expect(mockBookWwexFinalizationShipment).not.toHaveBeenCalled()
+    expect(orderModule.addOrderTransactions).not.toHaveBeenCalled()
+    expect(orderModule.updateOrders).not.toHaveBeenCalled()
+    expect(eventBus.emit).not.toHaveBeenCalled()
+  })
+
+  it("does not write a failed hold when a stale caller loses the attempt lease after an ambiguous Stripe error", async () => {
+    mockCreateStripeFinalPaymentIntent.mockRejectedValueOnce(
+      new Error("Stripe request timed out")
+    )
+    mockSettleFinalChargeAttempt.mockResolvedValueOnce({
+      ...baseAttempt(),
+      claim_lost: true,
+    })
+
+    const db = makeDb()
+    const { scope, orderModule } = makeScope(db)
+    const res = makeRes()
+    await POST(
+      { params: { id: "order_123" }, body: {}, scope } as any,
+      res
+    )
+
+    expect(res.status).toHaveBeenCalledWith(409)
+    expect(orderModule.updateOrders).not.toHaveBeenCalled()
+    const updates = db.mock.results.flatMap((r: any) =>
+      r.value.update.mock.calls.map((call: any[]) => call[0])
+    )
+    expect(updates).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: FINALIZATION_CHARGE_FAILED_HOLD,
+        }),
+      ])
     )
   })
 

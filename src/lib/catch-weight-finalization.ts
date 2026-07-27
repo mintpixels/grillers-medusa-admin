@@ -155,7 +155,9 @@ type StripePaymentIntent = {
   latest_charge?: string | null
   charges?: { data?: Array<{ id?: string }> }
   last_payment_error?: {
+    type?: string
     code?: string
+    decline_code?: string
     message?: string
   } | null
 }
@@ -2243,7 +2245,10 @@ const shouldSurfacePackingValidation = (
 export async function previewFinalization(
   db: CatchWeightDb,
   order: Record<string, any>,
-  options: { persist?: boolean } = {}
+  options: {
+    persist?: boolean
+    preserveWorkflowStatus?: boolean
+  } = {}
 ) {
   const detail = await getFinalizationDetail(db, order)
   const breakdown = orderBreakdown(order)
@@ -2351,9 +2356,14 @@ export async function previewFinalization(
   // stays at packed_pending_charge until the explicit approve action releases it (see
   // approveFinalization, which uses finalizationReadyStatus). Releasing on preview/persist would
   // let a `{persist:true}` preview ship an A/R order without the approval step.
-  const persistedStatus = errors.length
-    ? FINALIZATION_PACKED_PENDING_REVIEW
-    : FINALIZATION_PACKED_PENDING_CHARGE
+  // The money path opts into preserveWorkflowStatus so recalculating totals
+  // cannot silently promote packing work or erase an in-flight/failed charge
+  // state before its attempt claim is reconciled.
+  const persistedStatus = options.preserveWorkflowStatus
+    ? detail.finalization.status
+    : errors.length
+      ? FINALIZATION_PACKED_PENDING_REVIEW
+      : FINALIZATION_PACKED_PENDING_CHARGE
 
   if (options.persist) {
     await Promise.all(
@@ -2448,6 +2458,289 @@ export async function nextChargeAttemptNumber(
     .first()
 
   return numberOrZero(latest?.attempt_number) + 1 || 1
+}
+
+const FINAL_CHARGE_PENDING_CLAIM_TTL_MS = 5 * 60 * 1000
+
+export function finalChargeAttemptIdempotencyKey(
+  baseIdempotencyKey: string,
+  confirmedDeclineCount: number
+) {
+  const generation = Math.max(0, Math.floor(confirmedDeclineCount || 0))
+  return generation
+    ? `${baseIdempotencyKey}:decline:${generation}`
+    : baseIdempotencyKey
+}
+
+/**
+ * A failed charge attempt may open a fresh Stripe idempotency generation only
+ * when Stripe has durably identified both the failed PaymentIntent and the
+ * genuine card-decline terminal state. Network errors, timeouts, generic
+ * provider errors, processing states, and local recording failures deliberately
+ * fail this test and keep reusing/adopting the existing attempt.
+ */
+export function isConfirmedFinalChargeDeclineAttempt(
+  attempt: Record<string, any> | null | undefined
+) {
+  if (!attempt || attempt.status !== "failed") return false
+  const metadata = metadataObject(attempt.metadata)
+  return Boolean(
+    attempt.stripe_payment_intent_id &&
+      attempt.stripe_status === "requires_payment_method" &&
+      (attempt.failure_code === "card_declined" ||
+        metadata.confirmed_stripe_decline === true)
+  )
+}
+
+type FinalChargeAttemptClaimInput = {
+  orderId: string
+  finalizationId: string
+  finalizationStatus: string
+  amount: number
+  currencyCode: string
+  stripeCustomerId?: string | null
+  stripePaymentMethodId: string
+  baseIdempotencyKey: string
+  requestedBy?: string | null
+  now?: Date
+  pendingClaimTtlMs?: number
+}
+
+/**
+ * Atomically claims the Stripe attempt for a finalization.
+ *
+ * The pending row is written before the network call. That gives concurrent
+ * manual/automatic invocations one shared Stripe idempotency key while still
+ * allowing a stale claim to be safely replayed with the same key after a
+ * process crash. A new row/key is created only after a confirmed decline.
+ */
+export async function claimFinalChargeAttempt(
+  db: CatchWeightDb,
+  input: FinalChargeAttemptClaimInput
+): Promise<{ attempt: Record<string, any>; claimed: boolean }> {
+  const knex = db as any
+  if (typeof knex.transaction !== "function") {
+    throw new Error("Final charge attempt claims require database transactions.")
+  }
+
+  return knex.transaction(async (trx: any) => {
+    await trx.raw("select pg_advisory_xact_lock(hashtextextended(?, 0))", [
+      `gp-final-charge:${input.finalizationId}`,
+    ])
+
+    const attempts =
+      (await trx("gp_final_charge_attempt")
+        .where({ finalization_id: input.finalizationId })
+        .whereNull("deleted_at")
+        .orderBy("attempt_number", "desc")
+        .orderBy("created_at", "desc")) || []
+    const latest = attempts[0] as Record<string, any> | undefined
+    const now = input.now || new Date()
+    const pendingClaimTtlMs = Math.max(
+      1,
+      input.pendingClaimTtlMs ?? FINAL_CHARGE_PENDING_CLAIM_TTL_MS
+    )
+
+    if (latest?.status === "pending") {
+      const claimedAt = new Date(
+        latest.requested_at || latest.updated_at || latest.created_at || 0
+      ).getTime()
+      const claimIsFresh =
+        Number.isFinite(claimedAt) &&
+        now.getTime() - claimedAt < pendingClaimTtlMs
+      if (claimIsFresh) {
+        return { attempt: latest, claimed: false }
+      }
+    }
+
+    if (
+      latest?.status === "failed" &&
+      input.finalizationStatus === FINALIZATION_CHARGE_ATTEMPTING
+    ) {
+      // Settlement and the finalization hold are separate durable writes. In
+      // the narrow gap after the attempt is marked failed but before the hold
+      // lands, a duplicate request must not treat that just-confirmed decline
+      // as staff's next retry. Once the row is stale, replay/recovery is safe.
+      const failedAt = new Date(
+        latest.updated_at ||
+          latest.requested_at ||
+          latest.created_at ||
+          0
+      ).getTime()
+      const failureIsFresh =
+        Number.isFinite(failedAt) &&
+        now.getTime() - failedAt < pendingClaimTtlMs
+      if (failureIsFresh) {
+        return { attempt: latest, claimed: false }
+      }
+    }
+
+    if (latest?.status === "succeeded") {
+      // The explicit recording-failed state is immediately recoverable. A
+      // fresh success in any other state means another caller is still
+      // recording the release, so stand down. Once stale, adopt that already
+      // succeeded PI: the original process may have died between Stripe
+      // settlement and the finalization write.
+      const settledAt = new Date(
+        latest.succeeded_at ||
+          latest.updated_at ||
+          latest.requested_at ||
+          latest.created_at ||
+          0
+      ).getTime()
+      const settlementIsFresh =
+        Number.isFinite(settledAt) &&
+        now.getTime() - settledAt < pendingClaimTtlMs
+      if (
+        input.finalizationStatus !==
+          FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED &&
+        settlementIsFresh
+      ) {
+        return { attempt: latest, claimed: false }
+      }
+    }
+
+    if (latest && !isConfirmedFinalChargeDeclineAttempt(latest)) {
+      const claimToken = id("gpclaim")
+      const patch = {
+        ...(latest.status === "succeeded" ? {} : { status: "pending" }),
+        requested_by: input.requestedBy || null,
+        requested_at: now,
+        metadata: {
+          ...metadataObject(latest.metadata),
+          claim_token: claimToken,
+        },
+        updated_at: now,
+      }
+      await trx("gp_final_charge_attempt").where({ id: latest.id }).update(patch)
+      return {
+        attempt: { ...latest, ...patch },
+        claimed: true,
+      }
+    }
+
+    const confirmedDeclineKeys = new Set(
+      attempts
+        .filter(isConfirmedFinalChargeDeclineAttempt)
+        .map((entry: Record<string, any>) => String(entry.idempotency_key || ""))
+        .filter(Boolean)
+    )
+    const confirmedDeclineCount = confirmedDeclineKeys.size
+    const attemptNumber =
+      attempts.reduce(
+        (max: number, entry: Record<string, any>) =>
+          Math.max(max, numberOrZero(entry.attempt_number)),
+        0
+      ) + 1
+    const row = {
+      id: id("gpcharge"),
+      order_id: input.orderId,
+      finalization_id: input.finalizationId,
+      attempt_number: attemptNumber,
+      amount: input.amount,
+      currency_code: input.currencyCode,
+      stripe_customer_id: input.stripeCustomerId || null,
+      stripe_payment_method_id: input.stripePaymentMethodId,
+      stripe_payment_intent_id: null,
+      stripe_charge_id: null,
+      status: "pending",
+      stripe_status: null,
+      failure_code: null,
+      failure_message: null,
+      idempotency_key: finalChargeAttemptIdempotencyKey(
+        input.baseIdempotencyKey,
+        confirmedDeclineCount
+      ),
+      requested_by: input.requestedBy || null,
+      requested_at: now,
+      succeeded_at: null,
+      metadata: {
+        confirmed_decline_generation: confirmedDeclineCount,
+        claim_token: id("gpclaim"),
+      },
+      created_at: now,
+      updated_at: now,
+    }
+
+    await trx("gp_final_charge_attempt").insert(row)
+    return { attempt: row, claimed: true }
+  })
+}
+
+export async function settleFinalChargeAttempt(
+  db: CatchWeightDb,
+  attempt: Record<string, any>,
+  input: {
+    status: "succeeded" | "failed"
+    stripePaymentIntentId?: string | null
+    stripeChargeId?: string | null
+    stripeStatus?: string | null
+    failureCode?: string | null
+    failureMessage?: string | null
+    metadata?: Record<string, any>
+  }
+) {
+  const knex = db as any
+  if (typeof knex.transaction !== "function") {
+    throw new Error(
+      "Final charge attempt settlement requires database transactions."
+    )
+  }
+
+  return knex.transaction(async (trx: any) => {
+    await trx.raw("select pg_advisory_xact_lock(hashtextextended(?, 0))", [
+      `gp-final-charge-attempt:${attempt.id}`,
+    ])
+    const current =
+      (await trx("gp_final_charge_attempt")
+        .where({ id: attempt.id })
+        .whereNull("deleted_at")
+        .first()) || attempt
+    const claimedToken = String(
+      metadataObject(attempt.metadata).claim_token || ""
+    ).trim()
+    const currentToken = String(
+      metadataObject(current.metadata).claim_token || ""
+    ).trim()
+
+    // A stale network caller can outlive the pending-claim lease. Once another
+    // caller reclaims the row, the old owner may still receive Stripe's shared
+    // response, but it must not race the new owner through shipment booking,
+    // order writes, or success/failure events.
+    if (claimedToken && claimedToken !== currentToken) {
+      return { ...current, claim_lost: true }
+    }
+
+    // A timeout/error from a concurrent replay must never downgrade the shared
+    // attempt after another caller has already verified Stripe success.
+    if (current.status === "succeeded" && input.status !== "succeeded") {
+      return current
+    }
+
+    const patch: Record<string, any> = {
+      status: input.status,
+      stripe_payment_intent_id:
+        input.stripePaymentIntentId || current.stripe_payment_intent_id || null,
+      stripe_charge_id:
+        input.stripeChargeId || current.stripe_charge_id || null,
+      stripe_status: input.stripeStatus || current.stripe_status || null,
+      failure_code:
+        input.status === "succeeded" ? null : input.failureCode || null,
+      failure_message:
+        input.status === "succeeded" ? null : input.failureMessage || null,
+      succeeded_at: input.status === "succeeded" ? new Date() : null,
+      updated_at: new Date(),
+    }
+    if (input.metadata) {
+      patch.metadata = {
+        ...metadataObject(current.metadata),
+        ...input.metadata,
+      }
+    }
+
+    await trx("gp_final_charge_attempt").where({ id: current.id }).update(patch)
+    return { ...current, ...patch }
+  })
 }
 
 export async function createStripeFinalPaymentIntent(input: {
@@ -2547,8 +2840,11 @@ export function assertStripeFinalPaymentIntentSucceeded(
   const error = new Error(
     `Stripe final charge did not succeed. PaymentIntent ${paymentIntent.id} returned status ${status}.`
   ) as Error & { stripe_error?: Record<string, any> }
+  const lastPaymentError = paymentIntent.last_payment_error || null
   error.stripe_error = {
-    code: "unexpected_payment_intent_status",
+    type: lastPaymentError?.type,
+    code: lastPaymentError?.code || "unexpected_payment_intent_status",
+    decline_code: lastPaymentError?.decline_code,
     message: error.message,
     payment_intent: paymentIntent,
   }

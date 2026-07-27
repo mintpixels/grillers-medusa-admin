@@ -1,5 +1,8 @@
 import {
   CATCH_WEIGHT_ORDER_FIELDS,
+  FINALIZATION_CHARGE_ATTEMPTING,
+  FINALIZATION_CHARGE_FAILED_HOLD,
+  FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED,
   FINALIZATION_CHARGED_READY_TO_SHIP,
   FINALIZATION_PACKED_PENDING_CHARGE,
   FINALIZATION_PACKED_PENDING_REVIEW,
@@ -97,6 +100,73 @@ describe("catch-weight finalization helpers", () => {
     expect(amountInMinorUnits(101.95, "usd")).toBe(10195)
     expect(amountInMinorUnits(1200, "jpy")).toBe(1200)
   })
+
+  it.each([
+    FINALIZATION_CHARGE_ATTEMPTING,
+    FINALIZATION_CHARGE_FAILED_HOLD,
+    FINALIZATION_CHARGE_SUCCEEDED_RECORDING_FAILED,
+  ])(
+    "preserves the %s workflow state while the charge path recalculates totals",
+    async (status) => {
+      const line = {
+        ...buildFinalizationLineSnapshot(
+          { id: "order_charge_state" },
+          {
+            id: "item_fixed",
+            title: "Fixed-price item",
+            variant_id: "variant_fixed",
+            variant_sku: "FIXED-1",
+            quantity: 1,
+            unit_price: 10,
+            subtotal: 10,
+            total: 10,
+            tax_total: 0,
+            metadata: {
+              pricing_mode: "fixed_price",
+              qbd_list_id: "QBD-FIXED-1",
+            },
+          },
+          "gpfin_charge_state"
+        ),
+        status: "ready",
+        actual_quantity: 1,
+        actual_piece_count: 1,
+      }
+      const db = createMemoryCatchWeightDb({
+        gp_order_finalization: [
+          {
+            id: "gpfin_charge_state",
+            order_id: "order_charge_state",
+            status,
+            estimated_order_total: 10,
+            metadata: {},
+            deleted_at: null,
+          },
+        ],
+        gp_order_finalization_line: [{ ...line, deleted_at: null }],
+        gp_order_payment_setup: [],
+        gp_final_charge_attempt: [],
+      })
+
+      const preview = await previewFinalization(
+        db,
+        {
+          id: "order_charge_state",
+          total: 10,
+          item_subtotal: 10,
+          tax_total: 0,
+          shipping_total: 0,
+          discount_total: 0,
+          items: [],
+        },
+        { persist: true, preserveWorkflowStatus: true }
+      )
+
+      expect(preview.errors).toEqual([])
+      expect(preview.finalization.status).toBe(status)
+      expect(db.tables.gp_order_finalization[0].status).toBe(status)
+    }
+  )
 
   it("requests current catalog titles for catch-weight line display", () => {
     expect(CATCH_WEIGHT_ORDER_FIELDS).toEqual(
