@@ -3,7 +3,9 @@ import { emitAnalyticsSubscriberFailureAlert } from "../../lib/analytics/subscri
 import {
   estimatePackagingCost,
   packagingConfigFromEnv,
+  type PackagingCostConfig,
 } from "../../lib/packaging-cost"
+import { getPackagingConfig } from "../../lib/packaging-cost-strapi"
 import { shippingForecastInputFromFulfillmentData } from "../../lib/shipping-cost-forecast"
 import {
   isUpsServiceCode,
@@ -219,7 +221,8 @@ function routeMarketForAnalytics(
  */
 export function buildShippingForecastEvent(
   order: Record<string, any>,
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  packagingConfig: PackagingCostConfig = packagingConfigFromEnv(env)
 ): {
   event: "shipping_forecast"
   actor_id?: string
@@ -273,7 +276,7 @@ export function buildShippingForecastEvent(
       service,
       shipPostalCode,
     },
-    packagingConfigFromEnv(env)
+    packagingConfig
   )
 
   // Charged shipping = what the customer actually paid for shipping. Prefer the
@@ -379,7 +382,11 @@ export default async function shippingForecastHandler({
     const order = orders?.[0] as any
     if (!order) return
 
-    const payload = buildShippingForecastEvent(order, process.env)
+    // Use the same Strapi-layered configuration that produced the checkout
+    // charge, so freight + packaging analytics continue to reconcile after an
+    // operator edits the dry-ice or box table.
+    const packagingConfig = await getPackagingConfig(process.env)
+    const payload = buildShippingForecastEvent(order, process.env, packagingConfig)
     // Not a UPS order (pickup / local / flat): nothing to forecast or reconcile.
     if (!payload) return
 

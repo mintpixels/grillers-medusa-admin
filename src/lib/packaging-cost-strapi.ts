@@ -1,13 +1,16 @@
 /**
- * Loads ops-editable packaging costs from Strapi (cold-chain-setting) so the
- * dry-ice price and per-box costs can change without an admin redeploy. Values
- * layer as: hardcoded default (Peter's numbers) < Strapi < env override.
+ * Loads ops-editable packaging inputs from Strapi (cold-chain-setting) so the
+ * dry-ice and box rules can change without an admin redeploy. Values layer as:
+ * hardcoded legacy default < Strapi < env override.
  *
  * Strapi cold-chain-setting fields consumed:
  *   - DryIcePricePerLb  -> dryIceUsdPerLb
  *   - BoxCostMicro      -> boxCost.micro
  *   - BoxCost330        -> boxCost.m330
  *   - BoxCost345        -> boxCost.l345
+ *   - PackagingCostModel, MinimumDryIceAmount, TransitDayThresholds and
+ *     PackagingBoxes activate the continuous spreadsheet model only when the
+ *     complete normalized input set is valid.
  *
  * Never throws and never blocks the rate path: any fetch failure or missing
  * field falls back to the hardcoded defaults (which are correct). The fetched
@@ -32,16 +35,49 @@ export function resetPackagingOverridesCache(): void {
 export function packagingOverridesFromColdChainSetting(
   setting: unknown
 ): PackagingCostOverrides {
+  const unwrap = (value: unknown): Record<string, any> => {
+    if (!value || typeof value !== "object") return {};
+    const row = value as Record<string, any>;
+    return (row.attributes as Record<string, any>) ?? row;
+  };
   const root =
     setting && typeof setting === "object" ? (setting as Record<string, any>) : {};
-  const s = (root.attributes as Record<string, any>) ?? root;
+  const s = unwrap(root);
+  const thresholds = Array.isArray(s?.TransitDayThresholds)
+    ? s.TransitDayThresholds.map((row: unknown) => {
+        const value = unwrap(row);
+        return {
+          transitDays: value.TransitDays ?? null,
+          dryIceMultiplier: value.DryIceMultiplier ?? null,
+        };
+      })
+    : [];
+  const packagingBoxes = Array.isArray(s?.PackagingBoxes)
+    ? s.PackagingBoxes.map((row: unknown) => {
+        const value = unwrap(row);
+        return {
+          boxTier: value.PackagingTier ?? null,
+          name: value.Name ?? null,
+          unitCost: value.UnitCost ?? null,
+          maxProductWeightLb: value.MaxProductWeightLb ?? null,
+          maxTransitDays: value.MaxTransitDays ?? null,
+          maxTotalWeightLb: value.MaxTotalWeightLb ?? null,
+          tareWeightLb: value.TareWeightLb ?? null,
+          active: value.Active ?? null,
+        };
+      })
+    : [];
   return {
+    model: s?.PackagingCostModel ?? null,
     dryIceUsdPerLb: s?.DryIcePricePerLb ?? null,
     boxCost: {
       micro: s?.BoxCostMicro ?? null,
       m330: s?.BoxCost330 ?? null,
       l345: s?.BoxCost345 ?? null,
     },
+    minimumDryIceAmountLb: s?.MinimumDryIceAmount ?? null,
+    transitDayThresholds: thresholds,
+    packagingBoxes,
   };
 }
 
@@ -55,7 +91,10 @@ export async function fetchPackagingOverridesFromStrapi(
   try {
     // Bound the request so a stalled Strapi can't add latency to the checkout
     // rate path. AbortError is swallowed by the catch below → falls back to {}.
-    const res = await fetch(`${base.replace(/\/+$/, "")}/api/cold-chain-setting`, {
+    const url =
+      `${base.replace(/\/+$/, "")}/api/cold-chain-setting` +
+      `?populate[TransitDayThresholds]=*&populate[PackagingBoxes]=*`;
+    const res = await fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       signal: AbortSignal.timeout(2000),
     });

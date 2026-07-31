@@ -40,20 +40,116 @@ describe("resolvePackagingConfig — layering default < strapi < env", () => {
     expect(c.boxCost.l345).toBe(16.06)
     expect(c.boxCost.m330).toBe(9.98) // explicit 0 rejected → default
   })
+
+  it("activates continuous mode only with a complete normalized table", () => {
+    const strapi = {
+      model: "continuous_weight",
+      minimumDryIceAmountLb: 7,
+      transitDayThresholds: [
+        { transitDays: 3, dryIceMultiplier: 3 },
+        { transitDays: 1, dryIceMultiplier: 1 },
+        { transitDays: 2, dryIceMultiplier: 2 },
+      ],
+      packagingBoxes: [
+        {
+          boxTier: "m330",
+          name: "Medium",
+          unitCost: 10,
+          maxProductWeightLb: 10,
+          maxTransitDays: 1,
+          maxTotalWeightLb: 50,
+          tareWeightLb: 0,
+        },
+        {
+          boxTier: "l345",
+          name: "Large",
+          unitCost: 13.38,
+          maxProductWeightLb: null,
+          maxTransitDays: null,
+          maxTotalWeightLb: 50,
+          tareWeightLb: 0,
+        },
+      ],
+    }
+    const c = resolvePackagingConfig({ strapi, env: {} })
+    expect(c.model).toBe("continuous_weight")
+    expect(c.continuous?.dryIceByTransitDays).toEqual([
+      { transitDays: 1, dryIceLbPerBox: 7 },
+      { transitDays: 2, dryIceLbPerBox: 14 },
+      { transitDays: 3, dryIceLbPerBox: 21 },
+    ])
+    expect(c.continuous?.boxRules.map((box) => box.boxTier)).toEqual(["m330", "l345"])
+
+    expect(
+      resolvePackagingConfig({
+        strapi: {
+          ...strapi,
+          transitDayThresholds: strapi.transitDayThresholds.filter(
+            (row) => row.transitDays !== 2
+          ),
+        },
+        env: {},
+      }).model
+    ).toBe("legacy_tiered")
+    expect(
+      resolvePackagingConfig({
+        strapi,
+        env: { GRILLERS_PACKAGING_COST_MODEL: "legacy_tiered" },
+      }).model
+    ).toBe("legacy_tiered")
+  })
 })
 
 describe("packagingOverridesFromColdChainSetting", () => {
   it("maps the Strapi v5 flat shape", () => {
     expect(
       packagingOverridesFromColdChainSetting({
+        PackagingCostModel: "continuous_weight",
         DryIcePricePerLb: 0.6,
         BoxCostMicro: 7.54,
         BoxCost330: 9.98,
         BoxCost345: 16.06,
+        MinimumDryIceAmount: 7,
+        TransitDayThresholds: [
+          { TransitDays: 1, DryIceMultiplier: 1 },
+          { TransitDays: 2, DryIceMultiplier: 2 },
+          { TransitDays: 3, DryIceMultiplier: 3 },
+        ],
+        PackagingBoxes: [
+          {
+            PackagingTier: "m330",
+            Name: "Medium 18 x 15 x 13",
+            UnitCost: 10,
+            MaxProductWeightLb: 10,
+            MaxTransitDays: 1,
+            MaxTotalWeightLb: 50,
+            TareWeightLb: 0,
+            Active: true,
+          },
+        ],
       })
     ).toEqual({
+      model: "continuous_weight",
       dryIceUsdPerLb: 0.6,
       boxCost: { micro: 7.54, m330: 9.98, l345: 16.06 },
+      minimumDryIceAmountLb: 7,
+      transitDayThresholds: [
+        { transitDays: 1, dryIceMultiplier: 1 },
+        { transitDays: 2, dryIceMultiplier: 2 },
+        { transitDays: 3, dryIceMultiplier: 3 },
+      ],
+      packagingBoxes: [
+        {
+          boxTier: "m330",
+          name: "Medium 18 x 15 x 13",
+          unitCost: 10,
+          maxProductWeightLb: 10,
+          maxTransitDays: 1,
+          maxTotalWeightLb: 50,
+          tareWeightLb: 0,
+          active: true,
+        },
+      ],
     })
   })
 
@@ -64,10 +160,45 @@ describe("packagingOverridesFromColdChainSetting", () => {
     expect(o.dryIceUsdPerLb).toBe(0.55)
   })
 
+  it("unwraps v4 component rows", () => {
+    const o = packagingOverridesFromColdChainSetting({
+      attributes: {
+        MinimumDryIceAmount: "7",
+        TransitDayThresholds: [
+          { attributes: { TransitDays: 1, DryIceMultiplier: "1" } },
+        ],
+        PackagingBoxes: [
+          {
+            attributes: {
+              PackagingTier: "l345",
+              Name: "Large",
+              UnitCost: "13.38",
+              MaxTotalWeightLb: "50",
+              TareWeightLb: "0",
+            },
+          },
+        ],
+      },
+    })
+    expect(o.minimumDryIceAmountLb).toBe("7")
+    expect(o.transitDayThresholds).toEqual([
+      { transitDays: 1, dryIceMultiplier: "1" },
+    ])
+    expect(o.packagingBoxes?.[0]).toMatchObject({
+      boxTier: "l345",
+      unitCost: "13.38",
+      tareWeightLb: "0",
+    })
+  })
+
   it("missing fields → null (fall back to defaults downstream)", () => {
     const o = packagingOverridesFromColdChainSetting({})
+    expect(o.model).toBeNull()
     expect(o.dryIceUsdPerLb).toBeNull()
     expect(o.boxCost).toEqual({ micro: null, m330: null, l345: null })
+    expect(o.minimumDryIceAmountLb).toBeNull()
+    expect(o.transitDayThresholds).toEqual([])
+    expect(o.packagingBoxes).toEqual([])
   })
 })
 
@@ -91,6 +222,9 @@ describe("getPackagingConfig — fetch + cache", () => {
     expect(c1.dryIceUsdPerLb).toBe(0.55)
     expect(c2.dryIceUsdPerLb).toBe(0.55)
     expect(fetchMock).toHaveBeenCalledTimes(1) // cached
+    expect(fetchMock.mock.calls[0][0]).toContain(
+      "populate[TransitDayThresholds]=*&populate[PackagingBoxes]=*"
+    )
 
     // past the TTL → refetch
     await getPackagingConfig(env, 1_000 + 6 * 60 * 1000)

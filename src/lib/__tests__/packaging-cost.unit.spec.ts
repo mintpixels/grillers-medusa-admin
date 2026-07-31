@@ -2,8 +2,46 @@ import {
   DEFAULT_PACKAGING_CONFIG,
   estimatePackagingCost,
   packagingConfigFromEnv,
+  resolvePackagingConfig,
   transitDaysForOrder,
 } from "../packaging-cost"
+
+const peterContinuousConfig = () =>
+  resolvePackagingConfig({
+    strapi: {
+      model: "continuous_weight",
+      dryIceUsdPerLb: 1,
+      minimumDryIceAmountLb: 7,
+      transitDayThresholds: [
+        { transitDays: 1, dryIceMultiplier: 1 },
+        { transitDays: 2, dryIceMultiplier: 2 },
+        { transitDays: 3, dryIceMultiplier: 3 },
+      ],
+      packagingBoxes: [
+        {
+          boxTier: "m330",
+          name: "Medium 18 x 15 x 13",
+          unitCost: 10,
+          maxProductWeightLb: 10,
+          maxTransitDays: 1,
+          maxTotalWeightLb: 50,
+          tareWeightLb: 0,
+          active: true,
+        },
+        {
+          boxTier: "l345",
+          name: "Large 24 x 17 x 13",
+          unitCost: 13.38,
+          maxProductWeightLb: null,
+          maxTransitDays: null,
+          maxTotalWeightLb: 50,
+          tareWeightLb: 0,
+          active: true,
+        },
+      ],
+    },
+    env: {},
+  })
 
 describe("transitDaysForOrder", () => {
   it("fixes air services regardless of ZIP", () => {
@@ -112,6 +150,63 @@ describe("estimatePackagingCost — Peter's rules (2026-06-16)", () => {
   })
 })
 
+describe("estimatePackagingCost — Peter's continuous worksheet model (2026-07-31)", () => {
+  const estimate = (weight: number, service: string, zip = "30340") =>
+    estimatePackagingCost(
+      { estimatedProductWeightLb: weight, service, shipPostalCode: zip },
+      peterContinuousConfig()
+    )
+
+  it("uses the medium box only for one-day orders through 10 lb", () => {
+    expect(estimate(10, "OVERNIGHT")).toMatchObject({
+      transitDays: 1,
+      boxes: 1,
+      boxTier: "m330",
+      dryIceLb: 7,
+      dryIceCost: 7,
+      boxCost: 10,
+      total: 17,
+    })
+    expect(estimate(10.01, "OVERNIGHT")).toMatchObject({
+      boxes: 1,
+      boxTier: "l345",
+      dryIceLb: 7,
+      boxCost: 13.38,
+      total: 20.38,
+    })
+  })
+
+  it("uses 7/14/21 lb of dry ice for one/two/three-plus day transit", () => {
+    expect(estimate(1, "OVERNIGHT").dryIceLb).toBe(7)
+    expect(estimate(1, "2ND_DAY_AIR")).toMatchObject({
+      boxTier: "l345",
+      dryIceLb: 14,
+      total: 27.38,
+    })
+    expect(estimate(1, "3_DAY_SELECT")).toMatchObject({
+      boxTier: "l345",
+      dryIceLb: 21,
+      total: 34.38,
+    })
+    expect(estimate(1, "GROUND", "90048").dryIceLb).toBe(21)
+  })
+
+  it("splits continuously at the 43/36/29 lb product capacities", () => {
+    expect(estimate(43, "OVERNIGHT").boxes).toBe(1)
+    expect(estimate(43.01, "OVERNIGHT").boxes).toBe(2)
+    expect(estimate(36, "2ND_DAY_AIR").boxes).toBe(1)
+    expect(estimate(36.01, "2ND_DAY_AIR").boxes).toBe(2)
+    expect(estimate(29, "3_DAY_SELECT").boxes).toBe(1)
+    expect(estimate(30, "3_DAY_SELECT").boxes).toBe(2)
+  })
+
+  it("covers weights omitted by the spreadsheet lookup ranges", () => {
+    for (const weight of [59, 60]) expect(estimate(weight, "3_DAY_SELECT").boxes).toBe(3)
+    for (const weight of [88, 90]) expect(estimate(weight, "3_DAY_SELECT").boxes).toBe(4)
+    for (const weight of [117, 120]) expect(estimate(weight, "3_DAY_SELECT").boxes).toBe(5)
+  })
+})
+
 describe("packagingConfigFromEnv", () => {
   it("defaults to Peter's confirmed numbers", () => {
     const cfg = packagingConfigFromEnv({})
@@ -149,5 +244,6 @@ describe("constants match the reconciliation script", () => {
     expect(DEFAULT_PACKAGING_CONFIG.maxBoxTotalLb).toBe(50)
     expect(DEFAULT_PACKAGING_CONFIG.microBilledCeilLb).toBe(20)
     expect(DEFAULT_PACKAGING_CONFIG.m330BilledCeilLb).toBe(33)
+    expect(DEFAULT_PACKAGING_CONFIG.model).toBe("legacy_tiered")
   })
 })
