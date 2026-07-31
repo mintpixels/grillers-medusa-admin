@@ -141,6 +141,29 @@ describe("buildShippingForecastEvent", () => {
     expect(p.boxes).toBeGreaterThanOrEqual(1)
   })
 
+  it("uses the supplied Strapi-layered packaging config for decomposition", () => {
+    const config = {
+      ...packagingConfigFromEnv(ENV_PACKAGING_ON),
+      dryIceUsdPerLb: 1.25,
+    }
+    const payload = buildShippingForecastEvent(
+      upsGroundOrder(),
+      ENV_PACKAGING_ON,
+      config
+    )
+    const pkg = estimatePackagingCost(
+      {
+        estimatedProductWeightLb: 12,
+        service: "GROUND",
+        shipPostalCode: "19103",
+      },
+      config
+    )
+    expect(payload!.properties.packaging_cost).toBe(pkg.total)
+    expect(payload!.properties.dry_ice_cost).toBe(pkg.dryIceCost)
+    expect(payload!.properties.freight).toBe(round2(58 - pkg.total))
+  })
+
   it("emits nothing for a pickup order (no UPS service code)", () => {
     const payload = buildShippingForecastEvent(pickupOrder(), ENV_PACKAGING_ON)
     expect(payload).toBeNull()

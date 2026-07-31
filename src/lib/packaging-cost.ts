@@ -5,14 +5,14 @@
  * charge only. It omits two real costs Peter flagged: DRY ICE and the SHIPPER
  * BOX (inner styrofoam + outer cardboard). This module estimates those two as
  * additive components from the order's estimated product weight and the
- * destination's transit days, using Peter's packing rules (2026-06-16):
+ * destination's transit days. The legacy June model remains the fail-safe;
+ * Peter's July spreadsheet model activates only when its normalized Strapi
+ * inputs are complete:
  *
- *   - A dry-ice "block" is 7 lb. A box gets 2 blocks (14 lb) for 1-2 day
- *     transit, 3 blocks (21 lb) for 3-day transit. 50 lb hard cap per box
- *     (product + dry ice + packaging), so orders above capacity split boxes.
- *   - Shipper cost is fully loaded (foam + cardboard): micro $7.54,
- *     330-medium $9.98, 345-large $16.06. The 345 is the workhorse.
- *   - Dry ice is $0.60/lb.
+ *   - dry ice per box comes from transit-day thresholds;
+ *   - box cost/capacity/eligibility comes from editable packaging-box rows;
+ *   - boxes are calculated continuously from the 50 lb packed-weight limit,
+ *     rather than copying the spreadsheet's derived ranges (which have gaps).
  *
  * Validated by `analysis/packaging-cost-reconciliation.mjs` against QuickBooks:
  * modeled dry ice ≈ 116% of Emory's annual lbs (conservative), modeled box
@@ -30,7 +30,27 @@ export type PackagingCostInput = {
   shipPostalCode?: string | null;
 };
 
+export type PackagingCostModel = "legacy_tiered" | "continuous_weight";
+export type PackagingBoxTier = "micro" | "m330" | "l345";
+
+export type ContinuousPackagingBoxRule = {
+  boxTier: PackagingBoxTier;
+  name: string;
+  unitCost: number;
+  maxProductWeightLb: number | null;
+  maxTransitDays: number | null;
+  maxTotalWeightLb: number;
+  tareWeightLb: number;
+};
+
+export type ContinuousPackagingConfig = {
+  dryIceByTransitDays: Array<{ transitDays: number; dryIceLbPerBox: number }>;
+  boxRules: ContinuousPackagingBoxRule[];
+};
+
 export type PackagingCostConfig = {
+  model: PackagingCostModel;
+  continuous: ContinuousPackagingConfig | null;
   dryIceUsdPerLb: number;
   boxCost: { micro: number; m330: number; l345: number };
   dryIcePerBoxShortLb: number; // 1-2 day transit
@@ -50,6 +70,8 @@ export type PackagingCostConfig = {
  *  vs the actual $12.01 — weight alone caps near 80% since box choice is partly
  *  volume-driven and we have no product dimensions. */
 export const DEFAULT_PACKAGING_CONFIG: PackagingCostConfig = {
+  model: "legacy_tiered",
+  continuous: null,
   dryIceUsdPerLb: 0.6,
   boxCost: { micro: 7.54, m330: 9.98, l345: 16.06 },
   dryIcePerBoxShortLb: 14,
@@ -63,7 +85,7 @@ export const DEFAULT_PACKAGING_CONFIG: PackagingCostConfig = {
 export type PackagingCostResult = {
   transitDays: number;
   boxes: number;
-  boxTier: "micro" | "m330" | "l345";
+  boxTier: PackagingBoxTier;
   dryIceLb: number;
   dryIceCost: number;
   boxCost: number;
@@ -98,19 +120,113 @@ export function transitDaysForOrder(
 /** Reads optional env overrides so costs can be tuned without a redeploy. */
 /** Editable overrides sourced from Strapi cold-chain-setting (the costs that drift). */
 export type PackagingCostOverrides = {
-  dryIceUsdPerLb?: number | null;
+  model?: string | null;
+  dryIceUsdPerLb?: number | string | null;
   boxCost?: {
-    micro?: number | null;
-    m330?: number | null;
-    l345?: number | null;
+    micro?: number | string | null;
+    m330?: number | string | null;
+    l345?: number | string | null;
   };
+  minimumDryIceAmountLb?: number | string | null;
+  transitDayThresholds?: Array<{
+    transitDays?: number | string | null;
+    dryIceMultiplier?: number | string | null;
+  }>;
+  packagingBoxes?: Array<{
+    boxTier?: string | null;
+    name?: string | null;
+    unitCost?: number | string | null;
+    maxProductWeightLb?: number | string | null;
+    maxTransitDays?: number | string | null;
+    maxTotalWeightLb?: number | string | null;
+    tareWeightLb?: number | string | null;
+    active?: boolean | null;
+  }>;
 };
+
+function positive(v: unknown): number | null {
+  const n = typeof v === "string" ? Number(v) : (v as number);
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function nonNegative(v: unknown): number | null {
+  const n = typeof v === "string" ? Number(v) : (v as number);
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function continuousConfigFromOverrides(
+  overrides: PackagingCostOverrides
+): ContinuousPackagingConfig | null {
+  const baseDryIceLb = positive(overrides.minimumDryIceAmountLb);
+  if (baseDryIceLb == null) return null;
+
+  const rawThresholds = overrides.transitDayThresholds;
+  if (!Array.isArray(rawThresholds) || rawThresholds.length < 3) return null;
+  const thresholds: ContinuousPackagingConfig["dryIceByTransitDays"] = [];
+  for (const row of rawThresholds) {
+    const transitDays = positive(row?.transitDays);
+    const multiplier = positive(row?.dryIceMultiplier);
+    if (transitDays == null || !Number.isInteger(transitDays) || multiplier == null) {
+      return null;
+    }
+    thresholds.push({ transitDays, dryIceLbPerBox: baseDryIceLb * multiplier });
+  }
+  const thresholdDays = new Set(thresholds.map((row) => row.transitDays));
+  if (thresholdDays.size !== thresholds.length || ![1, 2, 3].every((day) => thresholdDays.has(day))) {
+    return null;
+  }
+  thresholds.sort((a, b) => a.transitDays - b.transitDays);
+
+  const rawBoxes = (overrides.packagingBoxes ?? []).filter((row) => row?.active !== false);
+  if (rawBoxes.length < 2) return null;
+  const boxes: ContinuousPackagingBoxRule[] = [];
+  for (const row of rawBoxes) {
+    const boxTier = row?.boxTier;
+    const unitCost = positive(row?.unitCost);
+    const maxTotalWeightLb = positive(row?.maxTotalWeightLb);
+    const tareWeightLb = nonNegative(row?.tareWeightLb ?? 0);
+    const maxProductWeightLb =
+      row?.maxProductWeightLb == null ? null : positive(row.maxProductWeightLb);
+    const maxTransitDays =
+      row?.maxTransitDays == null ? null : positive(row.maxTransitDays);
+    if (
+      !["micro", "m330", "l345"].includes(String(boxTier)) ||
+      unitCost == null ||
+      maxTotalWeightLb == null ||
+      tareWeightLb == null ||
+      (row?.maxProductWeightLb != null && maxProductWeightLb == null) ||
+      (row?.maxTransitDays != null &&
+        (maxTransitDays == null || !Number.isInteger(maxTransitDays)))
+    ) {
+      return null;
+    }
+    boxes.push({
+      boxTier: boxTier as PackagingBoxTier,
+      name: String(row?.name || boxTier),
+      unitCost,
+      maxProductWeightLb,
+      maxTransitDays,
+      maxTotalWeightLb,
+      tareWeightLb,
+    });
+  }
+  const tiers = new Set(boxes.map((box) => box.boxTier));
+  const hasLimitedRule = boxes.some(
+    (box) => box.maxProductWeightLb != null && box.maxTransitDays != null
+  );
+  const hasFallbackRule = boxes.some(
+    (box) => box.maxProductWeightLb == null && box.maxTransitDays == null
+  );
+  if (tiers.size !== boxes.length || !hasLimitedRule || !hasFallbackRule) return null;
+
+  return { dryIceByTransitDays: thresholds, boxRules: boxes };
+}
 
 /**
  * Resolve the packaging config by layering: hardcoded DEFAULT (Peter's
  * numbers) < Strapi overrides (ops-editable, no deploy) < env (devops
  * emergency override). A Strapi/env value only wins when it is a finite,
- * non-negative number; anything else is ignored so a blank Strapi field can't
+ * positive number; anything else is ignored so a blank Strapi field can't
  * zero out a cost.
  */
 export function resolvePackagingConfig(
@@ -126,24 +242,30 @@ export function resolvePackagingConfig(
   // (price, costs, lbs, capacities) is meaningfully > 0, so a blank, null, or
   // 0 Strapi/env value is rejected and falls back to the default — a stray 0
   // can never zero out a cost.
-  const valid = (v: unknown): number | null => {
-    const n = typeof v === "string" ? Number(v) : (v as number);
-    return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : null;
-  };
   // Precedence: env > strapi > default.
   const pick = (envKey: string, strapiVal: unknown, def: number): number => {
     const e = env[envKey];
     if (e != null && e !== "") {
-      const n = valid(e);
+      const n = positive(e);
       if (n != null) return n;
     }
-    const s = valid(strapiVal);
+    const s = positive(strapiVal);
     if (s != null) return s;
     return def;
   };
 
   const s = opts.strapi ?? {};
+  const requestedModel = String(
+    env.GRILLERS_PACKAGING_COST_MODEL || s.model || d.model
+  ).trim();
+  const continuous = continuousConfigFromOverrides(s);
+  const model: PackagingCostModel =
+    requestedModel === "continuous_weight" && continuous
+      ? "continuous_weight"
+      : "legacy_tiered";
   return {
+    model,
+    continuous: model === "continuous_weight" ? continuous : null,
     dryIceUsdPerLb: pick("GRILLERS_DRY_ICE_USD_PER_LB", s.dryIceUsdPerLb, d.dryIceUsdPerLb),
     boxCost: {
       micro: pick("GRILLERS_BOX_COST_MICRO", s.boxCost?.micro, d.boxCost.micro),
@@ -178,6 +300,53 @@ export function estimatePackagingCost(
   config: PackagingCostConfig = DEFAULT_PACKAGING_CONFIG
 ): PackagingCostResult {
   const transitDays = transitDaysForOrder(input.service, input.shipPostalCode);
+  const productWeight = Math.max(0, num(input.estimatedProductWeightLb));
+
+  if (config.model === "continuous_weight" && config.continuous) {
+    const eligibleThresholds = [...config.continuous.dryIceByTransitDays]
+      .sort((a, b) => a.transitDays - b.transitDays)
+      .filter((row) => row.transitDays <= transitDays);
+    const threshold =
+      eligibleThresholds[eligibleThresholds.length - 1] ??
+      config.continuous.dryIceByTransitDays[0];
+    const dryIcePerBox = threshold?.dryIceLbPerBox;
+    const box = [...config.continuous.boxRules]
+      .filter(
+        (row) =>
+          (row.maxTransitDays == null || transitDays <= row.maxTransitDays) &&
+          (row.maxProductWeightLb == null || productWeight <= row.maxProductWeightLb)
+      )
+      .sort((a, b) => {
+        const aProduct = a.maxProductWeightLb ?? Number.POSITIVE_INFINITY;
+        const bProduct = b.maxProductWeightLb ?? Number.POSITIVE_INFINITY;
+        if (aProduct !== bProduct) return aProduct - bProduct;
+        const aTransit = a.maxTransitDays ?? Number.POSITIVE_INFINITY;
+        const bTransit = b.maxTransitDays ?? Number.POSITIVE_INFINITY;
+        return aTransit - bTransit;
+      })[0];
+
+    if (box && dryIcePerBox != null && dryIcePerBox > 0) {
+      const usableProductPerBox = Math.max(
+        1,
+        box.maxTotalWeightLb - dryIcePerBox - box.tareWeightLb
+      );
+      const boxes = Math.max(1, Math.ceil(productWeight / usableProductPerBox));
+      const dryIceLb = boxes * dryIcePerBox;
+      const dryIceCost = round2(dryIceLb * config.dryIceUsdPerLb);
+      const boxCost = round2(boxes * box.unitCost);
+      const total = round2(boxCost + dryIceCost);
+      return {
+        transitDays,
+        boxes,
+        boxTier: box.boxTier,
+        dryIceLb,
+        dryIceCost,
+        boxCost,
+        total,
+      };
+    }
+  }
+
   const dryIcePerBox =
     transitDays <= 2 ? config.dryIcePerBoxShortLb : config.dryIcePerBoxLongLb;
 
@@ -188,7 +357,6 @@ export function estimatePackagingCost(
     config.maxBoxTotalLb - dryIcePerBox - config.boxTareLb
   );
 
-  const productWeight = Math.max(0, num(input.estimatedProductWeightLb));
   const boxes = Math.max(1, Math.ceil(productWeight / usableProductPerBox));
 
   // Tier by per-box GROSS billed weight = product/box + dry ice + box tare.
