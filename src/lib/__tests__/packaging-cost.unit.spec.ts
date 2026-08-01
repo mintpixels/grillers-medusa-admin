@@ -5,6 +5,7 @@ import {
   resolvePackagingConfig,
   transitDaysForOrder,
 } from "../packaging-cost"
+import peterWorksheetLabels from "./__fixtures__/peter-packaging-worksheet-labels-2026-07-31.json"
 
 const peterContinuousConfig = () =>
   resolvePackagingConfig({
@@ -23,7 +24,7 @@ const peterContinuousConfig = () =>
           name: "Medium 18 x 15 x 13",
           unitCost: 10,
           maxProductWeightLb: 10,
-          maxTransitDays: 1,
+          maxTransitDays: 2,
           maxTotalWeightLb: 50,
           tareWeightLb: 0,
           active: true,
@@ -157,7 +158,7 @@ describe("estimatePackagingCost — Peter's continuous worksheet model (2026-07-
       peterContinuousConfig()
     )
 
-  it("uses the medium box only for one-day orders through 10 lb", () => {
+  it("uses the medium box for one- and two-day orders through 10 lb", () => {
     expect(estimate(10, "OVERNIGHT")).toMatchObject({
       transitDays: 1,
       boxes: 1,
@@ -174,14 +175,22 @@ describe("estimatePackagingCost — Peter's continuous worksheet model (2026-07-
       boxCost: 13.38,
       total: 20.38,
     })
+    expect(estimate(10, "2ND_DAY_AIR")).toMatchObject({
+      transitDays: 2,
+      boxes: 1,
+      boxTier: "m330",
+      dryIceLb: 14,
+      boxCost: 10,
+      total: 24,
+    })
   })
 
   it("uses 7/14/21 lb of dry ice for one/two/three-plus day transit", () => {
     expect(estimate(1, "OVERNIGHT").dryIceLb).toBe(7)
     expect(estimate(1, "2ND_DAY_AIR")).toMatchObject({
-      boxTier: "l345",
+      boxTier: "m330",
       dryIceLb: 14,
-      total: 27.38,
+      total: 24,
     })
     expect(estimate(1, "3_DAY_SELECT")).toMatchObject({
       boxTier: "l345",
@@ -204,6 +213,70 @@ describe("estimatePackagingCost — Peter's continuous worksheet model (2026-07-
     for (const weight of [59, 60]) expect(estimate(weight, "3_DAY_SELECT").boxes).toBe(3)
     for (const weight of [88, 90]) expect(estimate(weight, "3_DAY_SELECT").boxes).toBe(4)
     for (const weight of [117, 120]) expect(estimate(weight, "3_DAY_SELECT").boxes).toBe(5)
+  })
+
+  it("uses the worksheet as golden labels while surfacing its impossible ranges", () => {
+    const serviceForTransitDays: Record<number, string> = {
+      1: "OVERNIGHT",
+      2: "2ND_DAY_AIR",
+      3: "3_DAY_SELECT",
+    }
+
+    const labelConflicts: Array<{
+      sourceRow: number
+      firstWeightLb: number
+      lastWeightLb: number
+      count: number
+    }> = []
+
+    for (const label of peterWorksheetLabels) {
+      const service = serviceForTransitDays[label.transit_days]
+      expect(service).toBeDefined()
+      const physicallyPossibleMaxWeight =
+        label.boxes * (50 - label.dry_ice_lb_per_box)
+      const conflicts: number[] = []
+
+      // The worksheet rows are interval labels. Expanding only within each
+      // physically possible portion of an interval makes them golden
+      // supervision without teaching the model that a box may exceed Peter's
+      // own 50 lb packed-weight cap. The raw fixture remains unchanged so label
+      // defects stay reviewable instead of being silently cleaned.
+      for (
+        let weight = label.from_product_weight_lb;
+        weight <= label.to_product_weight_lb;
+        weight += 1
+      ) {
+        const result = estimate(weight, service)
+        if (weight > physicallyPossibleMaxWeight) {
+          conflicts.push(weight)
+          expect(result.boxes).toBeGreaterThan(label.boxes)
+          continue
+        }
+        expect(result.transitDays).toBe(label.transit_days)
+        expect(result.boxes).toBe(label.boxes)
+        expect(result.dryIceLb).toBe(label.dry_ice_lb)
+        expect(result.dryIceCost).toBeCloseTo(label.dry_ice_cost_usd, 2)
+        expect(result.boxCost).toBeCloseTo(label.box_cost_usd, 2)
+        expect(result.total).toBeCloseTo(label.packaging_cost_usd, 2)
+      }
+
+      if (conflicts.length) {
+        labelConflicts.push({
+          sourceRow: label.source_row,
+          firstWeightLb: conflicts[0],
+          lastWeightLb: conflicts[conflicts.length - 1],
+          count: conflicts.length,
+        })
+      }
+    }
+
+    expect(labelConflicts).toEqual([
+      { sourceRow: 34, firstWeightLb: 175, lastWeightLb: 180, count: 6 },
+      { sourceRow: 35, firstWeightLb: 204, lastWeightLb: 209, count: 6 },
+      { sourceRow: 36, firstWeightLb: 233, lastWeightLb: 238, count: 6 },
+      { sourceRow: 37, firstWeightLb: 262, lastWeightLb: 270, count: 9 },
+      { sourceRow: 38, firstWeightLb: 291, lastWeightLb: 296, count: 6 },
+    ])
   })
 })
 
